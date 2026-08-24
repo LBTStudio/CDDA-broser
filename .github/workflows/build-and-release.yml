@@ -8,26 +8,32 @@ permissions:
   pages: write
   id-token: write
 
+# 同じPages公開用Workflowを同時に走らせない。
+# 新しいRunを開始した場合、古いRunをキャンセルする。
 concurrency:
   group: "pages"
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   build:
-    name: Build Japanese-enabled WASM bundle
+    name: Build CDDA 0.I WebAssembly - Japanese default
     runs-on: ubuntu-latest
     timeout-minutes: 300
 
     steps:
-      # ==========================================================
-      # Checkout wrapper repository
-      # ==========================================================
-      - name: Checkout wrapper repo
-        uses: actions/checkout@v4
 
       # ==========================================================
-      # Checkout CDDA 0.I
+      # 1. Checkout wrapper repository
       # ==========================================================
+
+      - name: Checkout wrapper repository
+        uses: actions/checkout@v4
+
+
+      # ==========================================================
+      # 2. Checkout exact CDDA 0.I source
+      # ==========================================================
+
       - name: Checkout CDDA 0.I source
         uses: actions/checkout@v4
         with:
@@ -36,9 +42,11 @@ jobs:
           path: cdda
           fetch-depth: 1
 
+
       # ==========================================================
-      # Dependencies
+      # 3. Install dependencies
       # ==========================================================
+
       - name: Install build dependencies
         run: |
           set -euo pipefail
@@ -49,12 +57,14 @@ jobs:
             jq \
             gettext
 
-          echo "gettext:"
+          echo "=== gettext ==="
           msgfmt --version | head -1
 
+
       # ==========================================================
-      # Free disk space
+      # 4. Free disk space
       # ==========================================================
+
       - name: Free disk space
         run: |
           set -euo pipefail
@@ -69,21 +79,24 @@ jobs:
           echo "=== Disk space ==="
           df -h /
 
+
       # ==========================================================
-      # Emscripten
+      # 5. Setup Emscripten
       # ==========================================================
+
       - name: Setup emsdk 3.1.51
         uses: mymindstorm/setup-emsdk@v14
         with:
           version: 3.1.51
 
+
       # ==========================================================
-      # Reduce final linker optimization
+      # 6. Relax final link optimization
       #
-      # This is retained because the previous successful build
-      # used this workaround to avoid the extremely long -Os
-      # final wasm-opt/link stage.
+      # This workaround was required by the previous successful
+      # builds to avoid the extremely long final -Os stage.
       # ==========================================================
+
       - name: Relax link-time optimization
         working-directory: cdda
         run: |
@@ -93,35 +106,33 @@ jobs:
             's/^[[:space:]]*LDFLAGS[[:space:]]*+=[[:space:]]*-Os[[:space:]]*$/LDFLAGS += -O1/' \
             Makefile
 
-          echo "=== Linker flags ==="
+          echo "=== LDFLAGS ==="
           grep -n "LDFLAGS" Makefile | head -20
 
+
       # ==========================================================
-      # Verify Japanese source
+      # 7. Verify Japanese translation source
       # ==========================================================
+
       - name: Verify Japanese translation source
         working-directory: cdda
         run: |
           set -euo pipefail
 
-          echo "=== Japanese translation source ==="
-
           test -f lang/po/ja.po
 
+          echo "=== Japanese PO ==="
           ls -lh lang/po/ja.po
 
+
       # ==========================================================
-      # Build Japanese MO before the main build
-      #
-      # Do not rely on compile_mo.sh.
-      # Generate the MO directly with gettext.
+      # 8. Compile Japanese PO -> MO
       # ==========================================================
+
       - name: Compile Japanese translation
         working-directory: cdda
         run: |
           set -euo pipefail
-
-          echo "=== Compile Japanese translation ==="
 
           PO="lang/po/ja.po"
           MO="lang/mo/ja/LC_MESSAGES/cataclysm-dda.mo"
@@ -135,23 +146,88 @@ jobs:
 
           test -s "$MO"
 
-          echo
           echo "=== Japanese MO ==="
-
           ls -lh "$MO"
 
           echo
           echo "=== SHA256 ==="
-
           sha256sum "$MO"
 
+
       # ==========================================================
-      # Build WASM
+      # 9. Patch CDDA 0.I:
+      #
+      # Change:
+      #
+      #   USE_LANG default = ""
+      #
+      # to:
+      #
+      #   USE_LANG default = "ja"
+      #
+      # This makes Japanese the actual CDDA default language.
+      #
+      # We deliberately patch the source before compilation rather
+      # than trying to manipulate browser localStorage.
       # ==========================================================
+
+      - name: Set Japanese as CDDA default language
+        working-directory: cdda
+        run: |
+          set -euo pipefail
+
+          python3 <<'PY'
+          from pathlib import Path
+
+          path = Path("src/options.cpp")
+          text = path.read_text(encoding="utf-8")
+
+          old = 'options_manager::get_lang_options(), "" );'
+          new = 'options_manager::get_lang_options(), "ja" );'
+
+          count = text.count(old)
+
+          if count != 1:
+              raise SystemExit(
+                  f"ERROR: Expected exactly one USE_LANG default pattern, found {count}"
+              )
+
+          text = text.replace(old, new, 1)
+
+          path.write_text(text, encoding="utf-8")
+
+          print("Japanese default language patch applied.")
+          PY
+
+          echo
+          echo "=== Verify USE_LANG default ==="
+
+          grep -n \
+            -A4 \
+            -B2 \
+            'add( "USE_LANG"' \
+            src/options.cpp
+
+          echo
+          echo "=== Verify default value is ja ==="
+
+          grep -n \
+            'options_manager::get_lang_options(), "ja" );' \
+            src/options.cpp
+
+
+      # ==========================================================
+      # 10. Build WebAssembly
+      #
+      # LOCALIZE=1 is mandatory.
+      # LANGUAGES="ja" ensures Japanese localization support.
+      # ==========================================================
+
       - name: Build cataclysm-tiles.js
         working-directory: cdda
         env:
           EMCC_DEBUG: "1"
+
         run: |
           set -euo pipefail
 
@@ -173,6 +249,7 @@ jobs:
           echo "=== Localization ==="
           echo "LOCALIZE=1"
           echo "LANGUAGES=ja"
+          echo "Default USE_LANG=ja"
 
           echo
           echo "=== Starting build ==="
@@ -200,10 +277,15 @@ jobs:
             cataclysm-tiles.js \
             cataclysm-tiles.wasm
 
+
       # ==========================================================
-      # Prepare normal web bundle
+      # 11. Prepare official CDDA web bundle
+      #
+      # prepare-web.sh creates web_bundle and packs it once.
+      # We will repack it AFTER inserting Japanese MO.
       # ==========================================================
-      - name: Prepare web bundle
+
+      - name: Prepare base web bundle
         working-directory: cdda
         run: |
           set -euo pipefail
@@ -212,35 +294,199 @@ jobs:
 
           bash build-scripts/prepare-web.sh
 
+          echo
+          echo "=== Base web bundle ==="
+
+          find web_bundle \
+            -maxdepth 4 \
+            -type f \
+            | sort \
+            | head -200
+
+
       # ==========================================================
-      # Add Japanese MO to the web bundle
+      # 12. Add Japanese MO INSIDE web_bundle
       #
-      # This does NOT rebuild the WASM.
+      # This is critical.
+      #
+      # CDDA runtime path:
+      #
+      #   /lang/mo/ja/LC_MESSAGES/cataclysm-dda.mo
+      #
+      # The file must exist in the Emscripten virtual FS.
       # ==========================================================
-      - name: Add Japanese locale to web bundle
+
+      - name: Add Japanese locale to Emscripten virtual filesystem
         working-directory: cdda
         run: |
           set -euo pipefail
 
-          MO="lang/mo/ja/LC_MESSAGES/cataclysm-dda.mo"
+          MO_SRC="lang/mo/ja/LC_MESSAGES/cataclysm-dda.mo"
+          MO_DST="web_bundle/lang/mo/ja/LC_MESSAGES/cataclysm-dda.mo"
+
+          test -s "$MO_SRC"
+
+          mkdir -p \
+            "$(dirname "$MO_DST")"
+
+          cp \
+            "$MO_SRC" \
+            "$MO_DST"
+
+          echo "=========================================="
+          echo "Japanese MO added to web_bundle"
+          echo "=========================================="
+
+          ls -lh "$MO_DST"
+
+          echo
+          echo "=== SHA256 ==="
+
+          sha256sum "$MO_DST"
+
+
+      # ==========================================================
+      # 13. Verify Japanese locale BEFORE repacking
+      # ==========================================================
+
+      - name: Verify Japanese locale in web bundle
+        working-directory: cdda
+        run: |
+          set -euo pipefail
+
+          MO="web_bundle/lang/mo/ja/LC_MESSAGES/cataclysm-dda.mo"
 
           test -s "$MO"
 
-          mkdir -p \
-            build/lang/mo/ja/LC_MESSAGES
+          echo "Japanese locale exists at:"
 
-          cp \
-            "$MO" \
-            build/lang/mo/ja/LC_MESSAGES/cataclysm-dda.mo
+          echo "/lang/mo/ja/LC_MESSAGES/cataclysm-dda.mo"
 
-          echo "=== Japanese locale installed ==="
+          echo
+          echo "=== File ==="
+
+          file "$MO"
+
+          echo
+          echo "=== Translation statistics ==="
+
+          msgfmt \
+            --statistics \
+            -o /dev/null \
+            "$MO"
+
+
+      # ==========================================================
+      # 14. Repack Emscripten data
+      #
+      # This is NOT a C++ rebuild.
+      #
+      # Only the .data / .data.js package is regenerated.
+      # ==========================================================
+
+      - name: Repack Emscripten data with Japanese locale
+        working-directory: cdda
+        run: |
+          set -euo pipefail
+
+          source "$EMSDK/emsdk_env.sh"
+
+          rm -f \
+            cataclysm-tiles.data \
+            cataclysm-tiles.data.js
+
+          echo "=========================================="
+          echo "REPACK EMSCRIPTEN DATA"
+          echo "=========================================="
+
+          "$EMSDK/upstream/emscripten/tools/file_packager" \
+            cataclysm-tiles.data \
+            --js-output=cataclysm-tiles.data.js \
+            --no-node \
+            --preload "web_bundle@/" \
+            --lz4
+
+          test -s cataclysm-tiles.data
+          test -s cataclysm-tiles.data.js
+
+          echo
+          echo "=== Repacked files ==="
 
           ls -lh \
-            build/lang/mo/ja/LC_MESSAGES/cataclysm-dda.mo
+            cataclysm-tiles.data \
+            cataclysm-tiles.data.js
+
 
       # ==========================================================
-      # Copy custom shell
+      # 15. Verify generated data package contains Japanese path
+      #
+      # Unlike the previous incorrect verification, this check is
+      # performed AFTER file_packager has been run with the Japanese
+      # file actually present in web_bundle.
       # ==========================================================
+
+      - name: Verify Japanese locale in generated data package
+        working-directory: cdda
+        run: |
+          set -euo pipefail
+
+          echo "=========================================="
+          echo "VERIFY GENERATED DATA PACKAGE"
+          echo "=========================================="
+
+          if ! grep -q \
+            "lang/mo/ja/LC_MESSAGES/cataclysm-dda.mo" \
+            cataclysm-tiles.data.js
+          then
+            echo
+            echo "ERROR:"
+            echo "Japanese MO was not found in generated data loader."
+            echo
+            echo "Searching Japanese references:"
+            grep -n "lang/mo" cataclysm-tiles.data.js | head -50 || true
+            exit 1
+          fi
+
+          echo
+          echo "Japanese locale path found in generated data loader."
+
+          grep -n \
+            "lang/mo/ja" \
+            cataclysm-tiles.data.js \
+            | head -20
+
+
+      # ==========================================================
+      # 16. Install the newly repacked data files into build/
+      # ==========================================================
+
+      - name: Install repacked data files
+        working-directory: cdda
+        run: |
+          set -euo pipefail
+
+          test -s cataclysm-tiles.data
+          test -s cataclysm-tiles.data.js
+
+          cp \
+            cataclysm-tiles.data \
+            build/cataclysm-tiles.data
+
+          cp \
+            cataclysm-tiles.data.js \
+            build/cataclysm-tiles.data.js
+
+          echo "=== Installed data ==="
+
+          ls -lh \
+            build/cataclysm-tiles.data \
+            build/cataclysm-tiles.data.js
+
+
+      # ==========================================================
+      # 17. Copy wrapper shell
+      # ==========================================================
+
       - name: Copy profile-aware shell
         run: |
           set -euo pipefail
@@ -252,9 +498,11 @@ jobs:
             shell/index.html \
             cdda/build/index.html
 
+
       # ==========================================================
-      # Stage site
+      # 18. Stage final site
       # ==========================================================
+
       - name: Stage site
         run: |
           set -euo pipefail
@@ -266,12 +514,13 @@ jobs:
             cdda/build/. \
             site/
 
-          echo "=== Final site contents ==="
+          echo "=========================================="
+          echo "FINAL SITE"
+          echo "=========================================="
 
           find site \
-            -maxdepth 5 \
+            -maxdepth 6 \
             -type f \
-            -print \
             | sort
 
           echo
@@ -279,20 +528,18 @@ jobs:
 
           du -sh site/
 
+
       # ==========================================================
-      # Minimal verification
-      #
-      # IMPORTANT:
-      # Do NOT inspect the internal representation of the
-      # Emscripten .data.js file.
-      #
-      # Only verify files that must physically exist.
+      # 19. Final verification
       # ==========================================================
+
       - name: Verify final site
         run: |
           set -euo pipefail
 
-          echo "=== Required files ==="
+          echo "=========================================="
+          echo "FINAL VERIFICATION"
+          echo "=========================================="
 
           REQUIRED_FILES=(
             "site/cataclysm-tiles.js"
@@ -300,12 +547,11 @@ jobs:
             "site/cataclysm-tiles.data"
             "site/cataclysm-tiles.data.js"
             "site/index.html"
-            "site/lang/mo/ja/LC_MESSAGES/cataclysm-dda.mo"
           )
 
           for FILE in "${REQUIRED_FILES[@]}"; do
             if [ ! -s "$FILE" ]; then
-              echo "ERROR: Missing or empty file:"
+              echo "ERROR: Missing or empty:"
               echo "$FILE"
               exit 1
             fi
@@ -314,36 +560,63 @@ jobs:
           done
 
           echo
-          echo "=== Final verification completed ==="
+          echo "=== Verify Japanese locale is packaged ==="
+
+          grep -q \
+            "lang/mo/ja/LC_MESSAGES/cataclysm-dda.mo" \
+            site/cataclysm-tiles.data.js
+
+          echo "OK: Japanese MO is present in generated data loader."
+
+          echo
+          echo "=== Verify patched CDDA source ==="
+
+          grep -q \
+            'options_manager::get_lang_options(), "ja" );' \
+            cdda/src/options.cpp
+
+          echo "OK: CDDA default USE_LANG is ja."
+
+          echo
+          echo "=========================================="
+          echo "ALL VERIFICATIONS PASSED"
+          echo "=========================================="
+
 
       # ==========================================================
-      # Upload artifact
+      # 20. Upload raw artifact
       #
-      # This is deliberately after only the minimal verification.
-      # No expensive operation follows this point.
+      # Nothing expensive happens after this point.
       # ==========================================================
+
       - name: Upload web bundle artifact
         uses: actions/upload-artifact@v4
         with:
-          name: cdda-0I-web-bundle
+          name: cdda-0I-web-bundle-japanese
           path: site/
           if-no-files-found: error
           retention-days: 30
 
+
       # ==========================================================
-      # Upload GitHub Pages artifact
+      # 21. Upload GitHub Pages artifact
       # ==========================================================
+
       - name: Upload GitHub Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:
           path: site/
 
+
   # ==============================================================
   # Deploy
   # ==============================================================
+
   deploy:
     name: Deploy to GitHub Pages
+
     needs: build
+
     runs-on: ubuntu-latest
 
     environment:
@@ -351,6 +624,7 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
 
     steps:
+
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
