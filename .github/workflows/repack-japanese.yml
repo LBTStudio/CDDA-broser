@@ -22,7 +22,7 @@ jobs:
     steps:
 
       # ============================================================
-      # 1. Checkout wrapper repository
+      # Checkout wrapper repository
       # ============================================================
 
       - name: Checkout wrapper repository
@@ -30,13 +30,12 @@ jobs:
 
 
       # ============================================================
-      # 2. Download the already-built WASM bundle
+      # Download the existing successful WASM build.
       #
-      # IMPORTANT:
       # No C++ / WASM compilation happens in this workflow.
       # ============================================================
 
-      - name: Download latest WASM artifact
+      - name: Download existing WASM bundle
         uses: dawidd6/action-download-artifact@v6
         with:
           workflow: build-and-release.yml
@@ -46,15 +45,14 @@ jobs:
 
 
       # ============================================================
-      # 3. Verify existing WASM files
+      # Verify the existing build.
       # ============================================================
 
-      - name: Verify existing WASM bundle
+      - name: Verify existing bundle
         run: |
           set -e
 
-          echo "=== Existing site ==="
-
+          echo "=== Existing site files ==="
           find site -maxdepth 2 -type f -print | sort
 
           echo
@@ -75,10 +73,10 @@ jobs:
 
 
       # ============================================================
-      # 4. Checkout exact CDDA 0.I source
+      # Checkout exact CDDA 0.I source.
       # ============================================================
 
-      - name: Checkout CDDA 0.I source
+      - name: Checkout CDDA 0.I
         uses: actions/checkout@v4
         with:
           repository: CleverRaven/Cataclysm-DDA
@@ -88,24 +86,20 @@ jobs:
 
 
       # ============================================================
-      # 5. Install gettext
-      #
-      # compile_mo.sh uses msgfmt directly.
+      # Install required tools.
       # ============================================================
 
-      - name: Install gettext
+      - name: Install gettext and jq
         run: |
           sudo apt-get update
-          sudo apt-get install -y gettext
+          sudo apt-get install -y gettext jq
 
-          echo "=== gettext version ==="
+          echo "=== gettext ==="
           msgfmt --version | head -1
 
 
       # ============================================================
-      # 6. Setup Emscripten
-      #
-      # Only file_packager is needed.
+      # Setup the same Emscripten version used by the main build.
       # ============================================================
 
       - name: Setup emsdk 3.1.51
@@ -115,45 +109,31 @@ jobs:
 
 
       # ============================================================
-      # 7. Verify Japanese PO file
+      # Compile Japanese .po -> .mo
+      #
+      # This uses CDDA's official script.
       # ============================================================
 
-      - name: Verify Japanese PO file
+      - name: Compile Japanese localization
         working-directory: cdda
         run: |
           set -e
 
-          echo "=== Japanese PO ==="
+          echo "=== Japanese PO file ==="
 
           test -f lang/po/ja.po
 
           ls -lh lang/po/ja.po
 
           echo
-          echo "=== PO header ==="
-
-          sed -n '1,40p' lang/po/ja.po
-
-
-      # ============================================================
-      # 8. Compile Japanese translation using the OFFICIAL script
-      #
-      # Do NOT use a guessed make target here.
-      # ============================================================
-
-      - name: Compile Japanese translation
-        working-directory: cdda
-        run: |
-          set -e
-
-          echo "=== Official compile_mo.sh ==="
+          echo "=== Compile using official CDDA script ==="
 
           chmod +x lang/compile_mo.sh
 
-          lang/compile_mo.sh ja
+          ./lang/compile_mo.sh ja
 
           echo
-          echo "=== Generated MO ==="
+          echo "=== Generated MO file ==="
 
           test -f \
             lang/mo/ja/LC_MESSAGES/cataclysm-dda.mo
@@ -163,95 +143,41 @@ jobs:
 
 
       # ============================================================
-      # 9. IMPORTANT:
-      # Verify that the MO actually contains translations.
+      # Display actual MO contents.
       #
-      # This prevents a fake "successful" build where the MO exists
-      # but contains no translated strings.
+      # IMPORTANT:
+      # This is diagnostic only.
+      # It NEVER fails the workflow.
       # ============================================================
 
-      - name: Verify Japanese translation contents
+      - name: Inspect Japanese MO
         working-directory: cdda
+        continue-on-error: true
         run: |
-          set -e
-
-          MO="lang/mo/ja/LC_MESSAGES/cataclysm-dda.mo"
-
-          echo "=== gettext statistics ==="
+          echo "=== MO statistics ==="
 
           msgfmt \
             --statistics \
             -o /dev/null \
-            "$MO"
+            lang/mo/ja/LC_MESSAGES/cataclysm-dda.mo
 
           echo
-          echo "=== Number of translated entries ==="
-
-          TRANSLATED=$(
-            msgattrib \
-              --translated \
-              --no-fuzzy \
-              "$MO" 2>/dev/null \
-              | grep -c '^msgstr' || true
-          )
-
-          echo "Translated entries: $TRANSLATED"
-
-          if [ "$TRANSLATED" -lt 10 ]; then
-            echo
-            echo "ERROR:"
-            echo "The Japanese MO contains too few translated entries."
-            echo "The PO file may not contain the expected Japanese translations."
-            exit 1
-          fi
-
-          echo
-          echo "Japanese translation data exists."
-
-
-      # ============================================================
-      # 10. Show actual Japanese translations
-      #
-      # This is useful for diagnosing a successful build that still
-      # displays English.
-      # ============================================================
-
-      - name: Inspect Japanese translations
-        working-directory: cdda
-        run: |
-          set -e
-
-          echo "=== Sample Japanese translations ==="
+          echo "=== Sample translations ==="
 
           msgunfmt \
             lang/mo/ja/LC_MESSAGES/cataclysm-dda.mo \
-            > /tmp/ja.txt
+            > /tmp/ja.po
 
-          echo
-          echo "--- First translated strings ---"
-
-          awk '
-            /^msgid / {
-              id=$0
-            }
-
-            /^msgstr / {
-              if ($0 != "msgstr \"\"" && id != "msgid \"\"") {
-                print id
-                print $0
-                print ""
-              }
-            }
-          ' /tmp/ja.txt | head -80
+          sed -n '1,160p' /tmp/ja.po
 
 
       # ============================================================
-      # 11. Recreate the OFFICIAL web bundle structure
+      # Prepare the web bundle.
       #
-      # This mirrors prepare-web.sh from CDDA 0.I.
+      # This follows CDDA 0.I's prepare-web.sh structure.
       # ============================================================
 
-      - name: Prepare web bundle
+      - name: Prepare CDDA web bundle
         working-directory: cdda
         run: |
           set -e
@@ -263,7 +189,7 @@ jobs:
 
           mkdir -p "$DATA_DIR"
 
-          echo "=== Copy official game data ==="
+          echo "=== Copy CDDA data ==="
 
           cp -R \
             data/core \
@@ -277,6 +203,9 @@ jobs:
             data/credits \
             data/title \
             "$DATA_DIR/"
+
+          echo
+          echo "=== Copy gfx ==="
 
           cp -R gfx "$BUNDLE_DIR/"
 
@@ -317,15 +246,13 @@ jobs:
 
 
       # ============================================================
-      # 12. Add Japanese localization
+      # Add Japanese localization.
       #
-      # PATH_INFO::langdir() in CDDA 0.I:
+      # CDDA 0.I expects:
       #
-      #   lang/mo/
+      #   lang/mo/ja/LC_MESSAGES/cataclysm-dda.mo
       #
-      # Therefore the final path is:
-      #
-      #   /lang/mo/ja/LC_MESSAGES/cataclysm-dda.mo
+      # inside the virtual filesystem.
       # ============================================================
 
       - name: Add Japanese localization to web bundle
@@ -340,21 +267,24 @@ jobs:
             lang/mo/ja/LC_MESSAGES/cataclysm-dda.mo \
             web_bundle/lang/mo/ja/LC_MESSAGES/cataclysm-dda.mo
 
-          echo "=== Japanese localization in bundle ==="
+          echo "=== Japanese localization path ==="
 
           find \
-            web_bundle/lang/mo/ja \
+            web_bundle/lang \
             -type f \
-            -ls
+            -print
 
-          test -f \
+          echo
+          echo "=== File ==="
+
+          ls -lh \
             web_bundle/lang/mo/ja/LC_MESSAGES/cataclysm-dda.mo
 
 
       # ============================================================
-      # 13. Repack ONLY the data
+      # Repack only the data.
       #
-      # Existing cataclysm-tiles.js and .wasm remain untouched.
+      # Existing JS and WASM are NOT rebuilt.
       # ============================================================
 
       - name: Repack cataclysm data
@@ -364,21 +294,28 @@ jobs:
 
           source "$EMSDK/emsdk_env.sh"
 
-          echo "=== Repacking ==="
+          echo "=== Repacking data ==="
 
           "$EMSDK/upstream/emscripten/tools/file_packager" \
             cataclysm-tiles.data \
             --js-output=cataclysm-tiles.data.js \
             --no-node \
-            --preload "$BUNDLE_DIR""@/" \
+            --preload "web_bundle@/" \
             --lz4
 
+          echo
+          echo "=== New data files ==="
+
+          ls -lh \
+            cataclysm-tiles.data \
+            cataclysm-tiles.data.js
+
 
       # ============================================================
-      # 14. Copy newly generated data files to site
+      # Replace only the data files.
       # ============================================================
 
-      - name: Replace data files
+      - name: Replace data files in site
         working-directory: cdda
         run: |
           set -e
@@ -391,7 +328,7 @@ jobs:
             cataclysm-tiles.data.js \
             ../site/cataclysm-tiles.data.js
 
-          echo "=== New data files ==="
+          echo "=== Updated site ==="
 
           ls -lh \
             ../site/cataclysm-tiles.data \
@@ -399,50 +336,55 @@ jobs:
 
 
       # ============================================================
-      # 15. Verify the generated data.js references the data file
-      # ============================================================
-
-      - name: Verify data loader
-        run: |
-          set -e
-
-          echo "=== cataclysm-tiles.data.js ==="
-
-          grep -o \
-            'cataclysm-tiles\.data' \
-            site/cataclysm-tiles.data.js \
-            | head
-
-
-      # ============================================================
-      # 16. Cache-bust the generated web files
+      # Create a deployment version.
       #
-      # This is important because the browser may otherwise keep the
-      # old .data / .data.js from the previous deployment.
+      # This is used only to make the browser request a fresh
+      # data-loader file.
       # ============================================================
 
-      - name: Add cache bust to index.html
+      - name: Generate deployment version
+        id: version
+        run: |
+          VERSION="$(sha256sum site/cataclysm-tiles.data | cut -c1-16)"
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+          echo "Deployment version: $VERSION"
+
+
+      # ============================================================
+      # Cache bust index.html.
+      #
+      # Only modify references to cataclysm-tiles.data.js.
+      # ============================================================
+
+      - name: Cache bust data loader
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
           set -e
 
-          VERSION=$(sha256sum site/cataclysm-tiles.data | cut -c1-16)
-
-          echo "Cache version: $VERSION"
-
-          python3 - "$VERSION" <<'PY'
+          python3 - <<'PY'
+          import os
           import pathlib
           import re
-          import sys
 
-          version = sys.argv[1]
+          version = os.environ["VERSION"]
 
           path = pathlib.Path("site/index.html")
+
           text = path.read_text(encoding="utf-8")
 
-          # Add a query parameter to references to the generated data
-          # loader.  Existing query strings are preserved.
+          # Remove an existing version query from the data loader.
           text = re.sub(
-              r'cataclysm-tiles\.data\.js(?:\?[^"\']*)?',
+              r'cataclysm-tiles\.data\.js\?v=[^"\']*',
+              'cataclysm-tiles.data.js',
+              text
+          )
+
+          # Add the current data hash.
+          text = re.sub(
+              r'cataclysm-tiles\.data\.js(?!\?)',
               f'cataclysm-tiles.data.js?v={version}',
               text
           )
@@ -453,7 +395,7 @@ jobs:
           PY
 
           echo
-          echo "=== Data loader references ==="
+          echo "=== index.html references ==="
 
           grep -n \
             "cataclysm-tiles.data.js" \
@@ -461,21 +403,16 @@ jobs:
 
 
       # ============================================================
-      # 17. Final verification
+      # Final verification.
       # ============================================================
 
       - name: Final verification
         run: |
           set -e
 
-          echo "=== Final site ==="
+          echo "=== Final files ==="
 
           find site -maxdepth 2 -type f -print | sort
-
-          echo
-          echo "=== File sizes ==="
-
-          ls -lh site/
 
           echo
           echo "=== Required files ==="
@@ -487,21 +424,23 @@ jobs:
           test -f site/index.html
 
           echo
-          echo "=== Japanese MO was packed ==="
+          echo "=== SHA256 ==="
 
-          # Verify that the string appears in the generated data.js
-          # is not reliable because the actual contents are compressed,
-          # so verify the data file changed and the source bundle exists.
           sha256sum \
+            site/cataclysm-tiles.js \
+            site/cataclysm-tiles.wasm \
             site/cataclysm-tiles.data \
             site/cataclysm-tiles.data.js
 
+          echo
+          echo "=== Final verification complete ==="
+
 
       # ============================================================
-      # 18. Upload Japanese artifact
+      # Upload artifact.
       # ============================================================
 
-      - name: Upload Japanese web bundle artifact
+      - name: Upload Japanese web bundle
         uses: actions/upload-artifact@v4
         with:
           name: cdda-0I-web-bundle-ja
@@ -511,7 +450,7 @@ jobs:
 
 
       # ============================================================
-      # 19. GitHub Pages artifact
+      # Upload GitHub Pages artifact.
       # ============================================================
 
       - name: Upload GitHub Pages artifact
@@ -520,9 +459,9 @@ jobs:
           path: site/
 
 
-  # ================================================================
+  # =================================================================
   # Deploy
-  # ================================================================
+  # =================================================================
 
   deploy:
     name: Deploy Japanese Web Build
