@@ -9,22 +9,20 @@ permissions:
   pages: write
   id-token: write
 
-# Build WASM と同じ pages グループにしない。
-# 日本語再パックは既存Artifactだけを使うため、独立して動かせる。
 concurrency:
   group: "japanese-pages"
   cancel-in-progress: true
 
 jobs:
   repack:
-    name: Repack Japanese Localization
+    name: Add Japanese Localization
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 20
 
     steps:
 
       # ============================================================
-      # 1. Wrapper repository
+      # 1. Checkout wrapper repository
       # ============================================================
 
       - name: Checkout wrapper repository
@@ -32,14 +30,15 @@ jobs:
 
 
       # ============================================================
-      # 2. Get the latest successful WASM build
+      # 2. Download an existing successful WASM build
       #
       # IMPORTANT:
-      # This downloads an existing artifact.
-      # NO C++ compilation happens here.
+      # No C++ compilation.
+      # No WASM compilation.
+      # No full web bundle reconstruction.
       # ============================================================
 
-      - name: Download latest successful WASM build
+      - name: Download existing successful build
         uses: dawidd6/action-download-artifact@v6
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
@@ -52,22 +51,32 @@ jobs:
 
 
       # ============================================================
-      # 3. Verify existing WASM
+      # 3. Verify existing game files
       # ============================================================
 
-      - name: Verify existing WASM bundle
+      - name: Verify existing game files
         run: |
           set -euo pipefail
 
           echo "=========================================="
-          echo "Existing WASM bundle"
+          echo "VERIFY EXISTING BUILD"
           echo "=========================================="
 
-          test -f site/cataclysm-tiles.js
-          test -f site/cataclysm-tiles.wasm
-          test -f site/cataclysm-tiles.data
-          test -f site/cataclysm-tiles.data.js
-          test -f site/index.html
+          REQUIRED_FILES=(
+            "site/cataclysm-tiles.js"
+            "site/cataclysm-tiles.wasm"
+            "site/cataclysm-tiles.data"
+            "site/cataclysm-tiles.data.js"
+            "site/index.html"
+          )
+
+          for FILE in "${REQUIRED_FILES[@]}"; do
+            test -f "$FILE"
+            echo "OK: $FILE"
+          done
+
+          echo
+          echo "=== Existing files ==="
 
           ls -lh \
             site/cataclysm-tiles.js \
@@ -76,15 +85,14 @@ jobs:
             site/cataclysm-tiles.data.js \
             site/index.html
 
-          echo
-          echo "WASM files will NOT be rebuilt."
-
 
       # ============================================================
-      # 4. Checkout exact CDDA 0.I source
+      # 4. Checkout CDDA 0.I
+      #
+      # Only the translation source is needed.
       # ============================================================
 
-      - name: Checkout CDDA 0.I source
+      - name: Checkout CDDA 0.I translation source
         uses: actions/checkout@v4
         with:
           repository: CleverRaven/Cataclysm-DDA
@@ -94,63 +102,35 @@ jobs:
 
 
       # ============================================================
-      # 5. Install dependencies required by prepare-web.sh
+      # 5. Install gettext + jq
       # ============================================================
 
-      - name: Install dependencies
+      - name: Install gettext
         run: |
           set -euo pipefail
 
           sudo apt-get update
+          sudo apt-get install -y gettext
 
-          sudo apt-get install -y \
-            jq \
-            gettext
+          msgfmt --version | head -1
+          msgunfmt --version | head -1
 
 
       # ============================================================
       # 6. Setup Emscripten
       #
-      # Used ONLY for file_packager.
-      # No make / C++ / WASM compilation.
+      # Only file_packager is used.
+      # No compiler invocation.
       # ============================================================
 
-      - name: Setup emsdk 3.1.51
+      - name: Setup emsdk
         uses: mymindstorm/setup-emsdk@v14
         with:
           version: 3.1.51
 
 
       # ============================================================
-      # 7. Generate the normal CDDA web_bundle
-      #
-      # This executes the official CDDA 0.I preparation script.
-      # It does NOT compile cataclysm-tiles.js.
-      # ============================================================
-
-      - name: Prepare CDDA web bundle
-        working-directory: cdda
-        run: |
-          set -euo pipefail
-
-          source "$EMSDK/emsdk_env.sh"
-
-          echo "=========================================="
-          echo "Running official CDDA 0.I prepare-web.sh"
-          echo "=========================================="
-
-          bash build-scripts/prepare-web.sh
-
-          echo
-          echo "=== web_bundle ==="
-
-          du -sh web_bundle
-
-          find web_bundle -maxdepth 2 -type d | sort | head -100
-
-
-      # ============================================================
-      # 8. Compile Japanese MO
+      # 7. Compile Japanese PO -> MO
       # ============================================================
 
       - name: Compile Japanese translation
@@ -159,7 +139,7 @@ jobs:
           set -euo pipefail
 
           echo "=========================================="
-          echo "Compile Japanese translation"
+          echo "COMPILE JAPANESE TRANSLATION"
           echo "=========================================="
 
           test -f lang/po/ja.po
@@ -177,7 +157,12 @@ jobs:
           ls -lh "$MO"
 
           echo
-          echo "Translation statistics:"
+          echo "SHA256:"
+          sha256sum "$MO"
+
+          echo
+          echo "Statistics:"
+
           msgfmt \
             --statistics \
             -o /dev/null \
@@ -185,256 +170,258 @@ jobs:
 
 
       # ============================================================
-      # 9. Add Japanese MO to the prepared web_bundle
+      # 8. Create a SMALL standalone Japanese data package
+      #
+      # This package contains ONLY:
+      #
+      # /lang/mo/ja/LC_MESSAGES/cataclysm-dda.mo
+      #
+      # The existing cataclysm-tiles.data is NOT touched.
       # ============================================================
 
-      - name: Add Japanese localization to web bundle
-        working-directory: cdda
-        run: |
-          set -euo pipefail
-
-          SRC="lang/mo/ja/LC_MESSAGES/cataclysm-dda.mo"
-          DST="web_bundle/lang/mo/ja/LC_MESSAGES/cataclysm-dda.mo"
-
-          test -f "$SRC"
-
-          mkdir -p "$(dirname "$DST")"
-
-          cp "$SRC" "$DST"
-
-          echo "=========================================="
-          echo "Japanese localization added"
-          echo "=========================================="
-
-          ls -lh "$DST"
-
-          echo
-          echo "SHA256:"
-          sha256sum "$DST"
-
-
-      # ============================================================
-      # 10. Repack ONLY the data
-      #
-      # This is the critical step.
-      #
-      # Existing cataclysm-tiles.js
-      # Existing cataclysm-tiles.wasm
-      #
-      # are NOT touched.
-      # ============================================================
-
-      - name: Repack data with Japanese localization
+      - name: Create Japanese data package
         working-directory: cdda
         run: |
           set -euo pipefail
 
           source "$EMSDK/emsdk_env.sh"
 
-          echo "=========================================="
-          echo "Repacking data"
-          echo "=========================================="
+          MO="lang/mo/ja/LC_MESSAGES/cataclysm-dda.mo"
+
+          test -f "$MO"
 
           rm -f \
-            cataclysm-tiles.data \
-            cataclysm-tiles.data.js
+            cdda-ja.data \
+            cdda-ja.data.js
+
+          echo "=========================================="
+          echo "CREATE JAPANESE DATA PACKAGE"
+          echo "=========================================="
 
           "$EMSDK/upstream/emscripten/tools/file_packager" \
-            cataclysm-tiles.data \
-            --js-output=cataclysm-tiles.data.js \
+            cdda-ja.data \
+            --js-output=cdda-ja.data.js \
             --no-node \
-            --preload "web_bundle@/" \
+            --preload "$MO@/lang/mo/ja/LC_MESSAGES/cataclysm-dda.mo" \
             --lz4
 
           echo
-          echo "=== Repacked files ==="
+          echo "=== Japanese package ==="
 
           ls -lh \
-            cataclysm-tiles.data \
-            cataclysm-tiles.data.js
+            cdda-ja.data \
+            cdda-ja.data.js
 
 
       # ============================================================
-      # 11. Verify Japanese localization is inside generated package
+      # 9. Verify package contents
       # ============================================================
 
-      - name: Verify Japanese localization
+      - name: Verify Japanese data package
         working-directory: cdda
         run: |
           set -euo pipefail
 
-          MO_PATH="lang/mo/ja/LC_MESSAGES/cataclysm-dda.mo"
-
           echo "=========================================="
-          echo "Verifying Japanese localization"
+          echo "VERIFY JAPANESE PACKAGE"
           echo "=========================================="
 
-          test -f "$MO_PATH"
-
-          echo
-          echo "Searching generated data loader..."
+          test -f cdda-ja.data
+          test -f cdda-ja.data.js
 
           if ! grep -q \
             "lang/mo/ja/LC_MESSAGES/cataclysm-dda.mo" \
-            cataclysm-tiles.data.js; then
+            cdda-ja.data.js; then
 
             echo
             echo "ERROR:"
-            echo "Japanese MO was NOT found in cataclysm-tiles.data.js."
+            echo "Japanese MO is not present in cdda-ja.data.js."
 
             exit 1
           fi
 
           echo
           echo "SUCCESS:"
-          echo "Japanese MO is included in the generated package."
+          echo "Japanese translation is present in the standalone package."
 
 
       # ============================================================
-      # 12. Replace ONLY .data and .data.js
-      #
-      # Existing JS / WASM remain untouched.
+      # 10. Copy Japanese package into site
       # ============================================================
 
-      - name: Replace data files in site
+      - name: Install Japanese package into site
         run: |
           set -euo pipefail
 
           cp \
-            cdda/cataclysm-tiles.data \
-            site/cataclysm-tiles.data
+            cdda/cdda-ja.data \
+            site/cdda-ja.data
 
           cp \
-            cdda/cataclysm-tiles.data.js \
-            site/cataclysm-tiles.data.js
+            cdda/cdda-ja.data.js \
+            site/cdda-ja.data.js
 
           echo "=========================================="
-          echo "Updated site files"
+          echo "JAPANESE PACKAGE INSTALLED"
           echo "=========================================="
 
           ls -lh \
-            site/cataclysm-tiles.data \
-            site/cataclysm-tiles.data.js
+            site/cdda-ja.data \
+            site/cdda-ja.data.js
 
 
       # ============================================================
-      # 13. Verify JS/WASM were not replaced
-      # ============================================================
-
-      - name: Verify WASM remains unchanged
-        run: |
-          set -euo pipefail
-
-          echo "=========================================="
-          echo "Final WASM verification"
-          echo "=========================================="
-
-          test -f site/cataclysm-tiles.js
-          test -f site/cataclysm-tiles.wasm
-
-          echo
-          echo "cataclysm-tiles.js:"
-          ls -lh site/cataclysm-tiles.js
-
-          echo
-          echo "cataclysm-tiles.wasm:"
-          ls -lh site/cataclysm-tiles.wasm
-
-          echo
-          echo "No WASM compilation was performed."
-
-
-      # ============================================================
-      # 14. Cache bust
+      # 11. Modify index.html to load the Japanese package
       #
-      # Prevent the browser from continuing to use the old
-      # cataclysm-tiles.data.js.
+      # Existing game data remains untouched.
       # ============================================================
 
-      - name: Add cache bust to data loader
+      - name: Add Japanese data loader
         run: |
           set -euo pipefail
 
-          VERSION="$(sha256sum site/cataclysm-tiles.data.js | cut -c1-16)"
+          python3 <<'PY'
+          from pathlib import Path
 
-          echo "Cache version: $VERSION"
+          path = Path("site/index.html")
+          text = path.read_text(encoding="utf-8")
+
+          old = '''
+          const d = document.createElement("script");
+
+          d.async = true; d.src = "cataclysm-tiles.data.js";
+
+          document.body.appendChild(d);
+
+          const g = document.createElement("script");
+
+          g.async = true; g.src = "cataclysm-tiles.js";
+
+          document.body.appendChild(g);
+          '''
+
+          new = '''
+          const d = document.createElement("script");
+
+          d.async = true;
+          d.src = "cataclysm-tiles.data.js";
+
+          document.body.appendChild(d);
+
+          const j = document.createElement("script");
+
+          j.async = true;
+          j.src = "cdda-ja.data.js";
+
+          document.body.appendChild(j);
+
+          const g = document.createElement("script");
+
+          g.async = true;
+          g.src = "cataclysm-tiles.js";
+
+          document.body.appendChild(g);
+          '''
+
+          if old not in text:
+              raise SystemExit(
+                  "ERROR: Expected boot() loader block was not found."
+              )
+
+          text = text.replace(old, new, 1)
+
+          path.write_text(text, encoding="utf-8")
+
+          print("Japanese data loader added.")
+          PY
+
+          echo
+          echo "=== Loader check ==="
+
+          grep -n \
+            -E "cataclysm-tiles.data.js|cdda-ja.data.js|cataclysm-tiles.js" \
+            site/index.html
+
+
+      # ============================================================
+      # 12. Cache bust Japanese package
+      # ============================================================
+
+      - name: Add Japanese package cache version
+        run: |
+          set -euo pipefail
+
+          VERSION="$(sha256sum site/cdda-ja.data.js | cut -c1-16)"
+
+          echo "Japanese package version: $VERSION"
 
           python3 - "$VERSION" <<'PY'
-          import pathlib
+          from pathlib import Path
           import re
           import sys
 
           version = sys.argv[1]
 
-          path = pathlib.Path("site/index.html")
+          path = Path("site/index.html")
 
           text = path.read_text(encoding="utf-8")
 
           text = re.sub(
-              r'cataclysm-tiles\.data\.js(?:\?[^"\']*)?',
-              f'cataclysm-tiles.data.js?v={version}',
+              r'cdda-ja\.data\.js(?:\?[^"\']*)?',
+              f'cdda-ja.data.js?v={version}',
               text
           )
 
-          path.write_text(
-              text,
-              encoding="utf-8"
-          )
-
-          print(f"Updated data loader cache version: {version}")
+          path.write_text(text, encoding="utf-8")
           PY
 
-          echo
-          grep -n "cataclysm-tiles.data.js" site/index.html || true
+          grep -n "cdda-ja.data.js" site/index.html
 
 
       # ============================================================
-      # 15. Final site verification
+      # 13. Verify original WASM/data still exist
       # ============================================================
 
-      - name: Final verification
+      - name: Verify original game files remain intact
         run: |
           set -euo pipefail
 
           echo "=========================================="
-          echo "FINAL VERIFICATION"
+          echo "FINAL FILE VERIFICATION"
           echo "=========================================="
 
-          REQUIRED_FILES=(
-            "site/cataclysm-tiles.js"
-            "site/cataclysm-tiles.wasm"
-            "site/cataclysm-tiles.data"
-            "site/cataclysm-tiles.data.js"
-            "site/index.html"
-          )
-
-          for FILE in "${REQUIRED_FILES[@]}"; do
-            test -f "$FILE"
-            echo "OK: $FILE"
-          done
+          test -f site/cataclysm-tiles.js
+          test -f site/cataclysm-tiles.wasm
+          test -f site/cataclysm-tiles.data
+          test -f site/cataclysm-tiles.data.js
+          test -f site/cdda-ja.data
+          test -f site/cdda-ja.data.js
+          test -f site/index.html
 
           echo
-          echo "=== Final checksums ==="
+          echo "=== Final site ==="
+
+          ls -lh site/
+
+          echo
+          echo "=== SHA256 ==="
 
           sha256sum \
             site/cataclysm-tiles.js \
             site/cataclysm-tiles.wasm \
             site/cataclysm-tiles.data \
-            site/cataclysm-tiles.data.js
+            site/cataclysm-tiles.data.js \
+            site/cdda-ja.data \
+            site/cdda-ja.data.js
 
           echo
           echo "=========================================="
-          echo "JAPANESE REPACK COMPLETE"
+          echo "JAPANESE LOCALIZATION PACKAGE READY"
           echo "=========================================="
-          echo
-          echo "WASM: reused"
-          echo "JavaScript: reused"
-          echo "Data: rebuilt with Japanese localization"
-          echo "Pages: ready for deployment"
 
 
       # ============================================================
-      # 16. Upload artifact
+      # 14. Upload artifact
       # ============================================================
 
       - name: Upload Japanese web bundle
@@ -447,7 +434,7 @@ jobs:
 
 
       # ============================================================
-      # 17. Upload GitHub Pages artifact
+      # 15. Upload GitHub Pages artifact
       # ============================================================
 
       - name: Upload GitHub Pages artifact
