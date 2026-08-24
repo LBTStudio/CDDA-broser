@@ -36,8 +36,6 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y jq
 
       - name: Free disk space
-        # Remove ~30GB of preinstalled toolchains we never use.
-        # This prevents "no space left on device" during the wasm link.
         run: |
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
                       /usr/local/share/powershell /usr/share/swift || true
@@ -49,22 +47,69 @@ jobs:
           version: 3.1.51
 
       - name: Relax link-time optimization (-Os -> -O1, link only)
-        # The -Os link makes wasm-opt chew on a ~50MB module for a very long
-        # time. Compile stays -Os; only the final link optimization is relaxed.
         working-directory: cdda
         run: |
           sed -i 's/^\s*LDFLAGS\s*+=\s*-Os\s*$/    LDFLAGS += -O1/' Makefile
           grep -n "LDFLAGS += -O1" Makefile
 
+      # ==========================================================
+      # Japanese localization
+      # ==========================================================
+
+      - name: Build Japanese localization
+        working-directory: cdda
+        run: |
+          echo "=== Checking localization files ==="
+
+          find lang -maxdepth 3 -type f | sort | head -200
+
+          echo
+          echo "=== Japanese localization candidates ==="
+
+          find lang -type f \
+            \( -iname '*ja*' -o -iname '*japanese*' \) \
+            -print
+
+          echo
+          echo "=== Makefile localization settings ==="
+
+          grep -nE 'LOCALIZE|LANGUAGES|compile_mo|localization' Makefile || true
+
+          echo
+          echo "=== Building Japanese localization ==="
+
+          if [ -f "lang/compile_mo.sh" ]; then
+            chmod +x lang/compile_mo.sh
+            bash lang/compile_mo.sh ja
+          else
+            echo "lang/compile_mo.sh was not found."
+            echo "Using Makefile localization build."
+
+            make LOCALIZE=1 LANGUAGES="ja" localization
+          fi
+
+          echo
+          echo "=== Generated localization files ==="
+
+          find lang -type f \
+            \( -path '*/mo/*' -o -iname '*ja*' \) \
+            -print
+
+      # ==========================================================
+      # WebAssembly build
+      # ==========================================================
+
       - name: Build cataclysm-tiles.js (wasm)
         working-directory: cdda
         env:
-          EMCC_DEBUG: "1"   # stream stage-by-stage progress so the log never looks frozen
+          EMCC_DEBUG: "1"
         run: |
           source $EMSDK/emsdk_env.sh
+
           df -h /
           free -h
-          time make -j$(nproc) \
+
+          time make -j2 \
             NATIVE=emscripten \
             BACKTRACE=0 \
             TILES=1 \
@@ -73,8 +118,19 @@ jobs:
             RELEASE=1 \
             CCACHE=0 \
             LINTJSON=0 \
+            LOCALIZE=1 \
+            LANGUAGES="ja" \
             cataclysm-tiles.js
-          ls -lh cataclysm-tiles.js cataclysm-tiles.wasm
+
+          echo
+          echo "=== WASM output ==="
+
+          ls -lh cataclysm-tiles.js
+          ls -lh cataclysm-tiles.wasm
+
+      # ==========================================================
+      # Prepare web bundle
+      # ==========================================================
 
       - name: Prepare web bundle (data + LZ4 pack)
         working-directory: cdda
@@ -82,14 +138,51 @@ jobs:
           source $EMSDK/emsdk_env.sh
           bash build-scripts/prepare-web.sh
 
+      # ==========================================================
+      # Japanese localization verification
+      # ==========================================================
+
+      - name: Verify Japanese localization in web bundle
+        working-directory: cdda
+        run: |
+          echo "=== Searching build output for Japanese localization ==="
+
+          find build -type f \
+            \( -iname '*ja*' -o -path '*/mo/*' \) \
+            -print
+
+          echo
+          echo "=== Build directory ==="
+
+          ls -lah build/
+
+      # ==========================================================
+      # Font
+      # ==========================================================
+
       - name: Copy profile-aware shell
-        run: cp shell/index.html cdda/build/index.html
+        run: |
+          cp shell/index.html cdda/build/index.html
+
+      # ==========================================================
+      # Stage site
+      # ==========================================================
 
       - name: Stage site
         run: |
           mkdir -p site
           cp -v cdda/build/* site/
+
+          echo
+          echo "=== Final site ==="
+
+          find site -maxdepth 2 -type f | sort
+          echo
           ls -lh site/
+
+      # ==========================================================
+      # Artifacts
+      # ==========================================================
 
       - name: Upload artifact (raw)
         uses: actions/upload-artifact@v4
@@ -108,9 +201,11 @@ jobs:
     name: Deploy to GitHub Pages
     needs: build
     runs-on: ubuntu-latest
+
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
+
     steps:
       - name: Deploy to GitHub Pages
         id: deployment
