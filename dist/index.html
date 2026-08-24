@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="en-us">
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no, minimum-scale=1, viewport-fit=cover, maximum-scale=1" />
+    <title>Cataclysm: Dark Days Ahead</title>
+    <style>
+      @font-face { font-family: Terminus; src: url("./Terminus.ttf"); }
+      html { padding: 0; margin: 0; height: 100%; overflow: hidden; }
+      body { padding: 0; margin: 0; height: 100%; overflow: hidden; background-color: grey; }
+      canvas { margin: 0; padding: none; border: 0px none; background-color: black; display: block; position: absolute; left: 0px; top: 0px; outline: none; image-rendering: pixelated; z-index: 1; }
+      #loading-message { color: white; position: absolute; top: 50%; left: 50%; font-size: 30px; transform: translate(-50%, -50%); text-align: center; font-family: Terminus, monospace; z-index: 4; }
+      #settings-gear { color: white; opacity: 0.5; position: absolute; top: 10px; left: 10px; z-index: 2; font-size: 20px; cursor: pointer; }
+      #settings-gear:hover { opacity: 1; }
+      #settings-menu { color: white; background-color: black; z-index: 3; position: absolute; top: 40px; left: 10px; display: flex; flex-direction: column; border-radius: 5px; padding: 15px; align-items: stretch; border-color: white; border-style: solid; }
+      .menu-button { font-family: Terminus, monospace; font-size: 20px; cursor: pointer; opacity: 0.7; }
+      .menu-button:hover { opacity: 1; }
+      a { color: white; text-decoration: none; }
+      #profile-screen { position: absolute; inset: 0; z-index: 10; background-color: #1a1a1a; display: flex; flex-direction: column; align-items: center; justify-content: center; color: #eee; font-family: Terminus, monospace; gap: 14px; }
+      #profile-screen h1 { font-size: 26px; margin: 0 0 6px 0; letter-spacing: 2px; }
+      #profile-screen .sub { opacity: 0.7; font-size: 14px; margin-bottom: 10px; }
+      #profile-input { font-family: Terminus, monospace; font-size: 22px; padding: 8px 12px; background: #000; color: #eee; border: 2px solid #555; border-radius: 4px; width: 260px; text-align: center; outline: none; }
+      #profile-input:focus { border-color: #9cf; }
+      #profile-start { font-family: Terminus, monospace; font-size: 22px; padding: 10px 28px; background: #2a5d2a; color: #fff; border: none; border-radius: 4px; cursor: pointer; }
+      #profile-start:hover { background: #3a7d3a; }
+      #profile-list { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; max-width: 600px; }
+      .profile-chip { font-family: Terminus, monospace; font-size: 16px; padding: 6px 14px; background: #333; border: 1px solid #666; border-radius: 16px; cursor: pointer; color: #ddd; }
+      .profile-chip:hover { background: #444; border-color: #9cf; }
+      .profile-chip .del { color: #c66; margin-left: 8px; font-weight: bold; }
+      #profile-note { font-size: 12px; opacity: 0.55; max-width: 480px; text-align: center; line-height: 1.5; margin-top: 8px; }
+    </style>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.2.1/css/all.min.css" integrity="sha512-MV7K8+y+gLIBoVD59lQIYicR65iaqukzvf/nwasF0nqhPay5w/9lJmVM2hMDcnK1OnMGCdVK+iQrJ7lzPJQd1w==" crossorigin="anonymous" referrerpolicy="no-referrer" />
+    <script defer src="https://cdnjs.cloudflare.com/ajax/libs/screenfull.js/5.2.0/screenfull.min.js" integrity="sha512-GoG2/bE6QSPKSrjuoII6iPL2ODnwUJvFgysFYLTW2ltpx6G5nj+mYvhPq5rLPZby0rdMFU2fo4BMlWND7+QZ5g==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+    <script defer src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js" integrity="sha512-XMVd28F1oH/O71fzwBnV7HucLxVwtxf26XV8P4wPk26EDxuGZ91N8bsOttmnomcCD3CS5ZMRL50H0GgOHvegtg==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+    <script defer src="https://cdnjs.cloudflare.com/ajax/libs/FileSaver.js/2.0.0/FileSaver.min.js" integrity="sha512-csNcFYJniKjJxRWRV1R7fvnXrycHP6qDR21mgz1ZP55xY5d+aHLfo9/FcGDQLfn2IfngbAHd8LdfsagcCqgTcQ==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+    <link rel="shortcut icon" href="favicon.ico" />
+    <meta property="og:title" content="Cataclysm: Dark Days Ahead" />
+    <meta property="og:description" content="A port of Cataclysm: Dark Days Ahead for the browser." />
+  </head>
+  <body>
+    <div id="profile-screen">
+      <h1>Cataclysm: Dark Days Ahead</h1>
+      <div class="sub">Who is playing? / プレイヤー名を入力してください</div>
+      <input id="profile-input" maxlength="24" placeholder="player name" autocomplete="off" />
+      <button id="profile-start">&#9654; Start / 開始</button>
+      <div id="profile-list"></div>
+      <div id="profile-note">
+        Save data is stored separately per player name, in this browser, on this device.<br />
+        セーブデータはプレイヤー名ごとに別々に、このブラウザ内に保存されます。
+      </div>
+    </div>
+
+    <div id="settings-gear"><i class="fa-solid fa-gear"></i></div>
+    <div id="settings-menu" style="display: none">
+      <div style="margin-bottom: 10px">
+        <div id="toggle-fullscreen" class="menu-button"><i class="fa-solid fa-expand"></i><span style="margin-left: 0.7em">Toggle Fullscreen</span></div>
+      </div>
+      <div style="margin-bottom: 10px">
+        <div id="export-saves" class="menu-button"><i class="fa-solid fa-download"></i><span style="margin-left: 0.7em">Export Saves</span></div>
+      </div>
+      <div style="margin-bottom: 10px">
+        <div id="switch-player" class="menu-button"><i class="fa-solid fa-user"></i><span style="margin-left: 0.7em">Switch Player</span></div>
+      </div>
+      <div>
+        <a target="_blank" href="https://github.com/CleverRaven/Cataclysm-DDA">
+          <div id="browse-code" class="menu-button"><i class="fa-brands fa-github"></i><span style="margin-left: 0.7em">Browse Code</span></div>
+        </a>
+      </div>
+    </div>
+
+    <canvas id="canvas" style="width: 100%; height: 100%; min-width: 640px; min-height: 384px;" tabindex="-1"></canvas>
+    <div id="loading-message" style="display: none">Loading...</div>
+
+    <script type="text/javascript">
+      const canvas = document.getElementById("canvas");
+      const loadingMessage = document.getElementById("loading-message");
+      const settingsMenu = document.getElementById("settings-menu");
+      const profileScreen = document.getElementById("profile-screen");
+      const profileInput = document.getElementById("profile-input");
+      const profileStart = document.getElementById("profile-start");
+      const profileList = document.getElementById("profile-list");
+
+      /* Per-player save isolation: each name maps to /home/<name>/.cataclysm-dda
+         inside the game's virtual FS (the game resolves HOME + "/.cataclysm-dda/").
+         The name list itself lives in localStorage. */
+      const LS_PROFILES = "cdda_web_profiles";
+      const LS_LAST = "cdda_web_last_profile";
+
+      function getProfiles() {
+        try { return JSON.parse(localStorage.getItem(LS_PROFILES) || "[]"); }
+        catch (e) { return []; }
+      }
+      function setProfiles(list) { localStorage.setItem(LS_PROFILES, JSON.stringify(list)); }
+      function sanitize(name) {
+        return name.trim().toLowerCase().replace(/[^a-z0-9_-]/g, "").slice(0, 24);
+      }
+      function renderProfileChips() {
+        profileList.innerHTML = "";
+        for (const p of getProfiles()) {
+          const chip = document.createElement("span");
+          chip.className = "profile-chip";
+          chip.textContent = p;
+          chip.onclick = () => startGame(p);
+          const del = document.createElement("span");
+          del.className = "del";
+          del.textContent = "×";
+          del.title = "Remove from list (save data stays in the browser)";
+          del.onclick = (ev) => {
+            ev.stopPropagation();
+            setProfiles(getProfiles().filter((x) => x !== p));
+            renderProfileChips();
+          };
+          chip.appendChild(del);
+          profileList.appendChild(chip);
+        }
+      }
+      profileInput.value = localStorage.getItem(LS_LAST) || "";
+      renderProfileChips();
+
+      function startGame(profile) {
+        if (!profile) return;
+        if (!getProfiles().includes(profile)) setProfiles(getProfiles().concat(profile));
+        localStorage.setItem(LS_LAST, profile);
+        window.CDDA_PROFILE = profile;
+        profileScreen.style.display = "none";
+        loadingMessage.style.display = "block";
+        boot();
+      }
+      profileStart.onclick = () => {
+        const p = sanitize(profileInput.value);
+        if (!p) { profileInput.placeholder = "letters/numbers only"; profileInput.value = ""; return; }
+        startGame(p);
+      };
+      profileInput.addEventListener("keydown", (e) => { if (e.key === "Enter") profileStart.onclick(); });
+
+      let booted = false;
+      function boot() {
+        if (booted) return;
+        booted = true;
+        const d = document.createElement("script");
+        d.async = true; d.src = "cataclysm-tiles.data.js";
+        document.body.appendChild(d);
+        const g = document.createElement("script");
+        g.async = true; g.src = "cataclysm-tiles.js";
+        document.body.appendChild(g);
+      }
+
+      window.addEventListener("menuready", () => { loadingMessage.style.display = "none"; });
+      document.getElementById("settings-gear").onclick = () => {
+        settingsMenu.style.display = settingsMenu.style.display === "none" ? "inherit" : "none";
+      };
+      canvas.addEventListener("click", () => { settingsMenu.style.display = "none"; });
+      document.getElementById("toggle-fullscreen").onclick = () => { screenfull.toggle(); };
+      document.getElementById("switch-player").onclick = () => {
+        settingsMenu.style.display = "none";
+        if (window.game_unsaved) {
+          if (!confirm("Unsaved progress may be lost. Switch player anyway?\n（セーブしていない進行は失われる可能性があります）")) return;
+        }
+        location.reload();
+      };
+      document.getElementById("export-saves").onclick = async () => {
+        const zip = new JSZip();
+        function isRealDir(p) { return p !== "." && p !== ".."; }
+        function recurse(fs_path, zip_path) {
+          const entries = Module.FS.readdir(fs_path).filter(isRealDir);
+          for (const entry of entries) {
+            const efs = fs_path + "/" + entry, ezp = zip_path + "/" + entry;
+            const stat = FS.stat(efs);
+            if (FS.isDir(stat.mode)) recurse(efs, ezp);
+            else if (FS.isFile(stat.mode)) zip.file(ezp, FS.readFile(efs, { encoding: "binary" }));
+          }
+        }
+        const saveRoot = window.CDDA_PROFILE
+          ? "/home/" + window.CDDA_PROFILE + "/.cataclysm-dda"
+          : "/home/web_user/.cataclysm-dda";
+        recurse(saveRoot, "");
+        saveAs(await zip.generateAsync({ type: "blob" }), "saves-" + (window.CDDA_PROFILE || "default") + ".zip");
+      };
+
+      var Module = {
+        preRun: [],
+        postRun: [],
+        ENV: (function () {
+          const env = {};
+          if (window.CDDA_PROFILE) env.HOME = "/home/" + window.CDDA_PROFILE;
+          return env;
+        })(),
+        canvas: (function () {
+          canvas.addEventListener("webglcontextlost", function (e) {
+            alert("WebGL context lost. You will need to reload the page.");
+            e.preventDefault();
+          }, false);
+          return canvas;
+        })(),
+        setStatus: function (text) {
+          if (text) loadingMessage.innerHTML = text;
+          else loadingMessage.innerHTML = "Starting...";
+        },
+        totalDependencies: 0,
+        monitorRunDependencies: function (left) {
+          this.totalDependencies = Math.max(this.totalDependencies, left);
+          Module.setStatus(left
+            ? "Preparing... (" + (this.totalDependencies - left) + "/" + this.totalDependencies + ")"
+            : "All downloads complete.");
+        },
+      };
+      Module.setStatus("Downloading...");
+      window.onerror = function (event, source, lineno, colno, error) {
+        if (typeof error === "number" && Module.getExceptionMessage) console.log(Module.getExceptionMessage(error));
+        alert("Exception thrown, see JavaScript console.");
+      };
+      window.onbeforeunload = (e) => { if (window.game_unsaved) e.preventDefault(); };
+    </script>
+  </body>
+</html>
