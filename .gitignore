@@ -1,0 +1,15 @@
+build/
+web_bundle/
+out/
+cdda-web-workdir/
+cdda/
+site/
+cataclysm-tiles.wasm
+cataclysm-tiles.data
+cataclysm-tiles.data.js
+cataclysm-tiles.js
+*.gch
+Cataclysm-DDA/
+emsdk/
+.DS_Store
+Thumbs.db
