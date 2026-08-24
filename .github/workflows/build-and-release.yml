@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   build:
-    name: Build wasm bundle
+    name: Build Japanese-enabled WASM bundle
     runs-on: ubuntu-latest
     timeout-minutes: 300
 
@@ -30,13 +30,22 @@ jobs:
           path: cdda
           fetch-depth: 1
 
-      - name: Install jq
+      - name: Install build dependencies
         run: |
+          set -euo pipefail
+
           sudo apt-get update
-          sudo apt-get install -y jq
+
+          sudo apt-get install -y \
+            jq \
+            gettext
+
+          msgfmt --version | head -1
 
       - name: Free disk space
         run: |
+          set -euo pipefail
+
           sudo rm -rf \
             /usr/share/dotnet \
             /usr/local/lib/android \
@@ -60,8 +69,36 @@ jobs:
             's/^[[:space:]]*LDFLAGS[[:space:]]*+=[[:space:]]*-Os[[:space:]]*$/LDFLAGS += -O1/' \
             Makefile
 
-          echo "=== Effective linker flags ==="
+          echo "=== Linker flags ==="
           grep -n "LDFLAGS" Makefile | head -20
+
+      - name: Compile Japanese localization
+        working-directory: cdda
+        run: |
+          set -euo pipefail
+
+          echo "=========================================="
+          echo "COMPILE JAPANESE LOCALIZATION"
+          echo "=========================================="
+
+          test -f lang/po/ja.po
+
+          mkdir -p lang/mo/ja/LC_MESSAGES
+
+          msgfmt \
+            -f \
+            -o lang/mo/ja/LC_MESSAGES/cataclysm-dda.mo \
+            lang/po/ja.po
+
+          test -s lang/mo/ja/LC_MESSAGES/cataclysm-dda.mo
+
+          echo
+          echo "Japanese translation:"
+          ls -lh lang/mo/ja/LC_MESSAGES/cataclysm-dda.mo
+
+          echo
+          echo "SHA256:"
+          sha256sum lang/mo/ja/LC_MESSAGES/cataclysm-dda.mo
 
       - name: Build cataclysm-tiles.js
         working-directory: cdda
@@ -72,15 +109,25 @@ jobs:
 
           source "$EMSDK/emsdk_env.sh"
 
-          echo "=== Disk ==="
+          echo "=========================================="
+          echo "BUILD CDDA 0.I"
+          echo "=========================================="
+
+          echo
+          echo "Disk:"
           df -h /
 
           echo
-          echo "=== Memory ==="
+          echo "Memory:"
           free -h
 
           echo
-          echo "=== Building CDDA 0.I WebAssembly ==="
+          echo "Localization:"
+          echo "LOCALIZE=1"
+          echo "LANGUAGES=ja"
+
+          echo
+          echo "Starting WASM compilation..."
 
           time make -j"$(nproc)" \
             NATIVE=emscripten \
@@ -89,6 +136,8 @@ jobs:
             TESTS=0 \
             RUNTESTS=0 \
             RELEASE=1 \
+            LOCALIZE=1 \
+            LANGUAGES="ja" \
             CCACHE=0 \
             LINTJSON=0 \
             cataclysm-tiles.js
@@ -112,14 +161,79 @@ jobs:
 
           bash build-scripts/prepare-web.sh
 
+      - name: Add Japanese locale to web bundle
+        working-directory: cdda
+        run: |
+          set -euo pipefail
+
+          MO="lang/mo/ja/LC_MESSAGES/cataclysm-dda.mo"
+
+          test -f "$MO"
+
+          mkdir -p \
+            web_bundle/lang/mo/ja/LC_MESSAGES
+
+          cp \
+            "$MO" \
+            web_bundle/lang/mo/ja/LC_MESSAGES/cataclysm-dda.mo
+
+          echo "Japanese locale added to web_bundle."
+
+          ls -lh \
+            web_bundle/lang/mo/ja/LC_MESSAGES/cataclysm-dda.mo
+
+      - name: Repack web data with Japanese locale
+        working-directory: cdda
+        run: |
+          set -euo pipefail
+
+          source "$EMSDK/emsdk_env.sh"
+
+          rm -f \
+            cataclysm-tiles.data \
+            cataclysm-tiles.data.js
+
+          "$EMSDK/upstream/emscripten/tools/file_packager" \
+            cataclysm-tiles.data \
+            --js-output=cataclysm-tiles.data.js \
+            --no-node \
+            --preload "web_bundle@/" \
+            --lz4
+
+          test -s cataclysm-tiles.data
+          test -s cataclysm-tiles.data.js
+
+          echo
+          echo "=== Data package ==="
+
+          ls -lh \
+            cataclysm-tiles.data \
+            cataclysm-tiles.data.js
+
+      - name: Verify Japanese locale is packaged
+        working-directory: cdda
+        run: |
+          set -euo pipefail
+
+          if ! grep -q \
+            "lang/mo/ja/LC_MESSAGES/cataclysm-dda.mo" \
+            cataclysm-tiles.data.js; then
+
+            echo "ERROR: Japanese locale was not included in data package."
+            exit 1
+          fi
+
+          echo "Japanese locale successfully included."
+
       - name: Copy profile-aware shell
         run: |
           set -euo pipefail
 
           test -f shell/index.html
-          test -f cdda/build/index.html
 
-          cp shell/index.html cdda/build/index.html
+          cp \
+            shell/index.html \
+            cdda/build/index.html
 
       - name: Stage site
         run: |
@@ -127,28 +241,44 @@ jobs:
 
           mkdir -p site
 
-          cp -a cdda/build/. site/
+          cp -a \
+            cdda/build/. \
+            site/
 
-          echo "=== Final site contents ==="
+          echo "=== Site ==="
           find site -maxdepth 3 -type f | sort
 
-          echo
-          echo "=== Site size ==="
-          du -sh site/
-
-      - name: Verify required files
+      - name: Verify final site
         run: |
           set -euo pipefail
 
-          test -f site/cataclysm-tiles.js
-          test -f site/cataclysm-tiles.wasm
-          test -f site/cataclysm-tiles.data
-          test -f site/cataclysm-tiles.data.js
-          test -f site/index.html
+          REQUIRED_FILES=(
+            "site/cataclysm-tiles.js"
+            "site/cataclysm-tiles.wasm"
+            "site/cataclysm-tiles.data"
+            "site/cataclysm-tiles.data.js"
+            "site/index.html"
+          )
 
-          echo "All required files are present."
+          for FILE in "${REQUIRED_FILES[@]}"; do
+            test -f "$FILE"
+            echo "OK: $FILE"
+          done
 
-      - name: Upload artifact
+          echo
+          echo "=== Japanese locale check ==="
+
+          if ! grep -q \
+            "lang/mo/ja/LC_MESSAGES/cataclysm-dda.mo" \
+            site/cataclysm-tiles.data.js; then
+
+            echo "ERROR: Japanese locale missing from final site."
+            exit 1
+          fi
+
+          echo "OK: Japanese locale present."
+
+      - name: Upload web bundle artifact
         uses: actions/upload-artifact@v4
         with:
           name: cdda-0I-web-bundle
