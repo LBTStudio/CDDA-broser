@@ -1,0 +1,135 @@
+name: Add Japanese Localization to CDDA Web
+
+on:
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+jobs:
+  repack:
+    name: Repack Japanese localization
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      # 現在のリポジトリを取得
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # 既存の成功済みビルドArtifactを取得
+      - name: Download latest web bundle
+        uses: dawidd6/action-download-artifact@v6
+        with:
+          workflow: build-and-release.yml
+          name: cdda-0I-web-bundle
+          path: site
+
+      # CDDA 0.Iのデータと翻訳を取得
+      - name: Checkout CDDA 0.I source
+        uses: actions/checkout@v4
+        with:
+          repository: CleverRaven/Cataclysm-DDA
+          ref: 0.I
+          path: cdda
+          fetch-depth: 1
+
+      # Emscriptenをセットアップ
+      - name: Setup emsdk 3.1.51
+        uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: 3.1.51
+
+      # 日本語翻訳だけを生成
+      - name: Build Japanese localization
+        working-directory: cdda
+        run: |
+          source "$EMSDK/emsdk_env.sh"
+
+          echo "=== Japanese source ==="
+          test -f lang/po/ja.po
+          ls -lh lang/po/ja.po
+
+          echo "=== Build Japanese MO ==="
+          make \
+            LOCALIZE=1 \
+            LANGUAGES="ja" \
+            localization
+
+          echo "=== Generated files ==="
+          find lang/mo -type f | sort
+
+      # Web用データディレクトリを作り、日本語を追加
+      - name: Build web data bundle with Japanese
+        working-directory: cdda
+        run: |
+          source "$EMSDK/emsdk_env.sh"
+
+          rm -rf web_bundle
+          mkdir -p web_bundle
+
+          cp -R \
+            data/core \
+            data/font \
+            data/fontdata.json \
+            data/json \
+            data/mods \
+            data/names \
+            data/raw \
+            data/motd \
+            data/credits \
+            data/title \
+            web_bundle/
+
+          cp -R gfx web_bundle/
+
+          mkdir -p web_bundle/lang
+          cp -R lang/mo web_bundle/lang/
+
+          echo "=== Japanese localization in bundle ==="
+          find web_bundle/lang -type f | sort
+
+          echo "=== Repacking data ==="
+
+          python3 \
+            "$EMSDK/upstream/emscripten/tools/file_packager.py" \
+            ../site/cataclysm-tiles.data \
+            --preload web_bundle@/ \
+            --js-output=../site/cataclysm-tiles.data.js
+
+      # 確認
+      - name: Verify repacked bundle
+        run: |
+          echo "=== Site files ==="
+          ls -lh site/
+
+          echo
+          echo "=== Japanese source files ==="
+          find cdda/lang/mo -type f | sort
+
+      # Pages Artifactを作成
+      - name: Upload GitHub Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site/
+
+  deploy:
+    name: Deploy to GitHub Pages
+    needs: repack
+    runs-on: ubuntu-latest
+
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
