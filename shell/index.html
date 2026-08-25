@@ -124,9 +124,16 @@
         localStorage.setItem(LS_LAST, profile);
         window.CDDA_PROFILE = profile;
         // Module.ENV is created before a player chooses a profile.  Update
-        // HOME here, before the Emscripten runtime starts, so CDDA reads the
-        // Japanese options.json written by preRun for this exact profile.
-        if (window.Module && Module.ENV) Module.ENV.HOME = "/home/" + profile;
+        // all locale-relevant paths before the Emscripten runtime starts.
+        // CDDA 0.I can use either HOME/config or XDG_CONFIG_HOME depending on
+        // its compile configuration, so both must refer to this profile.
+        if (window.Module && Module.ENV) {
+          const home = "/home/" + profile;
+          Module.ENV.HOME = home;
+          Module.ENV.XDG_CONFIG_HOME = home + "/.config";
+          Module.ENV.LANG = "ja";
+          Module.ENV.LANGUAGE = "ja";
+        }
         profileScreen.style.display = "none";
         loadingMessage.style.display = "block";
         boot();
@@ -202,14 +209,22 @@
              Migrate the prior English default to Japanese exactly once per
              profile, but never overwrite a language selected afterwards. */
           const profile = window.CDDA_PROFILE || "web_user";
-          const configDir = "/home/" + profile + "/.cataclysm-dda/config";
-          const optionsPath = configDir + "/options.json";
-          const migrationPath = configDir + "/.web-ja-default-v2";
+          const home = "/home/" + profile;
+          const configDirs = [
+            home + "/.cataclysm-dda/config",
+            home + "/.config/cataclysm-dda",
+          ];
           const fs = Module.FS || FS;
 
-          if (!fs.analyzePath(migrationPath).exists) {
-            fs.mkdirTree(configDir);
+          // Keep both CDDA 0.I configuration conventions in sync.  This is
+          // necessary because Emscripten builds can be compiled with either
+          // the HOME-based or XDG-based configuration path.
+          for (const configDir of configDirs) {
+            const optionsPath = configDir + "/options.json";
+            const migrationPath = configDir + "/.web-ja-default-v3";
+            if (fs.analyzePath(migrationPath).exists) continue;
 
+            fs.mkdirTree(configDir);
             let options = [];
             if (fs.analyzePath(optionsPath).exists) {
               try {
@@ -228,7 +243,7 @@
             }
 
             fs.writeFile(optionsPath, JSON.stringify(options));
-            fs.writeFile(migrationPath, "v2\n");
+            fs.writeFile(migrationPath, "v3\n");
           }
         }],
         postRun: [],
