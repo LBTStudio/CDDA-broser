@@ -16,7 +16,7 @@ jobs:
   build:
     name: Build CDDA 0.I WebAssembly
     runs-on: ubuntu-latest
-    timeout-minutes: 300
+    timeout-minutes: 360
 
     steps:
       - name: Checkout wrapper repository
@@ -30,7 +30,7 @@ jobs:
           path: cdda
           fetch-depth: 1
 
-      - name: Apply Emscripten MO reader patch
+      - name: Apply Emscripten web runtime patches
         working-directory: cdda
         run: |
           set -euo pipefail
@@ -40,8 +40,17 @@ jobs:
           # locally regression-tested owned-memory reader on this target only.
           git apply --check ../patches/cdda-0I-emscripten-mo-reader.patch
           git apply ../patches/cdda-0I-emscripten-mo-reader.patch
+
+          # Loading core JSON or an enabled mod set was a single long task on
+          # the browser main thread.  Yield at a time budget only for the
+          # Asyncify-enabled Emscripten build; native targets retain the exact
+          # original loader behavior and ordering.
+          git apply --check ../patches/cdda-0I-emscripten-loader-yield.patch
+          git apply ../patches/cdda-0I-emscripten-loader-yield.patch
+
           git diff --check
           grep -n "MEMFS does not provide a POSIX mmap view" src/mmap_file.cpp
+          grep -n "Keep the browser responsive" src/init.cpp
 
       - name: Install dependencies
         run: |
@@ -67,14 +76,27 @@ jobs:
         with:
           version: 3.1.51
 
-      - name: Relax link optimization
+      - name: Tune web memory for 4GB devices
         working-directory: cdda
         run: |
           set -euo pipefail
 
+          # The upstream web target reserves 512MiB immediately and permits a
+          # 4GiB heap.  A local browser test proved that the Japanese menu
+          # starts at 256MiB with growth enabled.  Keep link optimization at
+          # -O0 for the separately established reliable build path; this step
+          # changes memory policy only.
           sed -i \
             's/^[[:space:]]*LDFLAGS[[:space:]]*+=[[:space:]]*-Os[[:space:]]*$/LDFLAGS += -O0/' \
             Makefile
+          sed -i \
+            's/-sINITIAL_MEMORY=512MB/-sINITIAL_MEMORY=256MB/' \
+            Makefile
+          sed -i \
+            's/-sMAXIMUM_MEMORY=4GB/-sMAXIMUM_MEMORY=1GB/' \
+            Makefile
+
+          grep -n -E 'INITIAL_MEMORY|MAXIMUM_MEMORY|LDFLAGS += -O0' Makefile
 
       - name: Build CDDA WebAssembly
         working-directory: cdda
@@ -108,22 +130,21 @@ jobs:
           trap stop_heartbeat EXIT
 
           build_cdda() {
-            timeout --foreground --signal=TERM --kill-after=120s 45m \
-              make -j"$build_jobs" \
-                NATIVE=emscripten \
-                BACKTRACE=0 \
-                TILES=1 \
-                TESTS=0 \
-                RUNTESTS=0 \
-                RELEASE=1 \
-                LOCALIZE=1 \
-                LANGUAGES=ja \
-                CCACHE=0 \
-                LINTJSON=0 \
-                cataclysm-tiles.js
+            make -j"$build_jobs" \
+              NATIVE=emscripten \
+              BACKTRACE=0 \
+              TILES=1 \
+              TESTS=0 \
+              RUNTESTS=0 \
+              RELEASE=1 \
+              LOCALIZE=1 \
+              LANGUAGES=ja \
+              CCACHE=0 \
+              LINTJSON=0 \
+              cataclysm-tiles.js
           }
 
-          echo "[BUILD] stable mode: jobs=${build_jobs}, link optimization=-O0, timeout=45m"
+          echo "[BUILD] stable mode: jobs=${build_jobs}, link optimization=-O0, memory=256MiB initial / 1GiB maximum"
           time build_cdda
           echo "[BUILD] stable mode completed successfully"
           stop_heartbeat
