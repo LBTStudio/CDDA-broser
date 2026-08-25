@@ -1,0 +1,45 @@
+diff --git a/src/mmap_file.cpp b/src/mmap_file.cpp
+index 348a9a1..5ddd8c0 100644
+--- a/src/mmap_file.cpp
++++ b/src/mmap_file.cpp
+@@ -17,6 +17,11 @@
+ #endif
+ 
+ #include <filesystem>
++#include <limits>
++
++#if defined(EMSCRIPTEN)
++#include <fstream>
++#endif
+ 
+ #include "cata_scope_helpers.h"
+ #include "cata_utility.h"
+@@ -338,7 +343,28 @@ std::unique_ptr<mmap_file> mmap_file::map_file_generic(
+ 
+ std::shared_ptr<const mmap_file> mmap_file::map_file( const std::filesystem::path &file_path )
+ {
++#if defined(EMSCRIPTEN)
++    // Emscripten's MEMFS does not provide a POSIX mmap view for files unpacked
++    // from --preload-file data packages.  TranslationDocument uses mmap_file
++    // for read-only MO catalogs, so map them into owned memory instead.
++    const uintmax_t source_size = std::filesystem::file_size( file_path );
++    if( source_size == 0 || source_size > std::numeric_limits<size_t>::max() ) {
++        return {};
++    }
++    std::unique_ptr<mmap_file> memory_file = map_writeable_memory(
++            static_cast<size_t>( source_size ) );
++    if( !memory_file || !memory_file->base() ) {
++        return {};
++    }
++    std::ifstream source( file_path, std::ios::binary );
++    source.read( static_cast<char *>( memory_file->base() ), static_cast<std::streamsize>( source_size ) );
++    if( !source || static_cast<uintmax_t>( source.gcount() ) != source_size ) {
++        return {};
++    }
++    return std::shared_ptr<const mmap_file>( std::move( memory_file ) );
++#else
+     return map_file_generic( file_path, false );
++#endif
+ }
+ 
+ std::unique_ptr<mmap_file> mmap_file::map_writeable_file( const std::filesystem::path &file_path )

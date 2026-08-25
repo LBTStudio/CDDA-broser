@@ -210,6 +210,17 @@
              profile, but never overwrite a language selected afterwards. */
           const profile = window.CDDA_PROFILE || "web_user";
           const home = "/home/" + profile;
+          // Emscripten's generated runtime keeps its actual getenv() state in
+          // the live global ENV object; Module.ENV is not imported into it.
+          // Set this during preRun, before CDDA initializes PATH_INFO and
+          // reads options.json.  USE_LANG remains authoritative for players
+          // who later select another language in the game.
+          if (typeof ENV === "object") {
+            ENV.HOME = home;
+            ENV.XDG_CONFIG_HOME = home + "/.config";
+            ENV.LANG = "ja_JP.UTF-8";
+            ENV.LANGUAGE = "ja";
+          }
           const configDirs = [
             home + "/.cataclysm-dda/config",
             home + "/.config/cataclysm-dda",

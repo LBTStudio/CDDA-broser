@@ -30,6 +30,19 @@ jobs:
           path: cdda
           fetch-depth: 1
 
+      - name: Apply Emscripten MO reader patch
+        working-directory: cdda
+        run: |
+          set -euo pipefail
+
+          # CDDA 0.I reads MO catalogs through mmap_file.  Emscripten MEMFS
+          # cannot provide that mmap view for LZ4-preloaded files, so use the
+          # locally regression-tested owned-memory reader on this target only.
+          git apply --check ../patches/cdda-0I-emscripten-mo-reader.patch
+          git apply ../patches/cdda-0I-emscripten-mo-reader.patch
+          git diff --check
+          grep -n "MEMFS does not provide a POSIX mmap view" src/mmap_file.cpp
+
       - name: Install dependencies
         run: |
           set -euo pipefail
