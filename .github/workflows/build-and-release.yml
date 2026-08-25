@@ -10,11 +10,11 @@ permissions:
 
 concurrency:
   group: "pages"
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   build:
-    name: Build CDDA 0.I WebAssembly - Japanese default
+    name: Build CDDA 0.I WebAssembly - Japanese
     runs-on: ubuntu-latest
     timeout-minutes: 300
 
@@ -33,8 +33,14 @@ jobs:
       - name: Install build dependencies
         run: |
           set -euo pipefail
+
           sudo apt-get update
-          sudo apt-get install -y jq gettext
+
+          sudo apt-get install -y \
+            jq \
+            gettext
+
+          msgfmt --version | head -1
 
       - name: Free disk space
         run: |
@@ -65,6 +71,44 @@ jobs:
 
           grep -n "LDFLAGS" Makefile | head -20
 
+      - name: Compile Japanese translation
+        working-directory: cdda
+        run: |
+          set -euo pipefail
+
+          test -f lang/po/ja.po
+
+          bash lang/compile_mo.sh ja
+
+          test -s \
+            lang/mo/ja/LC_MESSAGES/cataclysm-dda.mo
+
+          echo "=== Japanese MO ==="
+
+          ls -lh \
+            lang/mo/ja/LC_MESSAGES/cataclysm-dda.mo
+
+          echo
+          echo "=== Translation statistics ==="
+
+          msgfmt \
+            --statistics \
+            -o /dev/null \
+            lang/po/ja.po
+
+          echo
+          echo "=== Verify actual Japanese strings ==="
+
+          if ! msgunfmt \
+            lang/mo/ja/LC_MESSAGES/cataclysm-dda.mo \
+            | grep -q 'msgstr.*[ぁ-んァ-ヶ一-龯]'
+          then
+            echo "ERROR: Japanese MO contains no Japanese translations."
+            exit 1
+          fi
+
+          echo "Japanese translations confirmed."
+
       - name: Set Japanese as default language
         working-directory: cdda
         run: |
@@ -79,39 +123,143 @@ jobs:
           old = 'options_manager::get_lang_options(), "" );'
           new = 'options_manager::get_lang_options(), "ja" );'
 
-          if old not in text:
+          count = text.count(old)
+
+          if count != 1:
               raise SystemExit(
-                  "ERROR: USE_LANG default pattern was not found"
+                  f"ERROR: USE_LANG default pattern count = {count}"
               )
 
           text = text.replace(old, new, 1)
+
           path.write_text(text, encoding="utf-8")
           PY
 
           grep -n \
-            -A4 \
-            -B2 \
-            'add( "USE_LANG"' \
-            src/options.cpp
-
-          grep -q \
             'options_manager::get_lang_options(), "ja" );' \
             src/options.cpp
 
-      - name: Compile Japanese translation
+      - name: Force Emscripten locale path to lang/mo
         working-directory: cdda
         run: |
           set -euo pipefail
 
-          test -f lang/po/ja.po
+          python3 <<'PY'
+          from pathlib import Path
 
-          bash lang/compile_mo.sh ja
+          path = Path("src/translations.cpp")
+          text = path.read_text(encoding="utf-8")
+
+          marker = '''std::string locale_dir()
+          {
+              std::string loc_dir = PATH_INFO::langdir();
+          '''
+
+          replacement = '''std::string locale_dir()
+          {
+          #if defined(__EMSCRIPTEN__)
+              return PATH_INFO::langdir();
+          #else
+              std::string loc_dir = PATH_INFO::langdir();
+          '''
+
+          if marker not in text:
+              raise SystemExit(
+                  "ERROR: locale_dir patch location not found"
+              )
+
+          text = text.replace(
+              marker,
+              replacement,
+              1
+          )
+
+          old_end = '''#endif // LOCALIZE
+              return loc_dir;
+          }'''
+
+          new_end = '''#endif // LOCALIZE
+              return loc_dir;
+          #endif // __EMSCRIPTEN__
+          }'''
+
+          if old_end not in text:
+              raise SystemExit(
+                  "ERROR: locale_dir patch end not found"
+              )
+
+          text = text.replace(
+              old_end,
+              new_end,
+              1
+          )
+
+          path.write_text(text, encoding="utf-8")
+          PY
+
+          echo "=== Patched locale_dir ==="
+
+          grep -n \
+            -A30 \
+            -B2 \
+            'std::string locale_dir' \
+            src/translations.cpp
+
+          grep -q \
+            'defined(__EMSCRIPTEN__)' \
+            src/translations.cpp
+
+      - name: Patch official prepare-web script for Japanese
+        working-directory: cdda
+        run: |
+          set -euo pipefail
+
+          cp \
+            build-scripts/prepare-web.sh \
+            build-scripts/prepare-web-ja.sh
+
+          python3 <<'PY'
+          from pathlib import Path
+
+          path = Path("build-scripts/prepare-web-ja.sh")
+          text = path.read_text(encoding="utf-8")
+
+          target = '''echo "Removing Ultica_iso tileset..."
+          rm -rf $BUNDLE_DIR/gfx/Ultica_iso
+          '''
+
+          replacement = '''echo "Removing Ultica_iso tileset..."
+          rm -rf $BUNDLE_DIR/gfx/Ultica_iso
+
+          echo "Adding Japanese locale..."
+          mkdir -p "$BUNDLE_DIR/lang/mo/ja/LC_MESSAGES"
+          cp \
+            lang/mo/ja/LC_MESSAGES/cataclysm-dda.mo \
+            "$BUNDLE_DIR/lang/mo/ja/LC_MESSAGES/cataclysm-dda.mo"
 
           test -s \
-            lang/mo/ja/LC_MESSAGES/cataclysm-dda.mo
+            "$BUNDLE_DIR/lang/mo/ja/LC_MESSAGES/cataclysm-dda.mo"
+          '''
 
-          ls -lh \
-            lang/mo/ja/LC_MESSAGES/cataclysm-dda.mo
+          if text.count(target) != 1:
+              raise SystemExit(
+                  "ERROR: prepare-web patch target not found exactly once"
+              )
+
+          text = text.replace(
+              target,
+              replacement,
+              1
+          )
+
+          path.write_text(text, encoding="utf-8")
+          PY
+
+          grep -n \
+            -A15 \
+            -B5 \
+            'Adding Japanese locale' \
+            build-scripts/prepare-web-ja.sh
 
       - name: Build cataclysm-tiles.js
         working-directory: cdda
@@ -145,85 +293,18 @@ jobs:
             cataclysm-tiles.js \
             cataclysm-tiles.wasm
 
-      - name: Prepare official web bundle with Japanese locale
+      - name: Prepare web bundle
         working-directory: cdda
         run: |
           set -euo pipefail
 
           source "$EMSDK/emsdk_env.sh"
 
-          test -s \
-            lang/mo/ja/LC_MESSAGES/cataclysm-dda.mo
-
-          cp \
-            build-scripts/prepare-web.sh \
+          bash \
             build-scripts/prepare-web-ja.sh
 
-          python3 <<'PY'
-          from pathlib import Path
-
-          path = Path("build-scripts/prepare-web-ja.sh")
-          text = path.read_text(encoding="utf-8")
-
-          needle = (
-              '$EMSDK/upstream/emscripten/tools/file_packager '
-              'cataclysm-tiles.data '
-          )
-
-          insert = (
-              'mkdir -p "$BUNDLE_DIR/lang/mo/ja/LC_MESSAGES"\n'
-              'cp lang/mo/ja/LC_MESSAGES/cataclysm-dda.mo '
-              '"$BUNDLE_DIR/lang/mo/ja/LC_MESSAGES/"\n'
-              'test -s '
-              '"$BUNDLE_DIR/lang/mo/ja/LC_MESSAGES/cataclysm-dda.mo"\n\n'
-          )
-
-          count = text.count(needle)
-
-          if count != 1:
-              raise SystemExit(
-                  f"ERROR: expected one file_packager command, found {count}"
-              )
-
-          text = text.replace(
-              needle,
-              insert + needle,
-              1
-          )
-
-          path.write_text(text, encoding="utf-8")
-          PY
-
-          echo "=== Patched prepare script ==="
-
-          grep -n \
-            -A6 \
-            -B3 \
-            'lang/mo/ja' \
-            build-scripts/prepare-web-ja.sh
-
-          echo "=== Running official prepare flow ==="
-
-          bash build-scripts/prepare-web-ja.sh
-
-          echo "=== Web bundle completed ==="
-
-          test -s \
-            build/cataclysm-tiles.data
-
-          test -s \
-            build/cataclysm-tiles.data.js
-
-          test -s \
-            build/cataclysm-tiles.js
-
-          test -s \
-            build/cataclysm-tiles.wasm
-
-      - name: Verify Japanese locale was bundled
-        working-directory: cdda
-        run: |
-          set -euo pipefail
+          echo
+          echo "=== Japanese file inside source bundle ==="
 
           test -s \
             web_bundle/lang/mo/ja/LC_MESSAGES/cataclysm-dda.mo
@@ -231,14 +312,39 @@ jobs:
           ls -lh \
             web_bundle/lang/mo/ja/LC_MESSAGES/cataclysm-dda.mo
 
-          echo "Japanese locale exists before file packaging."
+      - name: Verify packaged Japanese locale
+        working-directory: cdda
+        run: |
+          set -euo pipefail
 
-      - name: Copy custom shell
+          echo "=== Required build files ==="
+
+          REQUIRED=(
+            build/cataclysm-tiles.js
+            build/cataclysm-tiles.wasm
+            build/cataclysm-tiles.data
+            build/cataclysm-tiles.data.js
+          )
+
+          for FILE in "${REQUIRED[@]}"; do
+            test -s "$FILE"
+            echo "OK: $FILE"
+          done
+
+          echo
+          echo "=== Verify Japanese virtual filesystem entry ==="
+
+          grep -q \
+            'lang/mo/ja/LC_MESSAGES/cataclysm-dda.mo' \
+            build/cataclysm-tiles.data.js
+
+          echo "Japanese MO path is present in Emscripten loader."
+
+      - name: Copy profile-aware shell
         run: |
           set -euo pipefail
 
           test -f shell/index.html
-          test -d cdda/build
 
           cp \
             shell/index.html \
@@ -262,33 +368,30 @@ jobs:
 
           du -sh site/
 
-      - name: Verify final site
+      - name: Final verification
         run: |
           set -euo pipefail
 
-          REQUIRED_FILES=(
-            "site/cataclysm-tiles.js"
-            "site/cataclysm-tiles.wasm"
-            "site/cataclysm-tiles.data"
-            "site/cataclysm-tiles.data.js"
-            "site/index.html"
-            "site/Terminus.ttf"
-            "site/favicon.ico"
+          REQUIRED=(
+            site/index.html
+            site/cataclysm-tiles.js
+            site/cataclysm-tiles.wasm
+            site/cataclysm-tiles.data
+            site/cataclysm-tiles.data.js
+            site/Terminus.ttf
+            site/favicon.ico
           )
 
-          for FILE in "${REQUIRED_FILES[@]}"; do
+          for FILE in "${REQUIRED[@]}"; do
             test -s "$FILE"
             echo "OK: $FILE"
           done
 
-          test -s \
-            cdda/web_bundle/lang/mo/ja/LC_MESSAGES/cataclysm-dda.mo
-
           grep -q \
-            'options_manager::get_lang_options(), "ja" );' \
-            cdda/src/options.cpp
+            'lang/mo/ja/LC_MESSAGES/cataclysm-dda.mo' \
+            site/cataclysm-tiles.data.js
 
-          echo "Final verification passed."
+          echo "Japanese locale is included in final site."
 
       - name: Upload web bundle artifact
         uses: actions/upload-artifact@v4
