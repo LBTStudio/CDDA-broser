@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en-us">
+<html lang="ja">
   <head>
     <meta charset="utf-8" />
     <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
@@ -179,7 +179,22 @@
       };
 
       var Module = {
-        preRun: [],
+        preRun: [function () {
+          /* CDDA reads config/options.json before it decides whether to show
+             the language picker.  Seed it only for a profile that has no
+             configuration yet; existing player choices must always win. */
+          const profile = window.CDDA_PROFILE || "web_user";
+          const configDir = "/home/" + profile + "/.cataclysm-dda/config";
+          const optionsPath = configDir + "/options.json";
+          const fs = Module.FS || FS;
+
+          if (!fs.analyzePath(optionsPath).exists) {
+            fs.mkdirTree(configDir);
+            fs.writeFile(optionsPath, JSON.stringify([
+              { name: "USE_LANG", value: "ja" }
+            ]));
+          }
+        }],
         postRun: [],
         ENV: (function () {
           const env = {};

@@ -88,6 +88,15 @@ jobs:
           test -s cataclysm-tiles.js
           test -s cataclysm-tiles.wasm
 
+      - name: Compile Japanese translation
+        working-directory: cdda
+        run: |
+          set -euo pipefail
+
+          # cataclysm-tiles.js does not depend on the top-level `all` target,
+          # so it does not automatically build localization artifacts.
+          make localization LANGUAGES=ja
+
       - name: Verify Japanese translation
         working-directory: cdda
         run: |
