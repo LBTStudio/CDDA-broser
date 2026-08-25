@@ -71,11 +71,11 @@ jobs:
           source "$EMSDK/emsdk_env.sh"
 
           # The final Emscripten JavaScript optimization can be quiet for
-          # several minutes.  Stable builds use a bounded two-core primary
-          # build, emit plain-text heartbeats, and retry only a genuine timeout
-          # with the least aggressive link optimization.
+          # several minutes.  Four workers match the successful historical
+          # runs; reducing this to two only lengthened the opaque final phase.
+          # Plain-text heartbeats make every running minute observable.
           build_started_at="$(date +%s)"
-          build_jobs=2
+          build_jobs=4
           heartbeat() {
             while sleep 60; do
               elapsed="$(( $(date +%s) - build_started_at ))"
