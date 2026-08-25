@@ -94,7 +94,7 @@ jobs:
           trap stop_heartbeat EXIT
 
           build_cdda() {
-            timeout --foreground --signal=TERM --kill-after=120s 30m \
+            timeout --foreground --signal=TERM --kill-after=120s 45m \
               make -j"$build_jobs" \
                 NATIVE=emscripten \
                 BACKTRACE=0 \
@@ -109,7 +109,7 @@ jobs:
                 cataclysm-tiles.js
           }
 
-          echo "[BUILD] primary mode: jobs=${build_jobs}, link optimization=-O1, timeout=30m"
+          echo "[BUILD] primary mode: jobs=${build_jobs}, link optimization=-O1, timeout=45m"
           if time build_cdda; then
             echo "[BUILD] primary mode completed successfully"
           else
@@ -119,7 +119,7 @@ jobs:
               exit "$build_status"
             fi
 
-            echo "[RECOVERY] primary build exceeded 30 minutes; retrying with link optimization=-O0"
+            echo "[RECOVERY] primary build exceeded 45 minutes; retrying with link optimization=-O0"
             rm -f cataclysm-tiles.js cataclysm-tiles.wasm
             sed -i \
               's/^[[:space:]]*LDFLAGS[[:space:]]*+=[[:space:]]*-O1[[:space:]]*$/LDFLAGS += -O0/' \
