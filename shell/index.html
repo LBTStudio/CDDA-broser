@@ -180,19 +180,37 @@
 
       var Module = {
         preRun: [function () {
-          /* CDDA reads config/options.json before it decides whether to show
-             the language picker.  Seed it only for a profile that has no
-             configuration yet; existing player choices must always win. */
+          /* CDDA reads config/options.json before language initialization.
+             Migrate the prior English default to Japanese exactly once per
+             profile, but never overwrite a language selected afterwards. */
           const profile = window.CDDA_PROFILE || "web_user";
           const configDir = "/home/" + profile + "/.cataclysm-dda/config";
           const optionsPath = configDir + "/options.json";
+          const migrationPath = configDir + "/.web-ja-default-v2";
           const fs = Module.FS || FS;
 
-          if (!fs.analyzePath(optionsPath).exists) {
+          if (!fs.analyzePath(migrationPath).exists) {
             fs.mkdirTree(configDir);
-            fs.writeFile(optionsPath, JSON.stringify([
-              { name: "USE_LANG", value: "ja" }
-            ]));
+
+            let options = [];
+            if (fs.analyzePath(optionsPath).exists) {
+              try {
+                const saved = JSON.parse(fs.readFile(optionsPath, { encoding: "utf8" }));
+                if (Array.isArray(saved)) options = saved;
+              } catch (error) {
+                console.warn("Could not read saved CDDA options; using defaults.", error);
+              }
+            }
+
+            const languageOption = options.find((option) => option && option.name === "USE_LANG");
+            if (!languageOption) {
+              options.push({ name: "USE_LANG", value: "ja" });
+            } else if (!languageOption.value || languageOption.value === "en") {
+              languageOption.value = "ja";
+            }
+
+            fs.writeFile(optionsPath, JSON.stringify(options));
+            fs.writeFile(migrationPath, "v2\n");
           }
         }],
         postRun: [],
