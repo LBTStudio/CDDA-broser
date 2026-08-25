@@ -135,15 +135,29 @@
       profileInput.addEventListener("keydown", (e) => { if (e.key === "Enter") profileStart.onclick(); });
 
       let booted = false;
-      function boot() {
+      function loadScript(src) {
+        return new Promise((resolve, reject) => {
+          const script = document.createElement("script");
+          script.src = src;
+          script.onload = resolve;
+          script.onerror = () => reject(new Error("Could not load " + src));
+          document.body.appendChild(script);
+        });
+      }
+      async function boot() {
         if (booted) return;
         booted = true;
-        const d = document.createElement("script");
-        d.async = true; d.src = "cataclysm-tiles.data.js";
-        document.body.appendChild(d);
-        const g = document.createElement("script");
-        g.async = true; g.src = "cataclysm-tiles.js";
-        document.body.appendChild(g);
+        try {
+          /* The data pack registers its preRun callback.  It must finish
+             evaluating before the game runtime starts, otherwise CDDA scans
+             lang/mo before the Japanese MO catalog exists in its virtual FS. */
+          await loadScript("cataclysm-tiles.data.js");
+          await loadScript("cataclysm-tiles.js");
+        } catch (error) {
+          booted = false;
+          console.error(error);
+          loadingMessage.textContent = "Failed to load game data. Reload and try again.";
+        }
       }
 
       window.addEventListener("menuready", () => { loadingMessage.style.display = "none"; });
