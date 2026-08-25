@@ -123,6 +123,10 @@
         if (!getProfiles().includes(profile)) setProfiles(getProfiles().concat(profile));
         localStorage.setItem(LS_LAST, profile);
         window.CDDA_PROFILE = profile;
+        // Module.ENV is created before a player chooses a profile.  Update
+        // HOME here, before the Emscripten runtime starts, so CDDA reads the
+        // Japanese options.json written by preRun for this exact profile.
+        if (window.Module && Module.ENV) Module.ENV.HOME = "/home/" + profile;
         profileScreen.style.display = "none";
         loadingMessage.style.display = "block";
         boot();
