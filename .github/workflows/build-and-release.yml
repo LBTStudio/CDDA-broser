@@ -65,13 +65,32 @@ jobs:
 
       - name: Build CDDA WebAssembly
         working-directory: cdda
-        env:
-          EMCC_DEBUG: "1"
         run: |
           set -euo pipefail
 
           source "$EMSDK/emsdk_env.sh"
 
+          # Emscripten's final JavaScript optimization can run for several
+          # minutes without emitting compiler output.  Emit independent
+          # heartbeats so a quiet log never looks like a stuck build.
+          build_started_at="$(date +%s)"
+          heartbeat() {
+            while sleep 60; do
+              elapsed="$(( $(date +%s) - build_started_at ))"
+              echo "::notice title=WebAssembly build still running::elapsed=${elapsed}s; reporting runner health"
+              ps -eo pid,ppid,stat,etime,pcpu,pmem,cmd --sort=-pcpu | sed -n '1,12p'
+              df -h /
+            done
+          }
+          heartbeat &
+          heartbeat_pid="$!"
+          stop_heartbeat() {
+            kill "$heartbeat_pid" 2>/dev/null || true
+            wait "$heartbeat_pid" 2>/dev/null || true
+          }
+          trap stop_heartbeat EXIT
+
+          echo "::notice title=WebAssembly build started::heartbeat will report every 60 seconds"
           time make -j"$(nproc)" \
             NATIVE=emscripten \
             BACKTRACE=0 \
@@ -84,6 +103,8 @@ jobs:
             CCACHE=0 \
             LINTJSON=0 \
             cataclysm-tiles.js
+          stop_heartbeat
+          trap - EXIT
 
           test -s cataclysm-tiles.js
           test -s cataclysm-tiles.wasm
