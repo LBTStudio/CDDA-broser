@@ -70,16 +70,19 @@ jobs:
 
           source "$EMSDK/emsdk_env.sh"
 
-          # Emscripten's final JavaScript optimization can run for several
-          # minutes without emitting compiler output.  Emit independent
-          # heartbeats so a quiet log never looks like a stuck build.
+          # The final Emscripten JavaScript optimization can be quiet for
+          # several minutes.  Stable builds use a bounded two-core primary
+          # build, emit plain-text heartbeats, and retry only a genuine timeout
+          # with the least aggressive link optimization.
           build_started_at="$(date +%s)"
+          build_jobs=2
           heartbeat() {
             while sleep 60; do
               elapsed="$(( $(date +%s) - build_started_at ))"
-              echo "::notice title=WebAssembly build still running::elapsed=${elapsed}s; reporting runner health"
-              ps -eo pid,ppid,stat,etime,pcpu,pmem,cmd --sort=-pcpu | sed -n '1,12p'
+              echo "[HEARTBEAT] WebAssembly build active: elapsed=${elapsed}s"
+              free -h
               df -h /
+              ps -eo pid,ppid,stat,etime,pcpu,pmem,cmd --sort=-pcpu | sed -n '1,12p'
             done
           }
           heartbeat &
@@ -90,19 +93,52 @@ jobs:
           }
           trap stop_heartbeat EXIT
 
-          echo "::notice title=WebAssembly build started::heartbeat will report every 60 seconds"
-          time make -j"$(nproc)" \
-            NATIVE=emscripten \
-            BACKTRACE=0 \
-            TILES=1 \
-            TESTS=0 \
-            RUNTESTS=0 \
-            RELEASE=1 \
-            LOCALIZE=1 \
-            LANGUAGES=ja \
-            CCACHE=0 \
-            LINTJSON=0 \
-            cataclysm-tiles.js
+          build_cdda() {
+            timeout --foreground --signal=TERM --kill-after=120s 30m \
+              make -j"$build_jobs" \
+                NATIVE=emscripten \
+                BACKTRACE=0 \
+                TILES=1 \
+                TESTS=0 \
+                RUNTESTS=0 \
+                RELEASE=1 \
+                LOCALIZE=1 \
+                LANGUAGES=ja \
+                CCACHE=0 \
+                LINTJSON=0 \
+                cataclysm-tiles.js
+          }
+
+          echo "[BUILD] primary mode: jobs=${build_jobs}, link optimization=-O1, timeout=30m"
+          if time build_cdda; then
+            echo "[BUILD] primary mode completed successfully"
+          else
+            build_status="$?"
+            if [ "$build_status" -ne 124 ]; then
+              echo "[BUILD] primary build failed with status=${build_status}; not retrying a non-timeout failure"
+              exit "$build_status"
+            fi
+
+            echo "[RECOVERY] primary build exceeded 30 minutes; retrying with link optimization=-O0"
+            rm -f cataclysm-tiles.js cataclysm-tiles.wasm
+            sed -i \
+              's/^[[:space:]]*LDFLAGS[[:space:]]*+=[[:space:]]*-O1[[:space:]]*$/LDFLAGS += -O0/' \
+              Makefile
+            build_started_at="$(date +%s)"
+            timeout --foreground --signal=TERM --kill-after=120s 30m \
+              make -j"$build_jobs" \
+                NATIVE=emscripten \
+                BACKTRACE=0 \
+                TILES=1 \
+                TESTS=0 \
+                RUNTESTS=0 \
+                RELEASE=1 \
+                LOCALIZE=1 \
+                LANGUAGES=ja \
+                CCACHE=0 \
+                LINTJSON=0 \
+                cataclysm-tiles.js
+          fi
           stop_heartbeat
           trap - EXIT
 
