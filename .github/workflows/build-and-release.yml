@@ -9,12 +9,12 @@ permissions:
   id-token: write
 
 concurrency:
-  group: "pages"
+  group: cdda-pages
   cancel-in-progress: false
 
 jobs:
   build:
-    name: Build CDDA 0.I WebAssembly - Japanese
+    name: Build CDDA 0.I WebAssembly
     runs-on: ubuntu-latest
     timeout-minutes: 300
 
@@ -30,12 +30,11 @@ jobs:
           path: cdda
           fetch-depth: 1
 
-      - name: Install build dependencies
+      - name: Install dependencies
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y jq gettext
-          msgfmt --version | head -1
+          sudo apt-get install -y gettext
 
       - name: Free disk space
         run: |
@@ -50,12 +49,12 @@ jobs:
 
           df -h /
 
-      - name: Setup emsdk 3.1.51
+      - name: Setup emsdk
         uses: mymindstorm/setup-emsdk@v14
         with:
           version: 3.1.51
 
-      - name: Relax link-time optimization
+      - name: Relax link optimization
         working-directory: cdda
         run: |
           set -euo pipefail
@@ -64,9 +63,7 @@ jobs:
             's/^[[:space:]]*LDFLAGS[[:space:]]*+=[[:space:]]*-Os[[:space:]]*$/LDFLAGS += -O1/' \
             Makefile
 
-          grep -n "LDFLAGS" Makefile | head -20
-
-      - name: Build cataclysm-tiles.js with Japanese localization
+      - name: Build CDDA WebAssembly
         working-directory: cdda
         env:
           EMCC_DEBUG: "1"
@@ -74,13 +71,6 @@ jobs:
           set -euo pipefail
 
           source "$EMSDK/emsdk_env.sh"
-
-          echo "=== Build configuration ==="
-          echo "LOCALIZE=1"
-          echo "LANGUAGES=ja"
-
-          df -h /
-          free -h
 
           time make -j"$(nproc)" \
             NATIVE=emscripten \
@@ -90,36 +80,25 @@ jobs:
             RUNTESTS=0 \
             RELEASE=1 \
             LOCALIZE=1 \
-            LANGUAGES="ja" \
+            LANGUAGES=ja \
             CCACHE=0 \
             LINTJSON=0 \
             cataclysm-tiles.js
 
-          echo "=== Verify WASM output ==="
-
           test -s cataclysm-tiles.js
           test -s cataclysm-tiles.wasm
 
-          ls -lh \
-            cataclysm-tiles.js \
-            cataclysm-tiles.wasm
-
-      - name: Verify Japanese MO produced by make
+      - name: Verify Japanese translation
         working-directory: cdda
         run: |
           set -euo pipefail
 
-          test -f lang/po/ja.po
-
-          test -s \
-            lang/mo/ja/LC_MESSAGES/cataclysm-dda.mo
-
-          echo "Japanese MO successfully produced by CDDA build."
+          test -s lang/mo/ja/LC_MESSAGES/cataclysm-dda.mo
 
           ls -lh \
             lang/mo/ja/LC_MESSAGES/cataclysm-dda.mo
 
-      - name: Patch official web preparation for Japanese locale
+      - name: Create Japanese web preparation script
         working-directory: cdda
         run: |
           set -euo pipefail
@@ -128,57 +107,41 @@ jobs:
             build-scripts/prepare-web.sh \
             build-scripts/prepare-web-ja.sh
 
-          python3 <<'PY'
+          python3 - <<'PY'
           from pathlib import Path
 
           path = Path("build-scripts/prepare-web-ja.sh")
           text = path.read_text(encoding="utf-8")
 
-          marker = "file_packager"
+          marker = "$EMSDK/upstream/emscripten/tools/file_packager"
 
-          if marker not in text:
+          if text.count(marker) != 1:
               raise SystemExit(
-                  "ERROR: file_packager was not found in prepare-web.sh"
+                  "Expected exactly one file_packager command"
               )
 
-          insertion = r'''
-echo "Adding Japanese translation to web bundle..."
+          japanese_copy = """\
+          echo "Adding Japanese translation..."
 
-mkdir -p \
-  "$BUNDLE_DIR/lang/mo/ja/LC_MESSAGES"
+          mkdir -p "$BUNDLE_DIR/lang/mo/ja/LC_MESSAGES"
 
-cp \
-  "lang/mo/ja/LC_MESSAGES/cataclysm-dda.mo" \
-  "$BUNDLE_DIR/lang/mo/ja/LC_MESSAGES/cataclysm-dda.mo"
+          cp \
+            lang/mo/ja/LC_MESSAGES/cataclysm-dda.mo \
+            "$BUNDLE_DIR/lang/mo/ja/LC_MESSAGES/cataclysm-dda.mo"
 
-test -s \
-  "$BUNDLE_DIR/lang/mo/ja/LC_MESSAGES/cataclysm-dda.mo"
+          test -s \
+            "$BUNDLE_DIR/lang/mo/ja/LC_MESSAGES/cataclysm-dda.mo"
 
-'''
+          """
 
-          lines = text.splitlines(keepends=True)
-
-          index = None
-
-          for i, line in enumerate(lines):
-              if "file_packager" in line:
-                  index = i
-                  break
-
-          if index is None:
-              raise SystemExit(
-                  "ERROR: could not locate file_packager command"
-              )
-
-          lines.insert(index, insertion)
-
-          path.write_text(
-              "".join(lines),
-              encoding="utf-8"
+          text = text.replace(
+              marker,
+              japanese_copy + marker,
+              1
           )
-          PY
 
-          echo "=== Japanese locale patch ==="
+          path.write_text(text, encoding="utf-8")
+          PY
 
           grep -n \
             -A12 \
@@ -186,7 +149,7 @@ test -s \
             "Adding Japanese translation" \
             build-scripts/prepare-web-ja.sh
 
-      - name: Prepare official web bundle
+      - name: Prepare Web bundle
         working-directory: cdda
         run: |
           set -euo pipefail
@@ -195,34 +158,20 @@ test -s \
 
           bash build-scripts/prepare-web-ja.sh
 
-          echo "=== Verify source web bundle ==="
-
-          test -s \
-            web_bundle/lang/mo/ja/LC_MESSAGES/cataclysm-dda.mo
-
-          ls -lh \
-            web_bundle/lang/mo/ja/LC_MESSAGES/cataclysm-dda.mo
-
-      - name: Verify packaged output
+      - name: Verify Japanese locale in bundle
         working-directory: cdda
         run: |
           set -euo pipefail
 
-          REQUIRED=(
-            build/cataclysm-tiles.js
-            build/cataclysm-tiles.wasm
-            build/cataclysm-tiles.data
-            build/cataclysm-tiles.data.js
-          )
+          test -s \
+            web_bundle/lang/mo/ja/LC_MESSAGES/cataclysm-dda.mo
 
-          for FILE in "${REQUIRED[@]}"; do
-            test -s "$FILE"
-            echo "OK: $FILE"
-          done
+          test -s build/cataclysm-tiles.data
+          test -s build/cataclysm-tiles.data.js
+          test -s build/cataclysm-tiles.js
+          test -s build/cataclysm-tiles.wasm
 
-          echo "Official web bundle completed successfully."
-
-      - name: Copy custom shell
+      - name: Copy custom index
         run: |
           set -euo pipefail
 
@@ -232,52 +181,27 @@ test -s \
             shell/index.html \
             cdda/build/index.html
 
-      - name: Stage site
+      - name: Stage GitHub Pages site
         run: |
           set -euo pipefail
 
           rm -rf site
           mkdir -p site
 
-          cp -a \
-            cdda/build/. \
-            site/
+          cp -a cdda/build/. site/
 
-          echo "=== Final site ==="
+          test -s site/index.html
+          test -s site/cataclysm-tiles.js
+          test -s site/cataclysm-tiles.wasm
+          test -s site/cataclysm-tiles.data
+          test -s site/cataclysm-tiles.data.js
+          test -s site/Terminus.ttf
+          test -s site/favicon.ico
 
-          find site \
-            -maxdepth 2 \
-            -type f \
-            -printf "%p %s bytes\n" \
-            | sort
-
-          du -sh site/
-
-      - name: Final verification
-        run: |
-          set -euo pipefail
-
-          REQUIRED=(
-            site/index.html
-            site/cataclysm-tiles.js
-            site/cataclysm-tiles.wasm
-            site/cataclysm-tiles.data
-            site/cataclysm-tiles.data.js
-            site/Terminus.ttf
-            site/favicon.ico
-          )
-
-          for FILE in "${REQUIRED[@]}"; do
-            test -s "$FILE"
-            echo "OK: $FILE"
-          done
-
-          echo "Final site verification passed."
-
-      - name: Upload web bundle artifact
+      - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: cdda-0I-web-bundle-japanese
+          name: cdda-0I-web-bundle
           path: site/
           if-no-files-found: error
           retention-days: 30
