@@ -1,0 +1,55 @@
+diff --git a/src/main_menu.cpp b/src/main_menu.cpp
+index 7206964..42d7fab 100644
+--- a/src/main_menu.cpp
++++ b/src/main_menu.cpp
+@@ -999,6 +999,9 @@ bool main_menu::new_character_tab()
+         // loading the world.
+         // Pick a world, suppressing prompts if it's "play now" mode.
+         const bool is_play_now = sel2 == 3 || sel2 == 4;
++#if defined(EMSCRIPTEN)
++        emscripten_log( EM_LOG_CONSOLE, "[CDDA-WEB-STAGE] new_character: before pick_world" );
++#endif
+         WORLD *world = world_generator->pick_world( !is_play_now, is_play_now );
+         if( world == nullptr ) {
+             return false;
+@@ -1010,8 +1013,14 @@ bool main_menu::new_character_tab()
+             }
+         }
+         world_generator->set_active_world( world );
++#if defined(EMSCRIPTEN)
++        emscripten_log( EM_LOG_CONSOLE, "[CDDA-WEB-STAGE] new_character: before setup" );
++#endif
+         try {
+             g->setup();
++#if defined(EMSCRIPTEN)
++            emscripten_log( EM_LOG_CONSOLE, "[CDDA-WEB-STAGE] new_character: after setup" );
++#endif
+         } catch( const std::exception &err ) {
+             debugmsg( "Error: %s", err.what() );
+             return false;
+@@ -1031,6 +1040,9 @@ bool main_menu::new_character_tab()
+                 play_type = character_type::FULL_RANDOM;
+                 break;
+         }
++#if defined(EMSCRIPTEN)
++        emscripten_log( EM_LOG_CONSOLE, "[CDDA-WEB-STAGE] new_character: before pc.create" );
++#endif
+         if( !pc.create( play_type ) ) {
+             load_char_templates();
+             MAPBUFFER.clear();
+@@ -1038,9 +1050,15 @@ bool main_menu::new_character_tab()
+             return false;
+         }
+
++#if defined(EMSCRIPTEN)
++        emscripten_log( EM_LOG_CONSOLE, "[CDDA-WEB-STAGE] new_character: after pc.create / before start_game" );
++#endif
+         if( !g->start_game() ) {
+             return false;
+         }
++#if defined(EMSCRIPTEN)
++        emscripten_log( EM_LOG_CONSOLE, "[CDDA-WEB-STAGE] new_character: after start_game" );
++#endif
+         cleanup.cancel();
+         return true;
+     }

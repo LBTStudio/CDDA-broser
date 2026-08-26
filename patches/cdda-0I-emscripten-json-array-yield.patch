@@ -1,0 +1,35 @@
+--- a/src/init.cpp
++++ b/src/init.cpp
+@@ -605,15 +605,32 @@
+ void DynamicDataLoader::load_all_from_json( const JsonValue &jsin, const std::string &src,
+         const cata_path &base_path, const cata_path &full_path )
+ {
++#if defined(EMSCRIPTEN)
++    // A single data file can contain hundreds of JSON objects.  Preserve the
++    // loader order while periodically returning browser control within it.
++    double last_browser_yield = emscripten_get_now();
++#endif
+     if( jsin.test_object() ) {
+         // find type and dispatch single object
+         JsonObject jo = jsin.get_object();
+         load_object( jo, src, base_path, full_path );
++#if defined(EMSCRIPTEN)
++        if( emscripten_get_now() - last_browser_yield >= 50.0 ) {
++            emscripten_sleep( 0 );
++            last_browser_yield = emscripten_get_now();
++        }
++#endif
+     } else if( jsin.test_array() ) {
+         JsonArray ja = jsin.get_array();
+         // find type and dispatch each object until array close
+         for( JsonObject jo : ja ) {
+             load_object( jo, src, base_path, full_path );
++#if defined(EMSCRIPTEN)
++            if( emscripten_get_now() - last_browser_yield >= 50.0 ) {
++                emscripten_sleep( 0 );
++                last_browser_yield = emscripten_get_now();
++            }
++#endif
+         }
+     } else {
+         // not an object or an array?
