@@ -67,6 +67,12 @@ jobs:
           git apply --check ../patches/cdda-0I-emscripten-postworld-stage-markers.patch
           git apply ../patches/cdda-0I-emscripten-postworld-stage-markers.patch
 
+          # Temporary setup markers split the suspected post-world freeze
+          # boundary into core data, world mod data, and setup completion.
+          # This diagnostic patch is Emscripten-only and must not be merged.
+          git apply --check ../patches/cdda-0I-emscripten-setup-stage-markers.patch
+          git apply ../patches/cdda-0I-emscripten-setup-stage-markers.patch
+
           git diff --check
           grep -n "MEMFS does not provide a POSIX mmap view" src/mmap_file.cpp
           grep -n "Keep the browser responsive" src/init.cpp
@@ -74,6 +80,7 @@ jobs:
           grep -n "deeply nested overmap specials" src/mapgen.cpp
           grep -n "overmap::generate" src/overmap.cpp
           grep -n "\[CDDA-WEB-STAGE\] new_character" src/main_menu.cpp
+          grep -n "\[CDDA-WEB-STAGE\] setup" src/game.cpp
 
       - name: Install dependencies
         run: |
