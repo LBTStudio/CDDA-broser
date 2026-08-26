@@ -1,0 +1,67 @@
+--- a/src/game.cpp
++++ b/src/game.cpp
+@@ -3433,14 +3433,32 @@
+     // are resolved during the creation of the world.
+     // That means world->active_mod_order contains a list
+     // of mods in the correct order.
++#if defined(EMSCRIPTEN)
++    emscripten_log( EM_LOG_CONSOLE, "[CDDA-WEB-STAGE] world_modfiles: before load_packs" );
++#endif
+     load_packs( _( "Loading files" ), mods );
++#if defined(EMSCRIPTEN)
++    emscripten_log( EM_LOG_CONSOLE, "[CDDA-WEB-STAGE] world_modfiles: after load_packs" );
++#endif
+ 
+     // Load additional mods from that world-specific folder
++#if defined(EMSCRIPTEN)
++    emscripten_log( EM_LOG_CONSOLE, "[CDDA-WEB-STAGE] world_modfiles: before custom data" );
++#endif
+     load_mod_data_from_dir( PATH_INFO::world_base_save_path() / "mods", "custom" );
++#if defined(EMSCRIPTEN)
++    emscripten_log( EM_LOG_CONSOLE, "[CDDA-WEB-STAGE] world_modfiles: after custom data / before custom interactions" );
++#endif
+     load_mod_interaction_data_from_dir( PATH_INFO::world_base_save_path() / "mods" /
+                                         "mod_interactions", "custom" );
++#if defined(EMSCRIPTEN)
++    emscripten_log( EM_LOG_CONSOLE, "[CDDA-WEB-STAGE] world_modfiles: after custom interactions / before finalize" );
++#endif
+ 
+     DynamicDataLoader::get_instance().finalize_loaded_data();
++#if defined(EMSCRIPTEN)
++    emscripten_log( EM_LOG_CONSOLE, "[CDDA-WEB-STAGE] world_modfiles: after finalize" );
++#endif
+ }
+ 
+ void game::load_packs( const std::string &msg, const std::vector<mod_id> &packs )
+@@ -3451,11 +3469,17 @@
+             continue;
+         }
+         loading_ui::show( msg, mod->name() );
++#if defined(EMSCRIPTEN)
++        emscripten_log( EM_LOG_CONSOLE, "[CDDA-WEB-STAGE] load_packs: before data %s", mod.str().c_str() );
++#endif
+         restore_on_out_of_scope restore_check_plural( check_plural );
+         if( mod.str() == "test_data" ) {
+             check_plural = check_plural_t::none;
+         }
+         load_mod_data_from_dir( mod->path, mod.str() );
++#if defined(EMSCRIPTEN)
++        emscripten_log( EM_LOG_CONSOLE, "[CDDA-WEB-STAGE] load_packs: after data %s", mod.str().c_str() );
++#endif
+     }
+ 
+     for( const auto &mod : packs ) {
+@@ -3463,7 +3487,13 @@
+             continue;
+         }
+         loading_ui::show( msg, mod->name() );
++#if defined(EMSCRIPTEN)
++        emscripten_log( EM_LOG_CONSOLE, "[CDDA-WEB-STAGE] load_packs: before interactions %s", mod.str().c_str() );
++#endif
+         load_mod_interaction_data_from_dir( mod->path / "mod_interactions", mod.str() );
++#if defined(EMSCRIPTEN)
++        emscripten_log( EM_LOG_CONSOLE, "[CDDA-WEB-STAGE] load_packs: after interactions %s", mod.str().c_str() );
++#endif
+     }
+ }
+ 
