@@ -1,0 +1,35 @@
+--- a/src/init.cpp
++++ b/src/init.cpp
+@@ -583,9 +583,32 @@ void DynamicDataLoader::load_all_from_json( const JsonValue &jsin, const std::st
+         load_object( jo, src, base_path, full_path );
+     } else if( jsin.test_array() ) {
+         JsonArray ja = jsin.get_array();
++#if defined(EMSCRIPTEN)
++        // Diagnostic only: this is the confirmed DDA core file boundary where
++        // dispatch stopped after parse.  Trace its 61 array entries without
++        // changing parsing, ordering, or yields.
++        const bool trace_talk_test = src == "dda" &&
++                                     full_path.get_unrelative_path().filename().string() == "TALK_TEST.json";
++        std::size_t talk_test_object_index = 0;
++#endif
+         // find type and dispatch each object until array close
+         for( JsonObject jo : ja ) {
++#if defined(EMSCRIPTEN)
++            if( trace_talk_test ) {
++                emscripten_log( EM_LOG_CONSOLE,
++                                "[CDDA-WEB-STAGE] talk_test: before object index=%zu",
++                                talk_test_object_index );
++            }
++#endif
+             load_object( jo, src, base_path, full_path );
++#if defined(EMSCRIPTEN)
++            if( trace_talk_test ) {
++                emscripten_log( EM_LOG_CONSOLE,
++                                "[CDDA-WEB-STAGE] talk_test: after object index=%zu",
++                                talk_test_object_index );
++            }
++            ++talk_test_object_index;
++#endif
+         }
+     } else {
+         // not an object or an array?

@@ -67,11 +67,18 @@ jobs:
           git apply --check ../patches/cdda-0I-emscripten-moddata-index801-markers.patch
           git apply ../patches/cdda-0I-emscripten-moddata-index801-markers.patch
 
+          # The locally reproduced boundary is DDA index 835, TALK_TEST.json,
+          # after JSON parsing but within array dispatch.  Trace only its
+          # object boundaries; this is diagnostic and changes no behavior.
+          git apply --check ../patches/cdda-0I-emscripten-talk-test-object-markers.patch
+          git apply ../patches/cdda-0I-emscripten-talk-test-object-markers.patch
+
           git diff --check
           grep -n "MEMFS does not provide a POSIX mmap view" src/mmap_file.cpp
           grep -n "\[CDDA-WEB-STAGE\] new_character" src/main_menu.cpp
           grep -n "\[CDDA-WEB-STAGE\] world_modfiles" src/game.cpp
           grep -n "trace_file" src/init.cpp
+          grep -n "trace_talk_test" src/init.cpp
 
       - name: Install dependencies
         run: |
