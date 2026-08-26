@@ -1,0 +1,56 @@
+--- a/src/init.cpp
++++ b/src/init.cpp
+@@ -529,6 +529,9 @@
+     // But not the other way round.
+ 
+     std::vector<cata_path> files;
++#if defined(EMSCRIPTEN)
++    emscripten_log( EM_LOG_CONSOLE, "[CDDA-WEB-STAGE] mod_data: before enumerate %s", src.c_str() );
++#endif
+     // if give path is a directory
+     if( dir_exist( path.get_unrelative_path() ) ) {
+         const std::vector<cata_path> dir_files = get_files_from_path_with_path_exclusion( ".json",
+@@ -543,14 +546,35 @@
+     // Emscripten Asyncify resumes at this point without changing the native
+     // loader's ordering or behavior on non-web targets.
+ #if defined(EMSCRIPTEN)
++    emscripten_log( EM_LOG_CONSOLE, "[CDDA-WEB-STAGE] mod_data: after enumerate %s files=%zu",
++                    src.c_str(), files.size() );
+     double last_browser_yield = emscripten_get_now();
+ #endif
+     // iterate over each file
++    std::size_t file_index = 0;
+     for( const cata_path &file : files ) {
++#if defined(EMSCRIPTEN)
++        if( file_index == 0 || file_index % 50 == 0 ) {
++            emscripten_log( EM_LOG_CONSOLE, "[CDDA-WEB-STAGE] mod_data: before parse %s index=%zu",
++                            src.c_str(), file_index );
++        }
++#endif
+         try {
+             // parse it
+             JsonValue jsin = json_loader::from_path( file );
++#if defined(EMSCRIPTEN)
++            if( file_index == 0 || file_index % 50 == 0 ) {
++                emscripten_log( EM_LOG_CONSOLE, "[CDDA-WEB-STAGE] mod_data: after parse %s index=%zu",
++                                src.c_str(), file_index );
++            }
++#endif
+             load_all_from_json( jsin, src, path, file );
++#if defined(EMSCRIPTEN)
++            if( file_index == 0 || file_index % 50 == 0 ) {
++                emscripten_log( EM_LOG_CONSOLE, "[CDDA-WEB-STAGE] mod_data: after dispatch %s index=%zu",
++                                src.c_str(), file_index );
++            }
++#endif
+         } catch( const JsonError &err ) {
+             throw std::runtime_error( err.what() );
+         }
+@@ -560,6 +584,7 @@
+             last_browser_yield = emscripten_get_now();
+         }
+ #endif
++        file_index++;
+     }
+ }
+ 
