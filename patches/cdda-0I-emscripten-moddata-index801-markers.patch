@@ -1,0 +1,30 @@
+--- a/src/init.cpp
++++ b/src/init.cpp
+@@ -554,7 +554,9 @@
+     std::size_t file_index = 0;
+     for( const cata_path &file : files ) {
+ #if defined(EMSCRIPTEN)
+-        if( file_index == 0 || file_index % 50 == 0 ) {
++        const bool trace_file = file_index == 0 || file_index % 50 == 0 ||
++                                ( file_index >= 801 && file_index <= 849 );
++        if( trace_file ) {
+             emscripten_log( EM_LOG_CONSOLE, "[CDDA-WEB-STAGE] mod_data: before parse %s index=%zu",
+                             src.c_str(), file_index );
+         }
+@@ -563,14 +565,14 @@
+             // parse it
+             JsonValue jsin = json_loader::from_path( file );
+ #if defined(EMSCRIPTEN)
+-            if( file_index == 0 || file_index % 50 == 0 ) {
++            if( trace_file ) {
+                 emscripten_log( EM_LOG_CONSOLE, "[CDDA-WEB-STAGE] mod_data: after parse %s index=%zu",
+                                 src.c_str(), file_index );
+             }
+ #endif
+             load_all_from_json( jsin, src, path, file );
+ #if defined(EMSCRIPTEN)
+-            if( file_index == 0 || file_index % 50 == 0 ) {
++            if( trace_file ) {
+                 emscripten_log( EM_LOG_CONSOLE, "[CDDA-WEB-STAGE] mod_data: after dispatch %s index=%zu",
+                                 src.c_str(), file_index );
+             }
