@@ -1,0 +1,43 @@
+--- a/src/game.cpp
++++ b/src/game.cpp
+@@ -793,12 +793,30 @@
+         ui_manager::redraw();
+         refresh_display();
+ 
++#if defined(EMSCRIPTEN)
++        emscripten_log( EM_LOG_CONSOLE, "[CDDA-WEB-STAGE] setup: before load_core_data" );
++#endif
+         load_core_data();
++#if defined(EMSCRIPTEN)
++        emscripten_log( EM_LOG_CONSOLE, "[CDDA-WEB-STAGE] setup: after load_core_data" );
++#endif
+     }
++#if defined(EMSCRIPTEN)
++    emscripten_log( EM_LOG_CONSOLE, "[CDDA-WEB-STAGE] setup: before check_mods_list" );
++#endif
+     world_generator->get_mod_manager().check_mods_list( world_generator->active_world );
++#if defined(EMSCRIPTEN)
++    emscripten_log( EM_LOG_CONSOLE, "[CDDA-WEB-STAGE] setup: before load_world_modfiles" );
++#endif
+     load_world_modfiles();
++#if defined(EMSCRIPTEN)
++    emscripten_log( EM_LOG_CONSOLE, "[CDDA-WEB-STAGE] setup: after load_world_modfiles" );
++#endif
+     // Panel manager needs JSON data to be loaded before init
+     panel_manager::get_manager().init();
++#if defined(EMSCRIPTEN)
++    emscripten_log( EM_LOG_CONSOLE, "[CDDA-WEB-STAGE] setup: after panel_manager.init" );
++#endif
+ 
+     m = map();
+ 
+@@ -849,6 +867,9 @@
+     globvars.clear_global_values();
+     unique_npcs.clear();
+     get_weather().weather_override = WEATHER_NULL;
++#if defined(EMSCRIPTEN)
++    emscripten_log( EM_LOG_CONSOLE, "[CDDA-WEB-STAGE] setup: complete" );
++#endif
+     // back to menu for save loading, new game etc
+ }
+ 

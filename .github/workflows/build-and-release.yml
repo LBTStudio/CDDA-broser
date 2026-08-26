@@ -2,6 +2,12 @@ name: Build CDDA 0.I WebAssembly
 
 on:
   workflow_dispatch:
+    inputs:
+      deploy_pages:
+        description: "Deploy the verified bundle to GitHub Pages"
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -48,9 +54,25 @@ jobs:
           git apply --check ../patches/cdda-0I-emscripten-loader-yield.patch
           git apply ../patches/cdda-0I-emscripten-loader-yield.patch
 
+          # World creation reaches mod interactions, JSON object dispatch and
+          # data finalization after the normal loader loop.  Keep only these
+          # previously uncovered Emscripten phases cooperative.
+          git apply --check ../patches/cdda-0I-emscripten-mod-finalize-yield.patch
+          git apply ../patches/cdda-0I-emscripten-mod-finalize-yield.patch
+
+          # Markers are temporary evidence hooks for this non-public build.
+          # They must be removed before any production integration.
+          git apply --check ../patches/cdda-0I-emscripten-postworld-stage-markers.patch
+          git apply ../patches/cdda-0I-emscripten-postworld-stage-markers.patch
+          git apply --check ../patches/cdda-0I-emscripten-setup-stage-markers.patch
+          git apply ../patches/cdda-0I-emscripten-setup-stage-markers.patch
+
           git diff --check
           grep -n "MEMFS does not provide a POSIX mmap view" src/mmap_file.cpp
           grep -n "Keep the browser responsive" src/init.cpp
+          grep -n "World mod interactions were not covered" src/init.cpp
+          grep -n "\[CDDA-WEB-STAGE\] new_character" src/main_menu.cpp
+          grep -n "\[CDDA-WEB-STAGE\] setup" src/game.cpp
 
       - name: Install dependencies
         run: |
@@ -281,12 +303,14 @@ jobs:
           retention-days: 30
 
       - name: Upload GitHub Pages artifact
+        if: ${{ inputs.deploy_pages == true }}
         uses: actions/upload-pages-artifact@v3
         with:
           path: site/
 
   deploy:
     name: Deploy to GitHub Pages
+    if: ${{ inputs.deploy_pages == true }}
     needs: build
     runs-on: ubuntu-latest
 
