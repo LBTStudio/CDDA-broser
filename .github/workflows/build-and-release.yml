@@ -61,12 +61,19 @@ jobs:
           git apply --check ../patches/cdda-0I-emscripten-world-yield.patch
           git apply ../patches/cdda-0I-emscripten-world-yield.patch
 
+          # Temporary E2E markers distinguish pick_world, setup, character
+          # creation and start_game.  They are restricted to this test branch
+          # and will not be part of a production patch.
+          git apply --check ../patches/cdda-0I-emscripten-postworld-stage-markers.patch
+          git apply ../patches/cdda-0I-emscripten-postworld-stage-markers.patch
+
           git diff --check
           grep -n "MEMFS does not provide a POSIX mmap view" src/mmap_file.cpp
           grep -n "Keep the browser responsive" src/init.cpp
           grep -n "give the browser a paint frame" src/game.cpp
           grep -n "deeply nested overmap specials" src/mapgen.cpp
           grep -n "overmap::generate" src/overmap.cpp
+          grep -n "\[CDDA-WEB-STAGE\] new_character" src/main_menu.cpp
 
       - name: Install dependencies
         run: |
