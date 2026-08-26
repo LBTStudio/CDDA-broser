@@ -40,7 +40,7 @@ index 7206964..42d7fab 100644
 @@ -1038,9 +1050,15 @@ bool main_menu::new_character_tab()
              return false;
          }
- 
+
 +#if defined(EMSCRIPTEN)
 +        emscripten_log( EM_LOG_CONSOLE, "[CDDA-WEB-STAGE] new_character: after pc.create / before start_game" );
 +#endif
