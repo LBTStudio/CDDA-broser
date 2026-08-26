@@ -2,6 +2,12 @@ name: Build CDDA 0.I WebAssembly
 
 on:
   workflow_dispatch:
+    inputs:
+      deploy_pages:
+        description: "Deploy the verified bundle to GitHub Pages"
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -48,9 +54,27 @@ jobs:
           git apply --check ../patches/cdda-0I-emscripten-loader-yield.patch
           git apply ../patches/cdda-0I-emscripten-loader-yield.patch
 
+          # Coalesce repeated IDBFS writes so world initialization is not
+          # interrupted by an independent sync transaction for every mutation.
+          git apply --check ../patches/cdda-0I-emscripten-idbfs-debounce.patch
+          git apply ../patches/cdda-0I-emscripten-idbfs-debounce.patch
+
+          # Temporary markers provide non-public E2E evidence only.
+          git apply --check ../patches/cdda-0I-emscripten-postworld-stage-markers.patch
+          git apply ../patches/cdda-0I-emscripten-postworld-stage-markers.patch
+          git apply --check ../patches/cdda-0I-emscripten-setup-stage-markers.patch
+          git apply ../patches/cdda-0I-emscripten-setup-stage-markers.patch
+          git apply --check ../patches/cdda-0I-emscripten-worldmod-substage-markers.patch
+          git apply ../patches/cdda-0I-emscripten-worldmod-substage-markers.patch
+          git apply --check ../patches/cdda-0I-emscripten-moddata-substage-markers.patch
+          git apply ../patches/cdda-0I-emscripten-moddata-substage-markers.patch
+
           git diff --check
           grep -n "MEMFS does not provide a POSIX mmap view" src/mmap_file.cpp
-          grep -n "Keep the browser responsive" src/init.cpp
+          grep -n "fsSyncDebounceMs" src/main.cpp
+          grep -n "\[CDDA-WEB-STAGE\] new_character" src/main_menu.cpp
+          grep -n "\[CDDA-WEB-STAGE\] world_modfiles" src/game.cpp
+          grep -n "\[CDDA-WEB-STAGE\] mod_data" src/init.cpp
 
       - name: Install dependencies
         run: |
@@ -281,12 +305,14 @@ jobs:
           retention-days: 30
 
       - name: Upload GitHub Pages artifact
+        if: ${{ inputs.deploy_pages == true }}
         uses: actions/upload-pages-artifact@v3
         with:
           path: site/
 
   deploy:
     name: Deploy to GitHub Pages
+    if: ${{ inputs.deploy_pages == true }}
     needs: build
     runs-on: ubuntu-latest
 
