@@ -1,300 +1,124 @@
-name: Build CDDA 0.I WebAssembly
+name: QA build — full staged CDDA 0.I artifact
 
 on:
   workflow_dispatch:
 
 permissions:
   contents: read
-  pages: write
-  id-token: write
-
-concurrency:
-  group: cdda-pages
-  cancel-in-progress: false
 
 jobs:
-  build:
-    name: Build CDDA 0.I WebAssembly
+  build-full-staged-artifact:
+    name: Build full staged Asyncify artifact
     runs-on: ubuntu-latest
     timeout-minutes: 360
 
     steps:
-      - name: Checkout wrapper repository
+      - name: Checkout isolated QA branch
         uses: actions/checkout@v4
 
-      - name: Checkout CDDA 0.I source
+      - name: Checkout fixed CDDA 0.I source
         uses: actions/checkout@v4
         with:
           repository: CleverRaven/Cataclysm-DDA
-          ref: 0.I
+          ref: 27939e29b8b4ddc081490d9f51de59a459c88df6
           path: cdda
           fetch-depth: 1
 
-      - name: Apply Emscripten web runtime patches
-        working-directory: cdda
+      - name: Confirm fixed source and QA inputs
         run: |
           set -euo pipefail
+          test "$(git -C cdda rev-parse HEAD)" = "27939e29b8b4ddc081490d9f51de59a459c88df6"
+          test -s patches/cdda-0I-emscripten-mo-reader.patch
+          test -s qa/true-phase-runtime/cdda-0I-emscripten-staged-phase-loader.patch
+          test -s qa/true-phase-runtime/staged-package-manifest.json
 
-          # CDDA 0.I reads MO catalogs through mmap_file.  Emscripten MEMFS
-          # cannot provide that mmap view for LZ4-preloaded files, so use the
-          # locally regression-tested owned-memory reader on this target only.
-          git apply --check ../patches/cdda-0I-emscripten-mo-reader.patch
-          git apply ../patches/cdda-0I-emscripten-mo-reader.patch
-
-          # Loading core JSON or an enabled mod set was a single long task on
-          # the browser main thread.  Yield at a time budget only for the
-          # Asyncify-enabled Emscripten build; native targets retain the exact
-          # original loader behavior and ordering.
-          git apply --check ../patches/cdda-0I-emscripten-loader-yield.patch
-          git apply ../patches/cdda-0I-emscripten-loader-yield.patch
-
-          git diff --check
-          grep -n "MEMFS does not provide a POSIX mmap view" src/mmap_file.cpp
-          grep -n "Keep the browser responsive" src/init.cpp
-
-      - name: Install dependencies
+      - name: Install localization dependency
         run: |
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y gettext
 
-      - name: Free disk space
-        run: |
-          set -euo pipefail
-
-          sudo rm -rf \
-            /usr/share/dotnet \
-            /usr/local/lib/android \
-            /opt/ghc \
-            /usr/local/share/powershell \
-            /usr/share/swift || true
-
-          df -h /
-
-      - name: Setup emsdk
+      - name: Set up Emscripten 3.1.61
         uses: mymindstorm/setup-emsdk@v14
         with:
-          version: 3.1.51
+          version: 3.1.61
 
-      - name: Tune web memory for 4GB devices
+      - name: Apply source-level Japanese and phase patches
         working-directory: cdda
         run: |
           set -euo pipefail
+          git apply --check ../patches/cdda-0I-emscripten-mo-reader.patch
+          git apply ../patches/cdda-0I-emscripten-mo-reader.patch
+          git apply --check ../qa/true-phase-runtime/cdda-0I-emscripten-staged-phase-loader.patch
+          git apply ../qa/true-phase-runtime/cdda-0I-emscripten-staged-phase-loader.patch
+          git diff --check
+          grep -q 'staged_ensure_world_groups' src/game.cpp
+          grep -q 'ensure_staged_tileset_assets' src/sdltiles.cpp
+          grep -q 'mmap_file' src/mmap_file.cpp
 
-          # The upstream web target reserves 512MiB immediately and permits a
-          # 4GiB heap.  A local browser test proved that the Japanese menu
-          # starts at 256MiB with growth enabled.  Keep link optimization at
-          # -O0 for the separately established reliable build path; this step
-          # changes memory policy only.
-          sed -i \
-            's/^[[:space:]]*LDFLAGS[[:space:]]*+=[[:space:]]*-Os[[:space:]]*$/LDFLAGS += -O0/' \
-            Makefile
-          sed -i \
-            's/-sINITIAL_MEMORY=512MB/-sINITIAL_MEMORY=256MB/' \
-            Makefile
-          sed -i \
-            's/-sMAXIMUM_MEMORY=4GB/-sMAXIMUM_MEMORY=1GB/' \
-            Makefile
-
-          grep -n -E 'INITIAL_MEMORY|MAXIMUM_MEMORY|LDFLAGS += -O0' Makefile
-
-      - name: Build CDDA WebAssembly
+      - name: Build Asyncify WebAssembly
         working-directory: cdda
         run: |
           set -euo pipefail
-
           source "$EMSDK/emsdk_env.sh"
-
-          # The Emscripten JavaScript optimizer is the recurrent long-running
-          # stage.  The link is deliberately -O0 (while source compilation
-          # remains optimized) so this stage is not required.  Four workers
-          # match the successful historical runs, and plain-text heartbeats
-          # make every running minute observable.
-          build_started_at="$(date +%s)"
-          build_jobs=4
-          heartbeat() {
-            while sleep 60; do
-              elapsed="$(( $(date +%s) - build_started_at ))"
-              echo "[HEARTBEAT] WebAssembly build active: elapsed=${elapsed}s"
-              free -h
-              df -h /
-              ps -eo pid,ppid,stat,etime,pcpu,pmem,cmd --sort=-pcpu | sed -n '1,12p'
-            done
-          }
-          heartbeat &
-          heartbeat_pid="$!"
-          stop_heartbeat() {
-            kill "$heartbeat_pid" 2>/dev/null || true
-            wait "$heartbeat_pid" 2>/dev/null || true
-          }
-          trap stop_heartbeat EXIT
-
-          build_cdda() {
-            make -j"$build_jobs" \
-              NATIVE=emscripten \
-              BACKTRACE=0 \
-              TILES=1 \
-              TESTS=0 \
-              RUNTESTS=0 \
-              RELEASE=1 \
-              LOCALIZE=1 \
-              LANGUAGES=ja \
-              CCACHE=0 \
-              LINTJSON=0 \
-              cataclysm-tiles.js
-          }
-
-          echo "[BUILD] stable mode: jobs=${build_jobs}, link optimization=-O0, memory=256MiB initial / 1GiB maximum"
-          time build_cdda
-          echo "[BUILD] stable mode completed successfully"
-          stop_heartbeat
-          trap - EXIT
-
+          make -j2 \
+            NATIVE=emscripten BACKTRACE=0 TILES=1 TESTS=0 RUNTESTS=0 RELEASE=1 \
+            LOCALIZE=1 LANGUAGES=ja CCACHE=0 LINTJSON=0 \
+            WARNINGS='-Werror -Wall -Wextra -Wformat-signedness -Wlogical-op -Wmissing-declarations -Wmissing-noreturn -Wpedantic -Wunused-macros -Wno-gnu-zero-variadic-macro-arguments -Wno-error=c++20-extensions' \
+            cataclysm-tiles.js
           test -s cataclysm-tiles.js
           test -s cataclysm-tiles.wasm
 
-      - name: Compile Japanese translation
+      - name: Build Japanese MO catalog
         working-directory: cdda
         run: |
           set -euo pipefail
-
-          # cataclysm-tiles.js does not depend on the top-level `all` target,
-          # so it does not automatically build localization artifacts.
           make localization LANGUAGES=ja
-
-      - name: Verify Japanese translation
-        working-directory: cdda
-        run: |
-          set -euo pipefail
-
           test -s lang/mo/ja/LC_MESSAGES/cataclysm-dda.mo
 
-          ls -lh \
-            lang/mo/ja/LC_MESSAGES/cataclysm-dda.mo
-
-      - name: Create Japanese web preparation script
-        working-directory: cdda
+      - name: Generate complete staged LZ4 payload
         run: |
           set -euo pipefail
-
-          cp \
-            build-scripts/prepare-web.sh \
-            build-scripts/prepare-web-ja.sh
-
-          python3 - <<'PY'
-          from pathlib import Path
-
-          path = Path("build-scripts/prepare-web-ja.sh")
-          text = path.read_text(encoding="utf-8")
-
-          marker = "$EMSDK/upstream/emscripten/tools/file_packager"
-
-          if text.count(marker) != 1:
-              raise SystemExit(
-                  "Expected exactly one file_packager command"
-              )
-
-          japanese_copy = """\
-          echo "Adding Japanese translation..."
-
-          mkdir -p "$BUNDLE_DIR/lang/mo/ja/LC_MESSAGES"
-
-          cp \
-            lang/mo/ja/LC_MESSAGES/cataclysm-dda.mo \
-            "$BUNDLE_DIR/lang/mo/ja/LC_MESSAGES/cataclysm-dda.mo"
-
-          test -s \
-            "$BUNDLE_DIR/lang/mo/ja/LC_MESSAGES/cataclysm-dda.mo"
-
-          """
-
-          text = text.replace(
-              marker,
-              japanese_copy + marker,
-              1
-          )
-
-          path.write_text(text, encoding="utf-8")
-          PY
-
-          grep -n \
-            -A12 \
-            -B3 \
-            "Adding Japanese translation" \
-            build-scripts/prepare-web-ja.sh
-
-      - name: Prepare Web bundle
-        working-directory: cdda
-        run: |
-          set -euo pipefail
-
           source "$EMSDK/emsdk_env.sh"
-
-          bash build-scripts/prepare-web-ja.sh
-
-      - name: Verify Japanese locale in bundle
-        working-directory: cdda
-        run: |
-          set -euo pipefail
-
-          test -s \
-            web_bundle/lang/mo/ja/LC_MESSAGES/cataclysm-dda.mo
-
-          test -s build/cataclysm-tiles.data
-          test -s build/cataclysm-tiles.data.js
-          test -s build/cataclysm-tiles.js
-          test -s build/cataclysm-tiles.wasm
-
-      - name: Copy custom index
-        run: |
-          set -euo pipefail
-
-          test -f shell/index.html
-
-          cp \
-            shell/index.html \
-            cdda/build/index.html
-
-      - name: Stage GitHub Pages site
-        run: |
-          set -euo pipefail
-
           rm -rf site
           mkdir -p site
+          cp cdda/cataclysm-tiles.js cdda/cataclysm-tiles.wasm site/
+          cp qa/true-phase-runtime/index-staged.html site/index.html
+          cp qa/true-phase-runtime/staged-lz4-loader-yield.js site/
+          cp qa/true-phase-runtime/staged-phase-runtime.js site/
+          cp qa/true-phase-runtime/verify_staged_artifact.py site/
+          python3 qa/true-phase-runtime/generate_staged_lz4_packages.py \
+            --source-root cdda \
+            --manifest qa/true-phase-runtime/staged-package-manifest.json \
+            --out site/payload \
+            --file-packager "$EMSDK/upstream/emscripten/tools/file_packager"
+          cp site/payload/staged-package-manifest.json site/
+          cp site/payload/*.data site/
+          cp site/payload/*.data.js site/
+          rm -rf site/payload
 
-          cp -a cdda/build/. site/
-
-          test -s site/index.html
+      - name: Verify full payload and true-phase artifact
+        run: |
+          set -euo pipefail
+          python3 qa/true-phase-runtime/verify_staged_artifact.py \
+            --manifest site/staged-package-manifest.json --payload-dir site
           test -s site/cataclysm-tiles.js
           test -s site/cataclysm-tiles.wasm
-          test -s site/cataclysm-tiles.data
-          test -s site/cataclysm-tiles.data.js
-          test -s site/Terminus.ttf
-          test -s site/favicon.ico
+          test -s site/boot-audio.data
+          test -s site/boot-localization.data
+          test -s site/world-core-json.data
+          test -s site/world-mod-MA.data
+          test -s site/world-gfx-Ultica_iso-assets.data
+          grep -q 'staged_ensure_world_groups' site/cataclysm-tiles.js
+          grep -q 'CDDA_STAGED_BOOT_GROUPS' site/index.html
+          grep -q 'existing profile settings preserved' site/index.html
+          ! grep -q 'languageOption.value === "en"' site/index.html
+          du -sh site
 
-      - name: Upload build artifact
+      - name: Upload local-QA artifact only
         uses: actions/upload-artifact@v4
         with:
-          name: cdda-0I-web-bundle
+          name: cdda-0I-full-true-phase-asyncify
           path: site/
           if-no-files-found: error
-          retention-days: 30
-
-      - name: Upload GitHub Pages artifact
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: site/
-
-  deploy:
-    name: Deploy to GitHub Pages
-    needs: build
-    runs-on: ubuntu-latest
-
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-
-    steps:
-      - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v4
+          retention-days: 14
