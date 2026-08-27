@@ -38,10 +38,23 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y gettext
 
-      - name: Set up Emscripten 3.1.61
+      # This historical toolchain/link arrangement completed prior full Asyncify
+      # builds. It is QA-only; target browser-runtime acceptance remains separate.
+      - name: Set up Emscripten 3.1.51
         uses: mymindstorm/setup-emsdk@v14
         with:
-          version: 3.1.61
+          version: 3.1.51
+
+      - name: Use stable final-link mode
+        working-directory: cdda
+        run: |
+          set -euo pipefail
+          # Keep release C++ compilation and all data intact. This replaces only
+          # the final post-Asyncify size optimizer setting in the temporary build tree.
+          sed -i \
+            's/^[[:space:]]*LDFLAGS[[:space:]]*+=[[:space:]]*-Os[[:space:]]*$/LDFLAGS += -O0/' \
+            Makefile
+          grep -n -E 'LDFLAGS \+= -O0|LDFLAGS \+= -sASYNCIFY' Makefile
 
       - name: Apply source-level Japanese and phase patches
         working-directory: cdda
@@ -78,7 +91,7 @@ jobs:
           export EM_BINARYEN_ROOT="$monitor_binaryen_root"
           export CDDA_REAL_WASM_OPT="$real_binaryen_root/bin/wasm-opt"
           printf '::notice title=Build stage::C++ compile and final emcc link started; every wasm-opt invocation will emit a 60-second heartbeat.\\n'
-          make -j2 \
+          make -j4 \
             NATIVE=emscripten BACKTRACE=0 TILES=1 TESTS=0 RUNTESTS=0 RELEASE=1 \
             LOCALIZE=1 LANGUAGES=ja CCACHE=0 LINTJSON=0 \
             WARNINGS='-Werror -Wall -Wextra -Wformat-signedness -Wlogical-op -Wmissing-declarations -Wmissing-noreturn -Wpedantic -Wunused-macros -Wno-gnu-zero-variadic-macro-arguments -Wno-error=c++20-extensions' \
