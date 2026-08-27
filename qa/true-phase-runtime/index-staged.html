@@ -156,16 +156,17 @@
         if (booted) return;
         booted = true;
         try {
-          /* The LZ4 hook must register its preRun callback before every boot
-             loader.  Emscripten invokes preRun in LIFO order, so boot loader
-             scripts are appended after it and are queued through the hook. */
+          /* Data loader scripts append their own preRun callbacks.  Emscripten
+             drains these callbacks in LIFO order, so register the LZ4 hook
+             *after* every boot loader; its callback then runs first, once FS
+             and LZ4 exist, and wraps loadPackage before loaders call it. */
           await loadScript("staged-phase-runtime.js");
-          await loadScript("staged-lz4-loader-yield.js");
           await window.CDDA_STAGED_RUNTIME_READY;
           for (const group of window.CDDA_STAGED_BOOT_GROUPS) {
             const spec = await window.CDDA_STAGED_RUNTIME_READY.then((m) => m.packages[group]);
             await loadScript(spec.loader_file);
           }
+          await loadScript("staged-lz4-loader-yield.js");
           await loadScript("cataclysm-tiles.js");
         } catch (error) {
           booted = false;

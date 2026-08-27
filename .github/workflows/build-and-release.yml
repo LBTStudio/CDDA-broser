@@ -61,6 +61,23 @@ jobs:
         run: |
           set -euo pipefail
           source "$EMSDK/emsdk_env.sh"
+          # Keep the genuine Binaryen directory untouched.  Emscripten resolves
+          # executables through EM_BINARYEN_ROOT, so use a symlink overlay that
+          # substitutes only wasm-opt with a transparent, stderr-only heartbeat
+          # wrapper.  All Binaryen arguments, stdout, and exit codes are kept.
+          real_binaryen_root="${EM_BINARYEN_ROOT:-$EMSDK/upstream}"
+          monitor_binaryen_root="$RUNNER_TEMP/cdda-binaryen-monitor"
+          rm -rf "$monitor_binaryen_root"
+          mkdir -p "$monitor_binaryen_root/bin"
+          for tool in "$real_binaryen_root/bin/"*; do
+            ln -s "$tool" "$monitor_binaryen_root/bin/$(basename "$tool")"
+          done
+          rm "$monitor_binaryen_root/bin/wasm-opt"
+          install -m 0755 ../qa/true-phase-runtime/wasm-opt-progress-wrapper.sh \
+            "$monitor_binaryen_root/bin/wasm-opt"
+          export EM_BINARYEN_ROOT="$monitor_binaryen_root"
+          export CDDA_REAL_WASM_OPT="$real_binaryen_root/bin/wasm-opt"
+          printf '::notice title=Build stage::C++ compile and final emcc link started; every wasm-opt invocation will emit a 60-second heartbeat.\\n'
           make -j2 \
             NATIVE=emscripten BACKTRACE=0 TILES=1 TESTS=0 RUNTESTS=0 RELEASE=1 \
             LOCALIZE=1 LANGUAGES=ja CCACHE=0 LINTJSON=0 \
@@ -68,6 +85,7 @@ jobs:
             cataclysm-tiles.js
           test -s cataclysm-tiles.js
           test -s cataclysm-tiles.wasm
+          printf '::notice title=Build stage::C++ compile, final emcc link, and wasm-opt processing completed.\\n'
 
       - name: Build Japanese MO catalog
         working-directory: cdda

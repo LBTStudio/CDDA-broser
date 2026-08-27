@@ -202,6 +202,7 @@
     // reads virtual files nor changes LZ4 caches, package buffers, or FS nodes.
     window.CDDA_STAGED_COLLECT_FS_INVENTORY = function collectFsInventory() {
       const seenBackings = new Set();
+      const seenLz4Packages = new Set();
       const activeNodes = new Set();
       const result = {
         schema: "cdda-fs-inventory-v1",
@@ -251,9 +252,12 @@
           result.lz4VirtualFiles++;
           result.lz4VirtualBytes += Number(node.size) || 0;
           addUniqueBacking("lz4Compressed", contents.compressedData.data);
-          const cacheCount = Array.isArray(contents.compressedData.cachedChunks) ?
-            contents.compressedData.cachedChunks.length : 0;
-          result.lz4FixedCacheBytes += cacheCount * lz4.CHUNK_SIZE;
+          if (!seenLz4Packages.has(contents.compressedData)) {
+            seenLz4Packages.add(contents.compressedData);
+            const cacheCount = Array.isArray(contents.compressedData.cachedChunks) ?
+              contents.compressedData.cachedChunks.length : 0;
+            result.lz4FixedCacheBytes += cacheCount * lz4.CHUNK_SIZE;
+          }
         } else if (contents && typeof contents.byteLength === "number") {
           const kind = mountedAtIdbfs(node) ? "idbfs" : "memfs";
           result[kind + "Files"]++;
