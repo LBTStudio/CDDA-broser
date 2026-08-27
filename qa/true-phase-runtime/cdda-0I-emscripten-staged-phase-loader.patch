@@ -1,0 +1,201 @@
+diff --git a/src/game.cpp b/src/game.cpp
+index dc083dd..45f9c18 100644
+--- a/src/game.cpp
++++ b/src/game.cpp
+@@ -216,6 +216,51 @@
+ #include "weather.h"
+ #include "weather_type.h"
+ #include "worldfactory.h"
++
++#if defined(EMSCRIPTEN)
++EM_ASYNC_JS( void, staged_ensure_world_groups, ( const char *groups ), {
++    if( !window.CDDA_STAGED_PHASES_ENABLED ) {
++        return;
++    }
++    if( typeof window.CDDA_STAGED_ENSURE_GROUPS !== "function" ) {
++        throw new Error( "CDDA staged world package barrier is unavailable" );
++    }
++    const names = UTF8ToString( groups ).split( "\n" ).filter( function( name ) {
++        return name.length > 0;
++    } );
++    await window.CDDA_STAGED_ENSURE_GROUPS( names );
++} );
++
++EM_ASYNC_JS( void, staged_ensure_world_mods, ( const char *mod_ids ), {
++    if( !window.CDDA_STAGED_PHASES_ENABLED ) {
++        return;
++    }
++    if( typeof window.CDDA_STAGED_ENSURE_MODS !== "function" ) {
++        throw new Error( "CDDA staged MOD package barrier is unavailable" );
++    }
++    const ids = UTF8ToString( mod_ids ).split( "\n" ).filter( function( id ) {
++        return id.length > 0;
++    } );
++    await window.CDDA_STAGED_ENSURE_MODS( ids );
++} );
++
++static void ensure_staged_world_core_data()
++{
++    staged_ensure_world_groups( "world-core-support\nworld-core-json" );
++}
++
++static void ensure_staged_world_mod_data( const std::vector<mod_id> &mods )
++{
++    std::string mod_ids;
++    for( const mod_id &mod : mods ) {
++        if( mod.is_valid() ) {
++            mod_ids += mod.str();
++            mod_ids += '\n';
++        }
++    }
++    staged_ensure_world_mods( mod_ids.c_str() );
++}
++#endif
+ #include "zzip.h"
+ 
+ #if defined(TILES)
+@@ -789,11 +834,16 @@ void game::setup()
+     new_game = true;
+     {
+         static_popup popup;
+-        popup.message( "%s", _( "Please wait while the world data loads…\nLoading core data" ) );
++                popup.message( "%s", _( "Please wait while the world data loads…\nLoading core data" ) );
+         ui_manager::redraw();
+         refresh_display();
+-
++#if defined(EMSCRIPTEN)
++        // Register complete core packages before the existing one-pass
++        // DynamicDataLoader dispatch and finalization sequence.
++        ensure_staged_world_core_data();
++#endif
+         load_core_data();
++
+     }
+     world_generator->get_mod_manager().check_mods_list( world_generator->active_world );
+     load_world_modfiles();
+@@ -3405,6 +3455,11 @@ void game::load_world_modfiles()
+     // are resolved during the creation of the world.
+     // That means world->active_mod_order contains a list
+     // of mods in the correct order.
++#if defined(EMSCRIPTEN)
++    // Retain active_mod_order and existing load_packs order.  The barrier only
++    // exposes full payload packages to the virtual filesystem beforehand.
++    ensure_staged_world_mod_data( mods );
++#endif
+     load_packs( _( "Loading files" ), mods );
+ 
+     // Load additional mods from that world-specific folder
+diff --git a/src/main_menu.cpp b/src/main_menu.cpp
+index 7206964..27e6fd4 100644
+--- a/src/main_menu.cpp
++++ b/src/main_menu.cpp
+@@ -527,6 +527,16 @@ void main_menu::init_strings()
+         vSettingsHotkeys.push_back( get_hotkeys( item ) );
+     }
+ 
++#if defined(EMSCRIPTEN)
++    // `game::setup()` performs the authoritative core-data load immediately before
++    // the selected world's mod pack and finalization.  Loading the same 3,000+
++    // JSON files here makes the Wasm heap grow before world creation, and that
++    // linear memory cannot shrink before the second load.  Keep the menu usable
++    // without the optional tip database; it falls back to the empty translation.
++    vdaytip = translation().translated();
++    emscripten_log( EM_LOG_CONSOLE,
++                    "[CDDA-WEB-STAGE] menu: deferred core data load until game::setup" );
++#else
+     try {
+         g->load_core_data();
+     } catch( const std::exception &err ) {
+@@ -534,6 +544,7 @@ void main_menu::init_strings()
+         std::exit( 1 );
+     }
+     vdaytip = SNIPPET.random_from_category( "tip" ).value_or( translation() ).translated();
++#endif
+ }
+ 
+ void main_menu::display_text( const std::string &text, const std::string &title, int &selected )
+diff --git a/src/options.cpp b/src/options.cpp
+index a671b4a..e2f3ece 100644
+--- a/src/options.cpp
++++ b/src/options.cpp
+@@ -3198,6 +3198,9 @@ void options_manager::add_options_android()
+ static void refresh_tiles( bool used_tiles_changed, bool pixel_minimap_height_changed, bool ingame )
+ {
+     if( used_tiles_changed ) {
++        // Register a newly selected staged web tileset before cata_tiles opens
++        // its config or image files.  Native and monolithic builds are no-ops.
++        ensure_staged_tileset_assets();
+         // Disable UIs below to avoid accessing the tile context during loading.
+         ui_adaptor dummy( ui_adaptor::disable_uis_below {} );
+         //try and keep SDL calls limited to source files that deal specifically with them
+diff --git a/src/sdltiles.cpp b/src/sdltiles.cpp
+index 020cf3d..c3da211 100644
+--- a/src/sdltiles.cpp
++++ b/src/sdltiles.cpp
+@@ -22,6 +22,7 @@
+ #include <set>
+ #include <stack>
+ #include <stdexcept>
++#include <string>
+ #include <type_traits>
+ #include <vector>
+ #if defined(_MSC_VER) && defined(USE_VCPKG)
+@@ -120,6 +121,35 @@ std::shared_ptr<cata_tiles> tilecontext;
+ std::shared_ptr<cata_tiles> closetilecontext;
+ std::shared_ptr<cata_tiles> fartilecontext;
+ std::unique_ptr<cata_tiles> overmap_tilecontext;
++#if defined(EMSCRIPTEN)
++EM_ASYNC_JS( void, staged_ensure_tilesets, ( const char *close_id,
++             const char *far_id, const char *overmap_id ), {
++    if( !window.CDDA_STAGED_PHASES_ENABLED ) {
++        return;
++    }
++    if( typeof window.CDDA_STAGED_ENSURE_TILESETS !== "function" ) {
++        throw new Error( "CDDA staged tileset barrier is unavailable" );
++    }
++    const ids = [ UTF8ToString( close_id ), UTF8ToString( far_id ), UTF8ToString( overmap_id ) ]
++                .filter( function( id ) {
++                    return id.length > 0;
++                } );
++    await window.CDDA_STAGED_ENSURE_TILESETS( ids );
++} );
++#endif
++
++void ensure_staged_tileset_assets()
++{
++#if defined(EMSCRIPTEN)
++    const std::string close_id = use_tiles ? get_option<std::string>( "TILES" ) : "";
++    const std::string far_id = use_tiles && use_far_tiles ?
++                               get_option<std::string>( "DISTANT_TILES" ) : "";
++    const std::string overmap_id = use_tiles && use_tiles_overmap ?
++                                   get_option<std::string>( "OVERMAP_TILES" ) : "";
++    staged_ensure_tilesets( close_id.c_str(), far_id.c_str(), overmap_id.c_str() );
++#endif
++}
++
+ static uint32_t lastupdate = 0;
+ static uint32_t interval = 25;
+ static bool needupdate = false;
+@@ -3775,6 +3805,7 @@ void catacurses::init_interface()
+         ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_NoMouse;
+     }
+     dbg( D_INFO ) << "Initializing SDL Tiles context";
++    ensure_staged_tileset_assets();
+     fartilecontext = std::make_shared<cata_tiles>( renderer, geometry, ts_cache );
+     if( use_far_tiles ) {
+         try {
+diff --git a/src/sdltiles.h b/src/sdltiles.h
+index 2617b67..bded4c6 100644
+--- a/src/sdltiles.h
++++ b/src/sdltiles.h
+@@ -47,6 +47,10 @@ extern int fontwidth;
+ // may be displayed. Actually, this is supposed to be called from init.cpp,
+ // and only from there.
+ void load_tileset();
++// In staged Emscripten builds, await registration of the close/far/overmap
++// asset packages selected in options before any cata_tiles loader reads them.
++// Native and monolithic web builds retain their existing synchronous behavior.
++void ensure_staged_tileset_assets();
+ void rescale_tileset( int size );
+ bool save_screenshot( const std::string &file_path );
+ void toggle_fullscreen_window();
