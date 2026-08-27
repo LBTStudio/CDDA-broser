@@ -17,7 +17,9 @@ def hash_file(path: Path) -> str:
 
 
 def path_set_hash(paths: list[str]) -> str:
-    return hashlib.sha256("".join(f"{p}\n" for p in sorted(paths)).encode()).hexdigest()
+    # Match the checked-in full-payload invariant: sorted paths separated by
+    # newlines, with no extra trailing newline.
+    return hashlib.sha256("\n".join(sorted(paths)).encode()).hexdigest()
 
 
 def main() -> int:

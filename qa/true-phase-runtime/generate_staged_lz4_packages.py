@@ -18,7 +18,9 @@ from typing import Any
 
 
 def sha256_path_set(paths: list[str]) -> str:
-    payload = "".join(f"{path}\n" for path in sorted(paths)).encode("utf-8")
+    # The checked-in full-payload invariant is a newline-separated sorted path
+    # list with no final delimiter.  Keep generation byte-identical to it.
+    payload = "\n".join(sorted(paths)).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()
 
 
