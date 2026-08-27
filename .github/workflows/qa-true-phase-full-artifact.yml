@@ -1,0 +1,127 @@
+name: QA build — full staged CDDA 0.I artifact
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-full-staged-artifact:
+    name: Build full staged Asyncify artifact
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout isolated QA branch
+        uses: actions/checkout@v4
+
+      - name: Checkout fixed CDDA 0.I source
+        uses: actions/checkout@v4
+        with:
+          repository: CleverRaven/Cataclysm-DDA
+          ref: 27939e29b8b4ddc081490d9f51de59a459c88df6
+          path: cdda
+          fetch-depth: 1
+
+      - name: Confirm fixed source and QA inputs
+        run: |
+          set -euo pipefail
+          test "$(git -C cdda rev-parse HEAD)" = "27939e29b8b4ddc081490d9f51de59a459c88df6"
+          test -s patches/cdda-0I-emscripten-mo-reader.patch
+          test -s qa/true-phase-runtime/cdda-0I-emscripten-staged-phase-loader.patch
+          test -s qa/true-phase-runtime/staged-package-manifest.json
+          git status --short
+
+      - name: Install localization dependency
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y gettext
+
+      - name: Set up Emscripten 3.1.61
+        uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: 3.1.61
+
+      - name: Apply source-level Japanese and phase patches
+        working-directory: cdda
+        run: |
+          set -euo pipefail
+          git apply --check ../patches/cdda-0I-emscripten-mo-reader.patch
+          git apply ../patches/cdda-0I-emscripten-mo-reader.patch
+          git apply --check ../qa/true-phase-runtime/cdda-0I-emscripten-staged-phase-loader.patch
+          git apply ../qa/true-phase-runtime/cdda-0I-emscripten-staged-phase-loader.patch
+          git diff --check
+          grep -q 'staged_ensure_world_groups' src/game.cpp
+          grep -q 'ensure_staged_tileset_assets' src/sdltiles.cpp
+          grep -q 'mmap_file' src/mmap_file.cpp
+
+      - name: Build Asyncify WebAssembly
+        working-directory: cdda
+        run: |
+          set -euo pipefail
+          source "$EMSDK/emsdk_env.sh"
+          # This is a build-only runner with 16GB RAM.  The user runtime remains
+          # a 4GB Chromebook-class browser; no runtime memory cap is added here.
+          make -j2 \
+            NATIVE=emscripten BACKTRACE=0 TILES=1 TESTS=0 RUNTESTS=0 RELEASE=1 \
+            LOCALIZE=1 LANGUAGES=ja CCACHE=0 LINTJSON=0 \
+            WARNINGS='-Werror -Wall -Wextra -Wformat-signedness -Wlogical-op -Wmissing-declarations -Wmissing-noreturn -Wpedantic -Wunused-macros -Wno-gnu-zero-variadic-macro-arguments -Wno-error=c++20-extensions' \
+            cataclysm-tiles.js
+          test -s cataclysm-tiles.js
+          test -s cataclysm-tiles.wasm
+
+      - name: Build Japanese MO catalog
+        working-directory: cdda
+        run: |
+          set -euo pipefail
+          make localization LANGUAGES=ja
+          test -s lang/mo/ja/LC_MESSAGES/cataclysm-dda.mo
+
+      - name: Generate complete staged LZ4 payload
+        run: |
+          set -euo pipefail
+          source "$EMSDK/emsdk_env.sh"
+          rm -rf site
+          mkdir -p site
+          cp cdda/cataclysm-tiles.js cdda/cataclysm-tiles.wasm site/
+          cp qa/true-phase-runtime/index-staged.html site/index.html
+          cp qa/true-phase-runtime/staged-lz4-loader-yield.js site/
+          cp qa/true-phase-runtime/staged-phase-runtime.js site/
+          cp qa/true-phase-runtime/verify_staged_artifact.py site/
+          python3 qa/true-phase-runtime/generate_staged_lz4_packages.py \
+            --source-root cdda \
+            --manifest qa/true-phase-runtime/staged-package-manifest.json \
+            --out site/payload \
+            --file-packager "$EMSDK/upstream/emscripten/tools/file_packager"
+          cp site/payload/staged-package-manifest.json site/
+          cp site/payload/*.data site/
+          cp site/payload/*.data.js site/
+          rm -rf site/payload
+
+      - name: Verify full payload and true-phase artifact
+        run: |
+          set -euo pipefail
+          python3 qa/true-phase-runtime/verify_staged_artifact.py \
+            --manifest site/staged-package-manifest.json --payload-dir site
+          test -s site/cataclysm-tiles.js
+          test -s site/cataclysm-tiles.wasm
+          test -s site/boot-audio.data
+          test -s site/boot-localization.data
+          test -s site/world-core-json.data
+          test -s site/world-mod-MA.data
+          test -s site/world-gfx-Ultica_iso-assets.data
+          grep -q 'staged_ensure_world_groups' site/cataclysm-tiles.js
+          grep -q 'CDDA_STAGED_BOOT_GROUPS' site/index.html
+          grep -q 'existing profile settings preserved' site/index.html
+          ! grep -q 'languageOption.value === "en"' site/index.html
+          du -sh site
+
+      - name: Upload local-QA artifact only
+        uses: actions/upload-artifact@v4
+        with:
+          name: cdda-0I-full-true-phase-asyncify
+          path: site/
+          if-no-files-found: error
+          retention-days: 14
