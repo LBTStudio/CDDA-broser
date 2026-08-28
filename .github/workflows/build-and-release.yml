@@ -5,6 +5,8 @@ on:
 
 permissions:
   contents: read
+  pages: write
+  id-token: write
 
 jobs:
   build-full-staged-artifact:
@@ -153,3 +155,23 @@ jobs:
           path: site/
           if-no-files-found: error
           retention-days: 14
+
+      - name: Upload QA site to GitHub Pages
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site/
+
+  deploy-pages:
+    name: Publish QA site on GitHub Pages
+    needs: build-full-staged-artifact
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy QA site
+        id: deployment
+        uses: actions/deploy-pages@v4
