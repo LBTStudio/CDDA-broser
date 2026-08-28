@@ -85,28 +85,106 @@ index dc083dd..45f9c18 100644
      load_packs( _( "Loading files" ), mods );
  
      // Load additional mods from that world-specific folder
+diff --git a/src/main.cpp b/src/main.cpp
+index cd7b94e..9d972f4 100644
+--- a/src/main.cpp
++++ b/src/main.cpp
+@@ -573,21 +573,31 @@ bool assure_essential_dirs_exist()
+ }  // namespace
+ 
+ #if defined(EMSCRIPTEN)
+-EM_ASYNC_JS( void, mount_idbfs, (), {
+-    console.log( "Mounting IDBFS for persistence..." );
+-    FS.mkdir( '/home/web_user/.cataclysm-dda' );
+-    FS.mount( IDBFS, {}, '/home/web_user/.cataclysm-dda' );
++EM_ASYNC_JS( void, mount_idbfs, ( const char *user_root, const char *home_root ), {
++    const userRoot = UTF8ToString( user_root );
++    const homeRoot = UTF8ToString( home_root );
++    const legacyConfigRoot = homeRoot + "/.config/cataclysm-dda";
++    console.log( "Mounting IDBFS for selected profile", { userRoot: userRoot } );
++    FS.mkdirTree( userRoot );
++    FS.mount( IDBFS, {}, userRoot );
++    // Keep the compatibility config path persistent without changing the active
++    // PATH_INFO config directory of this build.
++    FS.mkdirTree( legacyConfigRoot );
++    FS.mount( IDBFS, {}, legacyConfigRoot );
+     await new Promise( function( resolve, reject )
+     {
+         FS.syncfs( true, function( err ) {
+             if( err ) {
+                 reject( err );
+             } else {
+-                console.log( "Successfully mounted IDBFS." );
++                console.log( "Successfully mounted selected profile IDBFS." );
+                 resolve();
+             }
+         } );
+     } );
++    if( typeof window.CDDA_INITIALIZE_NEW_PROFILE === "function" ) {
++        window.CDDA_INITIALIZE_NEW_PROFILE( userRoot, legacyConfigRoot );
++    }
+ 
+     let fsNeedsSync = false;
+     window.setFsNeedsSync = function setFsNeedsSync()
+@@ -632,10 +642,6 @@ int main( int argc, const char *argv[] )
+     flatbuffers::ClassicLocale::Get();
+ #endif
+ 
+-#if defined(EMSCRIPTEN)
+-    mount_idbfs();
+-#endif
+-
+     on_out_of_scope json_member_reporting_guard{ [] {
+             // Disable reporting unvisited members if stack unwinding leaves main early.
+             Json::globally_report_unvisited_members( false );
+@@ -682,6 +688,12 @@ int main( int argc, const char *argv[] )
+ #   endif
+ #endif
+     PATH_INFO::set_standard_filenames();
++#if defined(EMSCRIPTEN)
++    // PATH_INFO now reflects the profile selected in Module.ENV.  Mount only
++    // this profile's real user root before options or saves are accessed.
++    // init_user_dir already required HOME for this target configuration.
++    mount_idbfs( PATH_INFO::user_dir().c_str(), std::getenv( "HOME" ) );
++#endif
+ 
+     MAP_SHARING::setDefaults();
+ 
 diff --git a/src/main_menu.cpp b/src/main_menu.cpp
-index 7206964..27e6fd4 100644
+index 7206964..94d88dc 100644
 --- a/src/main_menu.cpp
 +++ b/src/main_menu.cpp
-@@ -527,6 +527,16 @@ void main_menu::init_strings()
+@@ -36,6 +36,7 @@
+ #include "gamemode.h"
+ #include "get_version.h"
+ #include "help.h"
++#include "init.h"
+ #include "imgui_demo.h"
+ #include "localized_comparator.h"
+ #include "mapbuffer.h"
+@@ -527,6 +528,21 @@ void main_menu::init_strings()
          vSettingsHotkeys.push_back( get_hotkeys( item ) );
      }
  
 +#if defined(EMSCRIPTEN)
-+    // `game::setup()` performs the authoritative core-data load immediately before
-+    // the selected world's mod pack and finalization.  Loading the same 3,000+
-+    // JSON files here makes the Wasm heap grow before world creation, and that
-+    // linear memory cannot shrink before the second load.  Keep the menu usable
-+    // without the optional tip database; it falls back to the empty translation.
++    // The complete core data load remains deferred to game::setup() so the menu
++    // does not create a non-shrinkable first full-core Wasm allocation.  The
++    // menu constructs an avatar, however, and its default profession is a core
++    // external option.  Register this one already-mounted metadata file first;
++    // it is not a substitute for, nor a subset of, the later authoritative load.
++    try {
++        DynamicDataLoader::get_instance().load_data_from_path(
++            PATH_INFO::jsondir() / "external_options.json", "core" );
++    } catch( const std::exception &err ) {
++        debugmsg( err.what() );
++        std::exit( 1 );
++    }
 +    vdaytip = translation().translated();
-+    emscripten_log( EM_LOG_CONSOLE,
-+                    "[CDDA-WEB-STAGE] menu: deferred core data load until game::setup" );
 +#else
      try {
          g->load_core_data();
      } catch( const std::exception &err ) {
-@@ -534,6 +544,7 @@ void main_menu::init_strings()
+@@ -534,6 +550,7 @@ void main_menu::init_strings()
          std::exit( 1 );
      }
      vdaytip = SNIPPET.random_from_category( "tip" ).value_or( translation() ).translated();
@@ -114,6 +192,51 @@ index 7206964..27e6fd4 100644
  }
  
  void main_menu::display_text( const std::string &text, const std::string &title, int &selected )
+diff --git a/src/mmap_file.cpp b/src/mmap_file.cpp
+index 348a9a1..5ddd8c0 100644
+--- a/src/mmap_file.cpp
++++ b/src/mmap_file.cpp
+@@ -17,6 +17,11 @@
+ #endif
+ 
+ #include <filesystem>
++#include <limits>
++
++#if defined(EMSCRIPTEN)
++#include <fstream>
++#endif
+ 
+ #include "cata_scope_helpers.h"
+ #include "cata_utility.h"
+@@ -338,7 +343,28 @@ std::unique_ptr<mmap_file> mmap_file::map_file_generic(
+ 
+ std::shared_ptr<const mmap_file> mmap_file::map_file( const std::filesystem::path &file_path )
+ {
++#if defined(EMSCRIPTEN)
++    // Emscripten's MEMFS does not provide a POSIX mmap view for files unpacked
++    // from --preload-file data packages.  TranslationDocument uses mmap_file
++    // for read-only MO catalogs, so map them into owned memory instead.
++    const uintmax_t source_size = std::filesystem::file_size( file_path );
++    if( source_size == 0 || source_size > std::numeric_limits<size_t>::max() ) {
++        return {};
++    }
++    std::unique_ptr<mmap_file> memory_file = map_writeable_memory(
++            static_cast<size_t>( source_size ) );
++    if( !memory_file || !memory_file->base() ) {
++        return {};
++    }
++    std::ifstream source( file_path, std::ios::binary );
++    source.read( static_cast<char *>( memory_file->base() ), static_cast<std::streamsize>( source_size ) );
++    if( !source || static_cast<uintmax_t>( source.gcount() ) != source_size ) {
++        return {};
++    }
++    return std::shared_ptr<const mmap_file>( std::move( memory_file ) );
++#else
+     return map_file_generic( file_path, false );
++#endif
+ }
+ 
+ std::unique_ptr<mmap_file> mmap_file::map_writeable_file( const std::filesystem::path &file_path )
 diff --git a/src/options.cpp b/src/options.cpp
 index a671b4a..e2f3ece 100644
 --- a/src/options.cpp

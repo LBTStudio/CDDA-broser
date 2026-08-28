@@ -207,43 +207,38 @@
         saveAs(await zip.generateAsync({ type: "blob" }), "saves-" + (window.CDDA_PROFILE || "default") + ".zip");
       };
 
-      var Module = {
-        preRun: [function () {
-          /* New profiles start in Japanese.  An existing options file or an
-             earlier migration marker is authoritative: this code returns
-             before changing ENV or any file, including intentional English. */
-          const profile = window.CDDA_PROFILE || "web_user";
-          const home = "/home/" + profile;
-          const configDirs = [
-            home + "/.cataclysm-dda/config",
-            home + "/.config/cataclysm-dda",
-          ];
-          const fs = Module.FS || FS;
-          const alreadyInitialized = configDirs.some((configDir) =>
-            fs.analyzePath(configDir + "/options.json").exists ||
-            fs.analyzePath(configDir + "/.web-ja-default-v4").exists
-          );
-          if (alreadyInitialized) {
-            console.info("[CDDA locale] existing profile settings preserved", profile);
-            return;
-          }
+      // C++ mounts the selected profile's IDBFS roots before calling this
+      // callback.  Therefore an existing profile is detected from persistent
+      // storage, not from an empty pre-mount MEMFS overlay.
+      window.CDDA_INITIALIZE_NEW_PROFILE = function (userRoot, compatibilityConfigRoot) {
+        const fs = Module.FS || FS;
+        const profile = window.CDDA_PROFILE || "web_user";
+        const configDirs = [userRoot + "/config", compatibilityConfigRoot];
+        const alreadyInitialized = configDirs.some((configDir) =>
+          fs.analyzePath(configDir + "/options.json").exists ||
+          fs.analyzePath(configDir + "/.web-ja-default-v4").exists
+        );
+        if (alreadyInitialized) {
+          console.info("[CDDA locale] existing profile settings preserved", profile);
+          return;
+        }
+        // Only a genuinely new persistent profile receives Japanese language
+        // environment defaults and mirrored USE_LANG options.
+        if (typeof ENV === "object") {
+          ENV.XDG_CONFIG_HOME = "/home/" + profile + "/.config";
+          ENV.LANG = "ja_JP.UTF-8";
+          ENV.LANGUAGE = "ja";
+        }
+        for (const configDir of configDirs) {
+          fs.mkdirTree(configDir);
+          fs.writeFile(configDir + "/options.json", JSON.stringify([{ name: "USE_LANG", value: "ja" }]));
+          fs.writeFile(configDir + "/.web-ja-default-v4", "v4\n");
+        }
+        console.info("[CDDA locale] initialized new profile in Japanese", profile);
+      };
 
-          // Emscripten's generated runtime keeps actual getenv() state in the
-          // live ENV object.  Set Japanese only for a new profile, before
-          // CDDA initializes PATH_INFO and reads its first options.json.
-          if (typeof ENV === "object") {
-            ENV.HOME = home;
-            ENV.XDG_CONFIG_HOME = home + "/.config";
-            ENV.LANG = "ja_JP.UTF-8";
-            ENV.LANGUAGE = "ja";
-          }
-          for (const configDir of configDirs) {
-            fs.mkdirTree(configDir);
-            const optionsPath = configDir + "/options.json";
-            fs.writeFile(optionsPath, JSON.stringify([{ name: "USE_LANG", value: "ja" }]));
-            fs.writeFile(configDir + "/.web-ja-default-v4", "v4\n");
-          }
-        }],
+      var Module = {
+        preRun: [],
         postRun: [],
         ENV: (function () {
           const env = {};

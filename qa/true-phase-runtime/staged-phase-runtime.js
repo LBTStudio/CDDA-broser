@@ -12,7 +12,10 @@
     "boot-gfx-catalog",
     "boot-gfx-common",
     "boot-localization",
-    "boot-mod-metadata"
+    "boot-mod-metadata",
+    // UI initialization reads palettes and keybindings before the menu.  The
+    // complete existing package remains intact; only its registration is early.
+    "world-core-support"
   ];
   let manifest = null;
   let serial = Promise.resolve();
