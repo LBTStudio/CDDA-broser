@@ -1,6 +1,28 @@
+diff --git a/src/main.cpp b/src/main.cpp
+index cd7b94e..2461aaf 100644
 --- a/src/main.cpp
 +++ b/src/main.cpp
-@@ -590,24 +590,39 @@
+@@ -573,10 +573,15 @@ bool assure_essential_dirs_exist()
+ }  // namespace
+ 
+ #if defined(EMSCRIPTEN)
+-EM_ASYNC_JS( void, mount_idbfs, (), {
+-    console.log( "Mounting IDBFS for persistence..." );
+-    FS.mkdir( '/home/web_user/.cataclysm-dda' );
+-    FS.mount( IDBFS, {}, '/home/web_user/.cataclysm-dda' );
++// The mount point must follow getenv("HOME"): the web shell assigns one HOME
++// per player profile, and PATH_INFO::init_user_dir resolves the save tree as
++// HOME + "/.cataclysm-dda/".  Mounting a fixed /home/web_user path would put
++// per-profile saves on volatile MEMFS and silently lose them on reload.
++EM_ASYNC_JS( void, mount_idbfs, ( const char *user_dir ), {
++    const mountPoint = UTF8ToString( user_dir );
++    console.log( "Mounting IDBFS for persistence at " + mountPoint + "..." );
++    FS.mkdirTree( mountPoint );
++    FS.mount( IDBFS, {}, mountPoint );
+     await new Promise( function( resolve, reject )
+     {
+         FS.syncfs( true, function( err ) {
+@@ -590,26 +595,74 @@ EM_ASYNC_JS( void, mount_idbfs, (), {
      } );
  
      let fsNeedsSync = false;
@@ -43,4 +65,56 @@
 +            }
          } );
      }
++
++    // The debounce window must not become a data-loss window: flush pending
++    // changes immediately when the tab is hidden or torn down (ChromeOS
++    // discards background tabs aggressively on 4GB devices).
++    function flushFsSync()
++    {
++        if( fsSyncTimer !== null ) {
++            clearTimeout( fsSyncTimer );
++            fsSyncTimer = null;
++        }
++        syncFs();
++    }
++    window.addEventListener( 'pagehide', flushFsSync );
++    document.addEventListener( 'visibilitychange', function()
++    {
++        if( document.visibilityState === 'hidden' ) {
++            flushFsSync();
++        }
++    } );
++
++    // Let the embedding shell adjust freshly-restored persistent state (for
++    // example one-time default-option migration).  This must run after
++    // syncfs(true) so the shell sees real IndexedDB content instead of files
++    // that the mount would silently shadow.  A truthy return persists changes.
++    if( typeof window.CDDA_ON_IDBFS_MOUNTED === 'function' ) {
++        try {
++            if( window.CDDA_ON_IDBFS_MOUNTED( mountPoint ) ) {
++                window.setFsNeedsSync();
++            }
++        } catch( hook_error ) {
++            console.error( "CDDA_ON_IDBFS_MOUNTED hook failed:", hook_error );
++        }
++    }
  } );
+ #endif
+ 
+@@ -633,7 +686,15 @@ int main( int argc, const char *argv[] )
+ #endif
+ 
+ #if defined(EMSCRIPTEN)
+-    mount_idbfs();
++    {
++        // HOME is set by the web shell (one value per player profile) before
++        // the runtime starts, matching PATH_INFO::init_user_dir below.
++        const char *home_env = getenv( "HOME" );
++        const std::string idbfs_dir = std::string(
++                                          home_env != nullptr && home_env[0] != '\0' ?
++                                          home_env : "/home/web_user" ) + "/.cataclysm-dda";
++        mount_idbfs( idbfs_dir.c_str() );
++    }
+ #endif
+ 
+     on_out_of_scope json_member_reporting_guard{ [] {

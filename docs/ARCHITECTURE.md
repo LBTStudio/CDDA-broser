@@ -23,7 +23,7 @@ Pipeline (all in CI, nothing large is committed to the repo):
 | `loader-yield` | yield to the browser every 50ms while iterating core/mod JSON files |
 | `mod-finalize-yield` | same 50ms budget for mod interactions, per-object JSON array dispatch, finalization and verification passes (the phases that run during world creation) |
 | `world-yield` | yields in `start_game` / `overmap::generate` / `place_specials` / mapgen so the deepest post-worldgen call chain cannot hold the main thread |
-| `idbfs-debounce` | coalesce IDBFS persistence into one debounced (250ms), serialized sync instead of one transaction per file mutation during world setup |
+| `idbfs-debounce` | mount IDBFS at the profile's real user dir (`$HOME/.cataclysm-dda`, resolved at runtime) instead of the hardcoded `/home/web_user`; coalesce persistence into one debounced (250ms), serialized `FS.syncfs` instead of one transaction per file mutation; force-flush on `pagehide` / `visibilitychange: hidden` so ChromeOS tab discard cannot drop the last writes; expose a `window.CDDA_ON_IDBFS_MOUNTED(mountPoint)` hook so the shell can migrate config *after* the mount (an IDBFS mount shadows anything written there during preRun) |
 
 ## Memory / stack policy for 4GB devices (applied to the Makefile in CI)
 
@@ -43,8 +43,13 @@ Pipeline (all in CI, nothing large is committed to the repo):
 Per-player save isolation:
 The game resolves its user dir as getenv("HOME") + "/.cataclysm-dda/"
 (src/path_info.cpp, init_user_dir). The shell sets ENV.HOME=/home/<profile>
-during preRun, so each player name gets an independent subtree on the IDBFS-backed
-persistent filesystem (IndexedDB). The profile list lives in localStorage.
+during preRun, and the `idbfs-debounce` patch makes the IDBFS mount follow
+that same HOME instead of the upstream hardcoded `/home/web_user/.cataclysm-dda`.
+Before this fix the two paths disagreed, so per-profile saves landed on volatile
+MEMFS and were silently lost on reload. Now each player name gets an independent
+subtree on the IDBFS-backed persistent filesystem (IndexedDB), config migration
+runs via `CDDA_ON_IDBFS_MOUNTED` after the mount (so it is not shadowed), and
+the profile list lives in localStorage.
 
 Error reporting: the shell never uses blocking `alert()`. Runtime aborts,
 uncaught exceptions, unhandled rejections and WebGL context loss all render a
