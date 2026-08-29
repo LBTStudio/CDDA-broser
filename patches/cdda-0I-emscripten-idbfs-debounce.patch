@@ -1,8 +1,8 @@
 diff --git a/src/main.cpp b/src/main.cpp
-index cd7b94e..2461aaf 100644
+index cd7b94e..78c2723 100644
 --- a/src/main.cpp
 +++ b/src/main.cpp
-@@ -573,10 +573,15 @@ bool assure_essential_dirs_exist()
+@@ -573,43 +573,129 @@ bool assure_essential_dirs_exist()
  }  // namespace
  
  #if defined(EMSCRIPTEN)
@@ -10,43 +10,40 @@ index cd7b94e..2461aaf 100644
 -    console.log( "Mounting IDBFS for persistence..." );
 -    FS.mkdir( '/home/web_user/.cataclysm-dda' );
 -    FS.mount( IDBFS, {}, '/home/web_user/.cataclysm-dda' );
+-    await new Promise( function( resolve, reject )
+-    {
+-        FS.syncfs( true, function( err ) {
+-            if( err ) {
+-                reject( err );
+-            } else {
+-                console.log( "Successfully mounted IDBFS." );
+-                resolve();
+-            }
+-        } );
+-    } );
 +// The mount point must follow getenv("HOME"): the web shell assigns one HOME
 +// per player profile, and PATH_INFO::init_user_dir resolves the save tree as
 +// HOME + "/.cataclysm-dda/".  Mounting a fixed /home/web_user path would put
 +// per-profile saves on volatile MEMFS and silently lose them on reload.
 +EM_ASYNC_JS( void, mount_idbfs, ( const char *user_dir ), {
 +    const mountPoint = UTF8ToString( user_dir );
-+    console.log( "Mounting IDBFS for persistence at " + mountPoint + "..." );
-+    FS.mkdirTree( mountPoint );
-+    FS.mount( IDBFS, {}, mountPoint );
-     await new Promise( function( resolve, reject )
-     {
-         FS.syncfs( true, function( err ) {
-@@ -590,26 +595,74 @@ EM_ASYNC_JS( void, mount_idbfs, (), {
-     } );
  
      let fsNeedsSync = false;
-+    let fsSyncInFlight = false;
-+    let fsSyncTimer = null;
-+    const fsSyncDebounceMs = 250;
-     window.setFsNeedsSync = function setFsNeedsSync()
-     {
+-    window.setFsNeedsSync = function setFsNeedsSync()
+-    {
 -        if( !fsNeedsSync ) {
 -            requestAnimationFrame( syncFs );
 -        }
-         fsNeedsSync = true;
-+        if( fsSyncInFlight || fsSyncTimer !== null ) {
-+            return;
-+        }
-+        fsSyncTimer = setTimeout( function() {
-+            fsSyncTimer = null;
-+            requestAnimationFrame( syncFs );
-+        }, fsSyncDebounceMs );
-     };
+-        fsNeedsSync = true;
+-    };
++    let fsSyncInFlight = false;
++    let fsSyncTimer = null;
++    let fsPersistenceReady = false;
++    const fsSyncDebounceMs = 250;
  
      function syncFs()
      {
-+        if( fsSyncInFlight || !fsNeedsSync ) {
++        if( !fsPersistenceReady || fsSyncInFlight || !fsNeedsSync ) {
 +            return;
 +        }
 +        fsNeedsSync = false;
@@ -65,6 +62,24 @@ index cd7b94e..2461aaf 100644
 +            }
          } );
      }
++
++    // Defined before the first await: filesystem.cpp calls this on every
++    // file mutation, and mutations happen while the asynchronous restore
++    // below is still pending (or after it failed).  If this function did
++    // not exist yet, EM_ASM( window.setFsNeedsSync() ) would throw an
++    // uncaught TypeError that halts the game right after character
++    // creation.
++    window.setFsNeedsSync = function setFsNeedsSync()
++    {
++        fsNeedsSync = true;
++        if( !fsPersistenceReady || fsSyncInFlight || fsSyncTimer !== null ) {
++            return;
++        }
++        fsSyncTimer = setTimeout( function() {
++            fsSyncTimer = null;
++            requestAnimationFrame( syncFs );
++        }, fsSyncDebounceMs );
++    };
 +
 +    // The debounce window must not become a data-loss window: flush pending
 +    // changes immediately when the tab is hidden or torn down (ChromeOS
@@ -85,6 +100,45 @@ index cd7b94e..2461aaf 100644
 +        }
 +    } );
 +
++    try {
++        console.log( "Mounting IDBFS for persistence at " + mountPoint + "..." );
++        FS.mkdirTree( mountPoint );
++        FS.mount( IDBFS, {}, mountPoint );
++        await new Promise( function( resolve, reject )
++        {
++            FS.syncfs( true, function( err ) {
++                if( err ) {
++                    reject( err );
++                } else {
++                    console.log( "Successfully mounted IDBFS." );
++                    resolve();
++                }
++            } );
++        } );
++        fsPersistenceReady = true;
++    } catch( mount_error ) {
++        // IndexedDB can be unavailable (storage pressure, private browsing,
++        // a corrupted database...).  Propagating the rejection would abort
++        // startup with an uncaught exception; instead keep the game fully
++        // playable on MEMFS and let the shell warn that saves will not
++        // survive a reload.
++        console.error( "IDBFS unavailable; continuing without persistence:", mount_error );
++        if( typeof window.CDDA_ON_IDBFS_ERROR === 'function' ) {
++            try {
++                window.CDDA_ON_IDBFS_ERROR( String( mount_error ) );
++            } catch( hook_error ) {
++                console.error( "CDDA_ON_IDBFS_ERROR hook failed:", hook_error );
++            }
++        }
++        return;
++    }
++
++    // Mutations recorded while the initial restore was pending can now be
++    // persisted for real.
++    if( fsNeedsSync ) {
++        window.setFsNeedsSync();
++    }
++
 +    // Let the embedding shell adjust freshly-restored persistent state (for
 +    // example one-time default-option migration).  This must run after
 +    // syncfs(true) so the shell sees real IndexedDB content instead of files
@@ -101,7 +155,7 @@ index cd7b94e..2461aaf 100644
  } );
  #endif
  
-@@ -633,7 +686,15 @@ int main( int argc, const char *argv[] )
+@@ -633,7 +719,15 @@ int main( int argc, const char *argv[] )
  #endif
  
  #if defined(EMSCRIPTEN)

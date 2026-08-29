@@ -90,3 +90,34 @@ index d068ac0..72df7e0 100644
      // First, place the mandatory specials to ensure that all minimum instance
      // counts are met.
      place_specials_pass( enabled_specials, sectors, false, false );
+diff --git a/src/sdltiles.cpp b/src/sdltiles.cpp
+index 020cf3d..22203ab 100644
+--- a/src/sdltiles.cpp
++++ b/src/sdltiles.cpp
+@@ -3914,6 +3914,26 @@ void input_manager::pump_events()
+         return;
+     }
+ 
++#if defined(EMSCRIPTEN)
++    // [CDDA-BROSER] Upstream marks every heavy loop (map/overmap saving,
++    // JSON verification, world serialization, ...) with pump_events(), but
++    // on the web this never yielded to the browser event loop, so those
++    // loops still ran as one long task and triggered Chrome's
++    // "page unresponsive" dialog during post-worldgen finalization.  A
++    // time-throttled emscripten_sleep(0) makes every upstream cooperative
++    // point actually cooperative without touching any call site.  The
++    // reentrancy guard makes nested Asyncify unwinds impossible.
++    static double cdda_last_pump_yield = 0.0;
++    static bool cdda_pump_yielding = false;
++    const double cdda_now_ms = emscripten_get_now();
++    if( !cdda_pump_yielding && cdda_now_ms - cdda_last_pump_yield >= 50.0 ) {
++        cdda_pump_yielding = true;
++        emscripten_sleep( 0 );
++        cdda_last_pump_yield = emscripten_get_now();
++        cdda_pump_yielding = false;
++    }
++#endif
++
+     // Handle all events, but ignore any keypress
+     CheckMessages();
+ 
