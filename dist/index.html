@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en-us">
+<html lang="ja">
   <head>
     <meta charset="utf-8" />
     <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
@@ -29,6 +29,11 @@
       .profile-chip:hover { background: #444; border-color: #9cf; }
       .profile-chip .del { color: #c66; margin-left: 8px; font-weight: bold; }
       #profile-note { font-size: 12px; opacity: 0.55; max-width: 480px; text-align: center; line-height: 1.5; margin-top: 8px; }
+      #error-overlay { display: none; position: absolute; inset: 0; z-index: 20; background: rgba(10, 0, 0, 0.92); color: #fdd; font-family: Terminus, monospace; padding: 28px; box-sizing: border-box; overflow: auto; }
+      #error-overlay h2 { color: #f88; margin-top: 0; }
+      #error-overlay pre { white-space: pre-wrap; word-break: break-all; background: #200; padding: 10px; border-radius: 4px; font-size: 13px; }
+      #error-overlay button { font-family: Terminus, monospace; font-size: 18px; padding: 8px 22px; background: #632; color: #fff; border: none; border-radius: 4px; cursor: pointer; margin-right: 10px; }
+      #error-overlay button:hover { background: #853; }
     </style>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.2.1/css/all.min.css" integrity="sha512-MV7K8+y+gLIBoVD59lQIYicR65iaqukzvf/nwasF0nqhPay5w/9lJmVM2hMDcnK1OnMGCdVK+iQrJ7lzPJQd1w==" crossorigin="anonymous" referrerpolicy="no-referrer" />
     <script defer src="https://cdnjs.cloudflare.com/ajax/libs/screenfull.js/5.2.0/screenfull.min.js" integrity="sha512-GoG2/bE6QSPKSrjuoII6iPL2ODnwUJvFgysFYLTW2ltpx6G5nj+mYvhPq5rLPZby0rdMFU2fo4BMlWND7+QZ5g==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
@@ -71,6 +76,14 @@
 
     <canvas id="canvas" style="width: 100%; height: 100%; min-width: 640px; min-height: 384px;" tabindex="-1"></canvas>
     <div id="loading-message" style="display: none">Loading...</div>
+
+    <div id="error-overlay">
+      <h2>エラーが発生しました / An error occurred</h2>
+      <div id="error-hint" style="margin-bottom: 12px; line-height: 1.6;"></div>
+      <pre id="error-detail"></pre>
+      <button onclick="location.reload()">&#8635; 再読み込み / Reload</button>
+      <button onclick="document.getElementById('error-overlay').style.display='none'">閉じる / Dismiss</button>
+    </div>
 
     <script type="text/javascript">
       const canvas = document.getElementById("canvas");
@@ -123,6 +136,17 @@
         if (!getProfiles().includes(profile)) setProfiles(getProfiles().concat(profile));
         localStorage.setItem(LS_LAST, profile);
         window.CDDA_PROFILE = profile;
+        // Module.ENV is created before a player chooses a profile.  Update
+        // all locale-relevant paths before the Emscripten runtime starts.
+        // CDDA 0.I can use either HOME/config or XDG_CONFIG_HOME depending on
+        // its compile configuration, so both must refer to this profile.
+        if (window.Module && Module.ENV) {
+          const home = "/home/" + profile;
+          Module.ENV.HOME = home;
+          Module.ENV.XDG_CONFIG_HOME = home + "/.config";
+          Module.ENV.LANG = "ja";
+          Module.ENV.LANGUAGE = "ja";
+        }
         profileScreen.style.display = "none";
         loadingMessage.style.display = "block";
         boot();
@@ -135,15 +159,30 @@
       profileInput.addEventListener("keydown", (e) => { if (e.key === "Enter") profileStart.onclick(); });
 
       let booted = false;
-      function boot() {
+      function loadScript(src) {
+        return new Promise((resolve, reject) => {
+          const script = document.createElement("script");
+          script.src = src;
+          script.onload = resolve;
+          script.onerror = () => reject(new Error("Could not load " + src));
+          document.body.appendChild(script);
+        });
+      }
+      async function boot() {
         if (booted) return;
         booted = true;
-        const d = document.createElement("script");
-        d.async = true; d.src = "cataclysm-tiles.data.js";
-        document.body.appendChild(d);
-        const g = document.createElement("script");
-        g.async = true; g.src = "cataclysm-tiles.js";
-        document.body.appendChild(g);
+        try {
+          /* The data pack registers its preRun callback.  It must finish
+             evaluating before the game runtime starts, otherwise CDDA scans
+             lang/mo before the Japanese MO catalog exists in its virtual FS. */
+          await loadScript("cataclysm-tiles.data.js");
+          await loadScript("cataclysm-tiles.js");
+        } catch (error) {
+          booted = false;
+          console.error(error);
+          loadingMessage.textContent =
+            "読み込みに失敗しました。再読み込みしてください。 / Failed to load game data. Reload and try again.";
+        }
       }
 
       window.addEventListener("menuready", () => { loadingMessage.style.display = "none"; });
@@ -151,7 +190,24 @@
         settingsMenu.style.display = settingsMenu.style.display === "none" ? "inherit" : "none";
       };
       canvas.addEventListener("click", () => { settingsMenu.style.display = "none"; });
-      document.getElementById("toggle-fullscreen").onclick = () => { screenfull.toggle(); };
+      document.getElementById("toggle-fullscreen").onclick = () => {
+        // screenfull comes from a CDN; a blocked/offline CDN must not turn
+        // fullscreen into an uncaught error.  Fall back to the native API.
+        // Both paths return promises that reject when the browser denies
+        // fullscreen (e.g. no user-gesture credit); swallow those so they
+        // never surface through the unhandledrejection handler.
+        try {
+          if (typeof screenfull !== "undefined" && screenfull.isEnabled) {
+            Promise.resolve(screenfull.toggle()).catch(() => {});
+            return;
+          }
+          if (document.fullscreenElement) {
+            Promise.resolve(document.exitFullscreen()).catch(() => {});
+          } else if (document.documentElement.requestFullscreen) {
+            Promise.resolve(document.documentElement.requestFullscreen()).catch(() => {});
+          }
+        } catch (e) { console.warn("Fullscreen unavailable:", e); }
+      };
       document.getElementById("switch-player").onclick = () => {
         settingsMenu.style.display = "none";
         if (window.game_unsaved) {
@@ -159,27 +215,124 @@
         }
         location.reload();
       };
+      let noticeTimer = null;
+      function noticeMessage(message) {
+        // Non-fatal notice: reuse the loading message area briefly instead of
+        // hijacking the fatal-error overlay.  Overlapping notices reset the
+        // timer instead of racing each other.
+        loadingMessage.textContent = message;
+        loadingMessage.style.display = "block";
+        if (noticeTimer !== null) clearTimeout(noticeTimer);
+        noticeTimer = setTimeout(() => {
+          noticeTimer = null;
+          if (!errorShown) loadingMessage.style.display = "none";
+        }, 6000);
+      }
       document.getElementById("export-saves").onclick = async () => {
-        const zip = new JSZip();
-        function isRealDir(p) { return p !== "." && p !== ".."; }
-        function recurse(fs_path, zip_path) {
-          const entries = Module.FS.readdir(fs_path).filter(isRealDir);
-          for (const entry of entries) {
-            const efs = fs_path + "/" + entry, ezp = zip_path + "/" + entry;
-            const stat = FS.stat(efs);
-            if (FS.isDir(stat.mode)) recurse(efs, ezp);
-            else if (FS.isFile(stat.mode)) zip.file(ezp, FS.readFile(efs, { encoding: "binary" }));
+        // Guard the CDN dependencies and the pre-boot state so a menu click
+        // can never surface as a fatal-looking uncaught error.
+        if (typeof JSZip === "undefined" || typeof saveAs === "undefined") {
+          noticeMessage("エクスポート用ライブラリを読み込めていません。接続を確認して再読み込みしてください。 / Export libraries did not load. Reload and try again.");
+          return;
+        }
+        if (!window.Module || !Module.FS || !booted) {
+          noticeMessage("ゲーム起動後にお使いください。 / Start the game first, then export.");
+          return;
+        }
+        try {
+          const zip = new JSZip();
+          function isRealDir(p) { return p !== "." && p !== ".."; }
+          function recurse(fs_path, zip_path) {
+            const entries = Module.FS.readdir(fs_path).filter(isRealDir);
+            for (const entry of entries) {
+              const efs = fs_path + "/" + entry, ezp = zip_path + "/" + entry;
+              const stat = FS.stat(efs);
+              if (FS.isDir(stat.mode)) recurse(efs, ezp);
+              else if (FS.isFile(stat.mode)) zip.file(ezp, FS.readFile(efs, { encoding: "binary" }));
+            }
+          }
+          const saveRoot = window.CDDA_PROFILE
+            ? "/home/" + window.CDDA_PROFILE + "/.cataclysm-dda"
+            : "/home/web_user/.cataclysm-dda";
+          recurse(saveRoot, "");
+          saveAs(await zip.generateAsync({ type: "blob" }), "saves-" + (window.CDDA_PROFILE || "default") + ".zip");
+        } catch (error) {
+          console.error("Export failed:", error);
+          noticeMessage("エクスポートに失敗しました: " + error + " / Export failed.");
+        }
+      };
+
+      /* Migrate the prior English default to Japanese exactly once per
+         profile, but never overwrite a language selected afterwards.
+         Returns true when files were changed so the caller can persist. */
+      function migrateJapaneseDefault(fs, configDir) {
+        const optionsPath = configDir + "/options.json";
+        const migrationPath = configDir + "/.web-ja-default-v3";
+        if (fs.analyzePath(migrationPath).exists) return false;
+
+        fs.mkdirTree(configDir);
+        let options = [];
+        if (fs.analyzePath(optionsPath).exists) {
+          try {
+            const saved = JSON.parse(fs.readFile(optionsPath, { encoding: "utf8" }));
+            if (Array.isArray(saved)) options = saved;
+          } catch (error) {
+            console.warn("Could not read saved CDDA options; using defaults.", error);
           }
         }
-        const saveRoot = window.CDDA_PROFILE
-          ? "/home/" + window.CDDA_PROFILE + "/.cataclysm-dda"
-          : "/home/web_user/.cataclysm-dda";
-        recurse(saveRoot, "");
-        saveAs(await zip.generateAsync({ type: "blob" }), "saves-" + (window.CDDA_PROFILE || "default") + ".zip");
+
+        const languageOption = options.find((option) => option && option.name === "USE_LANG");
+        if (!languageOption) {
+          options.push({ name: "USE_LANG", value: "ja" });
+        } else if (!languageOption.value || languageOption.value === "en") {
+          languageOption.value = "ja";
+        }
+
+        fs.writeFile(optionsPath, JSON.stringify(options));
+        fs.writeFile(migrationPath, "v3\n");
+        return true;
+      }
+
+      /* The runtime mounts IDBFS over HOME/.cataclysm-dda and restores
+         IndexedDB content *after* preRun; anything written there earlier
+         would be shadowed by the mount.  This hook (called by the patched
+         runtime right after syncfs(true)) is the first moment the real
+         persistent config is visible.  Returning true persists changes. */
+      window.CDDA_ON_IDBFS_MOUNTED = function (mountPoint) {
+        const fs = Module.FS || FS;
+        return migrateJapaneseDefault(fs, mountPoint + "/config");
+      };
+
+      /* Called by the patched runtime when IndexedDB is unavailable (storage
+         pressure, private browsing, corrupted DB).  The game continues on
+         in-memory storage; make that visible instead of failing silently. */
+      window.CDDA_ON_IDBFS_ERROR = function (detail) {
+        console.warn("IDBFS unavailable:", detail);
+        noticeMessage(
+          "\u6ce8\u610f: \u3053\u306e\u30d6\u30e9\u30a6\u30b6\u3067\u306f\u30bb\u30fc\u30d6\u3092\u4fdd\u5b58\u3067\u304d\u307e\u305b\u3093\uff08\u518d\u8aad\u307f\u8fbc\u307f\u3067\u6d88\u3048\u307e\u3059\uff09\u3002 / " +
+          "Warning: saves cannot be persisted in this browser session.");
       };
 
       var Module = {
-        preRun: [],
+        preRun: [function () {
+          const profile = window.CDDA_PROFILE || "web_user";
+          const home = "/home/" + profile;
+          // Emscripten's generated runtime keeps its actual getenv() state in
+          // the live global ENV object; Module.ENV is not imported into it.
+          // Set this during preRun, before CDDA initializes PATH_INFO and
+          // mounts IDBFS at getenv("HOME")/.cataclysm-dda.
+          if (typeof ENV === "object") {
+            ENV.HOME = home;
+            ENV.XDG_CONFIG_HOME = home + "/.config";
+            ENV.LANG = "ja_JP.UTF-8";
+            ENV.LANGUAGE = "ja";
+          }
+          // The XDG path is not IDBFS-mounted (only used by USE_XDG_DIR
+          // builds); seed it here so either compile configuration starts in
+          // Japanese.  The HOME path is handled by the post-mount hook above.
+          const fs = Module.FS || FS;
+          migrateJapaneseDefault(fs, home + "/.config/cataclysm-dda");
+        }],
         postRun: [],
         ENV: (function () {
           const env = {};
@@ -188,7 +341,8 @@
         })(),
         canvas: (function () {
           canvas.addEventListener("webglcontextlost", function (e) {
-            alert("WebGL context lost. You will need to reload the page.");
+            showFatalError("WebGL context lost",
+              "描画コンテキストが失われました。ページを再読み込みしてください。\nThe browser dropped the WebGL context (usually memory pressure). Reload the page.");
             e.preventDefault();
           }, false);
           return canvas;
@@ -206,9 +360,46 @@
         },
       };
       Module.setStatus("Downloading...");
+
+      /* ---- Error reporting: never a blocking alert(); show a readable
+         overlay with a recovery hint instead.  On 4GB Chromebooks the most
+         common failures are memory-growth aborts and tab discards, which
+         previously surfaced as a black screen with no menu. ---- */
+      const errorOverlay = document.getElementById("error-overlay");
+      const errorHint = document.getElementById("error-hint");
+      const errorDetail = document.getElementById("error-detail");
+      let errorShown = false;
+      function showFatalError(kind, detail) {
+        console.error("[CDDA-SHELL] " + kind + ":", detail);
+        if (errorShown) return; // keep the first (root) cause visible
+        errorShown = true;
+        const text = String(detail || "");
+        let hint =
+          "再読み込みで直ることが多いです。改善しない場合は他のタブを全て閉じてからやり直してください。<br />" +
+          "Reloading usually fixes this. If not, close all other tabs and try again.";
+        if (/memory|allocat|OOM|grow/i.test(text)) {
+          hint =
+            "メモリ不足の可能性があります。他のタブやアプリを閉じてから再読み込みしてください。<br />" +
+            "Likely out of memory. Close other tabs/apps, then reload.";
+        }
+        errorHint.innerHTML = hint;
+        errorDetail.textContent = kind + "\n" + text;
+        errorOverlay.style.display = "block";
+        loadingMessage.style.display = "none";
+      }
       window.onerror = function (event, source, lineno, colno, error) {
-        if (typeof error === "number" && Module.getExceptionMessage) console.log(Module.getExceptionMessage(error));
-        alert("Exception thrown, see JavaScript console.");
+        let detail = error;
+        if (typeof error === "number" && Module.getExceptionMessage) {
+          try { detail = Module.getExceptionMessage(error); } catch (e) { /* keep number */ }
+        }
+        showFatalError("Uncaught exception", detail && detail.stack ? detail.stack : detail || event);
+        return true;
+      };
+      window.addEventListener("unhandledrejection", (e) => {
+        showFatalError("Unhandled promise rejection", e.reason && e.reason.stack ? e.reason.stack : e.reason);
+      });
+      Module.onAbort = function (what) {
+        showFatalError("Runtime abort", what);
       };
       window.onbeforeunload = (e) => { if (window.game_unsaved) e.preventDefault(); };
     </script>

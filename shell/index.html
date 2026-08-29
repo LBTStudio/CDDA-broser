@@ -193,9 +193,20 @@
       document.getElementById("toggle-fullscreen").onclick = () => {
         // screenfull comes from a CDN; a blocked/offline CDN must not turn
         // fullscreen into an uncaught error.  Fall back to the native API.
-        if (typeof screenfull !== "undefined" && screenfull.isEnabled) { screenfull.toggle(); return; }
-        if (document.fullscreenElement) document.exitFullscreen();
-        else if (document.documentElement.requestFullscreen) document.documentElement.requestFullscreen();
+        // Both paths return promises that reject when the browser denies
+        // fullscreen (e.g. no user-gesture credit); swallow those so they
+        // never surface through the unhandledrejection handler.
+        try {
+          if (typeof screenfull !== "undefined" && screenfull.isEnabled) {
+            Promise.resolve(screenfull.toggle()).catch(() => {});
+            return;
+          }
+          if (document.fullscreenElement) {
+            Promise.resolve(document.exitFullscreen()).catch(() => {});
+          } else if (document.documentElement.requestFullscreen) {
+            Promise.resolve(document.documentElement.requestFullscreen()).catch(() => {});
+          }
+        } catch (e) { console.warn("Fullscreen unavailable:", e); }
       };
       document.getElementById("switch-player").onclick = () => {
         settingsMenu.style.display = "none";
@@ -204,12 +215,18 @@
         }
         location.reload();
       };
+      let noticeTimer = null;
       function noticeMessage(message) {
         // Non-fatal notice: reuse the loading message area briefly instead of
-        // hijacking the fatal-error overlay.
+        // hijacking the fatal-error overlay.  Overlapping notices reset the
+        // timer instead of racing each other.
         loadingMessage.textContent = message;
         loadingMessage.style.display = "block";
-        setTimeout(() => { if (!errorShown) loadingMessage.style.display = "none"; }, 6000);
+        if (noticeTimer !== null) clearTimeout(noticeTimer);
+        noticeTimer = setTimeout(() => {
+          noticeTimer = null;
+          if (!errorShown) loadingMessage.style.display = "none";
+        }, 6000);
       }
       document.getElementById("export-saves").onclick = async () => {
         // Guard the CDN dependencies and the pre-boot state so a menu click
@@ -284,6 +301,16 @@
       window.CDDA_ON_IDBFS_MOUNTED = function (mountPoint) {
         const fs = Module.FS || FS;
         return migrateJapaneseDefault(fs, mountPoint + "/config");
+      };
+
+      /* Called by the patched runtime when IndexedDB is unavailable (storage
+         pressure, private browsing, corrupted DB).  The game continues on
+         in-memory storage; make that visible instead of failing silently. */
+      window.CDDA_ON_IDBFS_ERROR = function (detail) {
+        console.warn("IDBFS unavailable:", detail);
+        noticeMessage(
+          "\u6ce8\u610f: \u3053\u306e\u30d6\u30e9\u30a6\u30b6\u3067\u306f\u30bb\u30fc\u30d6\u3092\u4fdd\u5b58\u3067\u304d\u307e\u305b\u3093\uff08\u518d\u8aad\u307f\u8fbc\u307f\u3067\u6d88\u3048\u307e\u3059\uff09\u3002 / " +
+          "Warning: saves cannot be persisted in this browser session.");
       };
 
       var Module = {
