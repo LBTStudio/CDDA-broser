@@ -1,0 +1,46 @@
+--- a/src/main.cpp
++++ b/src/main.cpp
+@@ -590,24 +590,39 @@
+     } );
+ 
+     let fsNeedsSync = false;
++    let fsSyncInFlight = false;
++    let fsSyncTimer = null;
++    const fsSyncDebounceMs = 250;
+     window.setFsNeedsSync = function setFsNeedsSync()
+     {
+-        if( !fsNeedsSync ) {
+-            requestAnimationFrame( syncFs );
+-        }
+         fsNeedsSync = true;
++        if( fsSyncInFlight || fsSyncTimer !== null ) {
++            return;
++        }
++        fsSyncTimer = setTimeout( function() {
++            fsSyncTimer = null;
++            requestAnimationFrame( syncFs );
++        }, fsSyncDebounceMs );
+     };
+ 
+     function syncFs()
+     {
++        if( fsSyncInFlight || !fsNeedsSync ) {
++            return;
++        }
++        fsNeedsSync = false;
++        fsSyncInFlight = true;
+         console.log( "Persisting to IDBFS..." );
+         FS.syncfs( false, function( err ) {
+-            fsNeedsSync = false;
++            fsSyncInFlight = false;
+             if( err ) {
+                 console.error( err );
+             } else {
+                 console.log( "Successfully persisted to IDBFS..." );
+             }
++            if( fsNeedsSync ) {
++                window.setFsNeedsSync();
++            }
+         } );
+     }
+ } );

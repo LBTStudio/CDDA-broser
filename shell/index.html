@@ -29,6 +29,11 @@
       .profile-chip:hover { background: #444; border-color: #9cf; }
       .profile-chip .del { color: #c66; margin-left: 8px; font-weight: bold; }
       #profile-note { font-size: 12px; opacity: 0.55; max-width: 480px; text-align: center; line-height: 1.5; margin-top: 8px; }
+      #error-overlay { display: none; position: absolute; inset: 0; z-index: 20; background: rgba(10, 0, 0, 0.92); color: #fdd; font-family: Terminus, monospace; padding: 28px; box-sizing: border-box; overflow: auto; }
+      #error-overlay h2 { color: #f88; margin-top: 0; }
+      #error-overlay pre { white-space: pre-wrap; word-break: break-all; background: #200; padding: 10px; border-radius: 4px; font-size: 13px; }
+      #error-overlay button { font-family: Terminus, monospace; font-size: 18px; padding: 8px 22px; background: #632; color: #fff; border: none; border-radius: 4px; cursor: pointer; margin-right: 10px; }
+      #error-overlay button:hover { background: #853; }
     </style>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.2.1/css/all.min.css" integrity="sha512-MV7K8+y+gLIBoVD59lQIYicR65iaqukzvf/nwasF0nqhPay5w/9lJmVM2hMDcnK1OnMGCdVK+iQrJ7lzPJQd1w==" crossorigin="anonymous" referrerpolicy="no-referrer" />
     <script defer src="https://cdnjs.cloudflare.com/ajax/libs/screenfull.js/5.2.0/screenfull.min.js" integrity="sha512-GoG2/bE6QSPKSrjuoII6iPL2ODnwUJvFgysFYLTW2ltpx6G5nj+mYvhPq5rLPZby0rdMFU2fo4BMlWND7+QZ5g==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
@@ -71,6 +76,14 @@
 
     <canvas id="canvas" style="width: 100%; height: 100%; min-width: 640px; min-height: 384px;" tabindex="-1"></canvas>
     <div id="loading-message" style="display: none">Loading...</div>
+
+    <div id="error-overlay">
+      <h2>エラーが発生しました / An error occurred</h2>
+      <div id="error-hint" style="margin-bottom: 12px; line-height: 1.6;"></div>
+      <pre id="error-detail"></pre>
+      <button onclick="location.reload()">&#8635; 再読み込み / Reload</button>
+      <button onclick="document.getElementById('error-overlay').style.display='none'">閉じる / Dismiss</button>
+    </div>
 
     <script type="text/javascript">
       const canvas = document.getElementById("canvas");
@@ -167,7 +180,8 @@
         } catch (error) {
           booted = false;
           console.error(error);
-          loadingMessage.textContent = "Failed to load game data. Reload and try again.";
+          loadingMessage.textContent =
+            "読み込みに失敗しました。再読み込みしてください。 / Failed to load game data. Reload and try again.";
         }
       }
 
@@ -265,7 +279,8 @@
         })(),
         canvas: (function () {
           canvas.addEventListener("webglcontextlost", function (e) {
-            alert("WebGL context lost. You will need to reload the page.");
+            showFatalError("WebGL context lost",
+              "描画コンテキストが失われました。ページを再読み込みしてください。\nThe browser dropped the WebGL context (usually memory pressure). Reload the page.");
             e.preventDefault();
           }, false);
           return canvas;
@@ -283,9 +298,46 @@
         },
       };
       Module.setStatus("Downloading...");
+
+      /* ---- Error reporting: never a blocking alert(); show a readable
+         overlay with a recovery hint instead.  On 4GB Chromebooks the most
+         common failures are memory-growth aborts and tab discards, which
+         previously surfaced as a black screen with no menu. ---- */
+      const errorOverlay = document.getElementById("error-overlay");
+      const errorHint = document.getElementById("error-hint");
+      const errorDetail = document.getElementById("error-detail");
+      let errorShown = false;
+      function showFatalError(kind, detail) {
+        console.error("[CDDA-SHELL] " + kind + ":", detail);
+        if (errorShown) return; // keep the first (root) cause visible
+        errorShown = true;
+        const text = String(detail || "");
+        let hint =
+          "再読み込みで直ることが多いです。改善しない場合は他のタブを全て閉じてからやり直してください。<br />" +
+          "Reloading usually fixes this. If not, close all other tabs and try again.";
+        if (/memory|allocat|OOM|grow/i.test(text)) {
+          hint =
+            "メモリ不足の可能性があります。他のタブやアプリを閉じてから再読み込みしてください。<br />" +
+            "Likely out of memory. Close other tabs/apps, then reload.";
+        }
+        errorHint.innerHTML = hint;
+        errorDetail.textContent = kind + "\n" + text;
+        errorOverlay.style.display = "block";
+        loadingMessage.style.display = "none";
+      }
       window.onerror = function (event, source, lineno, colno, error) {
-        if (typeof error === "number" && Module.getExceptionMessage) console.log(Module.getExceptionMessage(error));
-        alert("Exception thrown, see JavaScript console.");
+        let detail = error;
+        if (typeof error === "number" && Module.getExceptionMessage) {
+          try { detail = Module.getExceptionMessage(error); } catch (e) { /* keep number */ }
+        }
+        showFatalError("Uncaught exception", detail && detail.stack ? detail.stack : detail || event);
+        return true;
+      };
+      window.addEventListener("unhandledrejection", (e) => {
+        showFatalError("Unhandled promise rejection", e.reason && e.reason.stack ? e.reason.stack : e.reason);
+      });
+      Module.onAbort = function (what) {
+        showFatalError("Runtime abort", what);
       };
       window.onbeforeunload = (e) => { if (window.game_unsaved) e.preventDefault(); };
     </script>

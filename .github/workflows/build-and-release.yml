@@ -2,6 +2,12 @@ name: Build CDDA 0.I WebAssembly
 
 on:
   workflow_dispatch:
+    inputs:
+      deploy_pages:
+        description: "Deploy the built bundle to GitHub Pages"
+        required: false
+        default: true
+        type: boolean
 
 permissions:
   contents: read
@@ -48,9 +54,34 @@ jobs:
           git apply --check ../patches/cdda-0I-emscripten-loader-yield.patch
           git apply ../patches/cdda-0I-emscripten-loader-yield.patch
 
+          # World creation continues past the plain loader loop into mod
+          # interactions, JSON array dispatch, finalization and verification.
+          # Keep those phases cooperative too, so a new world does not hold
+          # the browser main thread in one multi-second task.
+          git apply --check ../patches/cdda-0I-emscripten-mod-finalize-yield.patch
+          git apply ../patches/cdda-0I-emscripten-mod-finalize-yield.patch
+
+          # start_game -> overmap::generate -> mapgen is the deepest call
+          # chain in the game and previously never yielded, which froze the
+          # tab on 4GB devices right after character creation.  Yield at
+          # bounded, time-throttled points (Emscripten only).
+          git apply --check ../patches/cdda-0I-emscripten-world-yield.patch
+          git apply ../patches/cdda-0I-emscripten-world-yield.patch
+
+          # World setup mutates many small files; upstream schedules one full
+          # IDBFS sync per mutation on the next animation frame.  Debounce
+          # and serialize those syncs so IndexedDB transactions do not pile
+          # up while the world is being generated.
+          git apply --check ../patches/cdda-0I-emscripten-idbfs-debounce.patch
+          git apply ../patches/cdda-0I-emscripten-idbfs-debounce.patch
+
           git diff --check
           grep -n "MEMFS does not provide a POSIX mmap view" src/mmap_file.cpp
           grep -n "Keep the browser responsive" src/init.cpp
+          grep -n "World mod interactions were not covered" src/init.cpp
+          grep -n "give the browser a paint frame" src/game.cpp
+          grep -n "deeply nested overmap specials" src/mapgen.cpp
+          grep -n "fsSyncDebounceMs" src/main.cpp
 
       - name: Install dependencies
         run: |
@@ -84,19 +115,44 @@ jobs:
           # The upstream web target reserves 512MiB immediately and permits a
           # 4GiB heap.  A local browser test proved that the Japanese menu
           # starts at 256MiB with growth enabled.  Keep link optimization at
-          # -O0 for the separately established reliable build path; this step
-          # changes memory policy only.
+          # -O0 for the separately established reliable build path.
           sed -i \
             's/^[[:space:]]*LDFLAGS[[:space:]]*+=[[:space:]]*-Os[[:space:]]*$/LDFLAGS += -O0/' \
             Makefile
           sed -i \
             's/-sINITIAL_MEMORY=512MB/-sINITIAL_MEMORY=256MB/' \
             Makefile
+
+          # World generation is the peak-memory moment (core+mod JSON load,
+          # overmap generation, mapgen).  With ALLOW_MEMORY_GROWTH the
+          # maximum is only a reservation cap, not committed memory, but a
+          # 1GiB cap made growth fail and abort exactly during world setup on
+          # 4GB devices.  2GiB keeps idle usage identical while giving the
+          # generation spike headroom.
           sed -i \
-            's/-sMAXIMUM_MEMORY=4GB/-sMAXIMUM_MEMORY=1GB/' \
+            's/-sMAXIMUM_MEMORY=4GB/-sMAXIMUM_MEMORY=2GB/' \
             Makefile
 
-          grep -n -E 'INITIAL_MEMORY|MAXIMUM_MEMORY|LDFLAGS += -O0' Makefile
+          # The yield patches call emscripten_sleep() inside deep call
+          # chains (overmap/mapgen).  Asyncify unwinds every live frame into
+          # a fixed buffer; the upstream 16KiB ASYNCIFY_STACK_SIZE overflows
+          # there and corrupts memory silently (blank screen, no menu).
+          # 4MiB is a one-time allocation that removes that failure mode.
+          sed -i \
+            's/-sASYNCIFY_STACK_SIZE=16384/-sASYNCIFY_STACK_SIZE=4194304/' \
+            Makefile
+
+          # Deeply nested overmap specials also press on the 256KiB main
+          # stack.  1MiB costs one megabyte of the heap and prevents native
+          # stack exhaustion during mapgen recursion.
+          sed -i \
+            's/-sSTACK_SIZE=262144/-sSTACK_SIZE=1048576/' \
+            Makefile
+
+          grep -n -E 'INITIAL_MEMORY|MAXIMUM_MEMORY|ASYNCIFY_STACK_SIZE|-sSTACK_SIZE|LDFLAGS \+= -O0' Makefile
+          grep -q -- '-sMAXIMUM_MEMORY=2GB' Makefile
+          grep -q -- '-sASYNCIFY_STACK_SIZE=4194304' Makefile
+          grep -q -- '-sSTACK_SIZE=1048576' Makefile
 
       - name: Build CDDA WebAssembly
         working-directory: cdda
@@ -144,7 +200,7 @@ jobs:
               cataclysm-tiles.js
           }
 
-          echo "[BUILD] stable mode: jobs=${build_jobs}, link optimization=-O0, memory=256MiB initial / 1GiB maximum"
+          echo "[BUILD] stable mode: jobs=${build_jobs}, link optimization=-O0, memory=256MiB initial / 2GiB maximum, asyncify stack=4MiB"
           time build_cdda
           echo "[BUILD] stable mode completed successfully"
           stop_heartbeat
@@ -281,12 +337,14 @@ jobs:
           retention-days: 30
 
       - name: Upload GitHub Pages artifact
+        if: ${{ inputs.deploy_pages != false }}
         uses: actions/upload-pages-artifact@v3
         with:
           path: site/
 
   deploy:
     name: Deploy to GitHub Pages
+    if: ${{ inputs.deploy_pages != false }}
     needs: build
     runs-on: ubuntu-latest
 
