@@ -1,0 +1,372 @@
+name: Build CDDA 0.I WebAssembly
+
+on:
+  workflow_dispatch:
+    inputs:
+      deploy_pages:
+        description: "Deploy the built bundle to GitHub Pages"
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: cdda-pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build CDDA 0.I WebAssembly
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout wrapper repository
+        uses: actions/checkout@v4
+
+      - name: Checkout CDDA 0.I source
+        uses: actions/checkout@v4
+        with:
+          repository: CleverRaven/Cataclysm-DDA
+          ref: 0.I
+          path: cdda
+          fetch-depth: 1
+
+      - name: Apply Emscripten web runtime patches
+        working-directory: cdda
+        run: |
+          set -euo pipefail
+
+          # CDDA 0.I reads MO catalogs through mmap_file.  Emscripten MEMFS
+          # cannot provide that mmap view for LZ4-preloaded files, so use the
+          # locally regression-tested owned-memory reader on this target only.
+          git apply --check ../patches/cdda-0I-emscripten-mo-reader.patch
+          git apply ../patches/cdda-0I-emscripten-mo-reader.patch
+
+          # Loading core JSON or an enabled mod set was a single long task on
+          # the browser main thread.  Yield at a time budget only for the
+          # Asyncify-enabled Emscripten build; native targets retain the exact
+          # original loader behavior and ordering.
+          git apply --check ../patches/cdda-0I-emscripten-loader-yield.patch
+          git apply ../patches/cdda-0I-emscripten-loader-yield.patch
+
+          # World creation continues past the plain loader loop into mod
+          # interactions, JSON array dispatch, finalization and verification.
+          # Keep those phases cooperative too, so a new world does not hold
+          # the browser main thread in one multi-second task.
+          git apply --check ../patches/cdda-0I-emscripten-mod-finalize-yield.patch
+          git apply ../patches/cdda-0I-emscripten-mod-finalize-yield.patch
+
+          # start_game -> overmap::generate -> mapgen is the deepest call
+          # chain in the game and previously never yielded, which froze the
+          # tab on 4GB devices right after character creation.  Yield at
+          # bounded, time-throttled points (Emscripten only).  This patch
+          # also puts a throttled yield inside input_manager::pump_events so
+          # every upstream cooperative marker (map/overmap saving, JSON
+          # verification, world serialization) actually yields on the web,
+          # removing the "wait or leave page" dialog after world creation.
+          git apply --check ../patches/cdda-0I-emscripten-world-yield.patch
+          git apply ../patches/cdda-0I-emscripten-world-yield.patch
+
+          # World setup mutates many small files; upstream schedules one full
+          # IDBFS sync per mutation on the next animation frame.  Debounce
+          # and serialize those syncs so IndexedDB transactions do not pile
+          # up while the world is being generated.  The patch also mounts
+          # IDBFS at the profile's real HOME (fixing silent save loss),
+          # defines window.setFsNeedsSync before the first await (fixing the
+          # "Exception thrown, see JavaScript console" hang right after
+          # character creation), and degrades to MEMFS when IndexedDB is
+          # unavailable instead of aborting startup.
+          git apply --check ../patches/cdda-0I-emscripten-idbfs-debounce.patch
+          git apply ../patches/cdda-0I-emscripten-idbfs-debounce.patch
+
+          git diff --check
+          grep -n "MEMFS does not provide a POSIX mmap view" src/mmap_file.cpp
+          grep -n "Keep the browser responsive" src/init.cpp
+          grep -n "World mod interactions were not covered" src/init.cpp
+          grep -n "give the browser a paint frame" src/game.cpp
+          grep -n "deeply nested overmap specials" src/mapgen.cpp
+          grep -n "fsSyncDebounceMs" src/main.cpp
+          grep -n "mount_idbfs( idbfs_dir.c_str() )" src/main.cpp
+          grep -n "fsPersistenceReady" src/main.cpp
+          grep -n "CDDA_ON_IDBFS_MOUNTED" src/main.cpp
+          grep -n "pagehide" src/main.cpp
+          grep -n "cdda_last_pump_yield" src/sdltiles.cpp
+
+      - name: Install dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y gettext
+
+      - name: Free disk space
+        run: |
+          set -euo pipefail
+
+          sudo rm -rf \
+            /usr/share/dotnet \
+            /usr/local/lib/android \
+            /opt/ghc \
+            /usr/local/share/powershell \
+            /usr/share/swift || true
+
+          df -h /
+
+      - name: Setup emsdk
+        uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: 3.1.51
+
+      - name: Tune web memory for 4GB devices
+        working-directory: cdda
+        run: |
+          set -euo pipefail
+
+          # The upstream web target reserves 512MiB immediately and permits a
+          # 4GiB heap.  A local browser test proved that the Japanese menu
+          # starts at 256MiB with growth enabled.  Keep link optimization at
+          # -O0 for the separately established reliable build path.
+          sed -i \
+            's/^[[:space:]]*LDFLAGS[[:space:]]*+=[[:space:]]*-Os[[:space:]]*$/LDFLAGS += -O0/' \
+            Makefile
+          sed -i \
+            's/-sINITIAL_MEMORY=512MB/-sINITIAL_MEMORY=256MB/' \
+            Makefile
+
+          # World generation is the peak-memory moment (core+mod JSON load,
+          # overmap generation, mapgen).  With ALLOW_MEMORY_GROWTH the
+          # maximum is only a reservation cap, not committed memory, but a
+          # 1GiB cap made growth fail and abort exactly during world setup on
+          # 4GB devices.  2GiB keeps idle usage identical while giving the
+          # generation spike headroom.
+          sed -i \
+            's/-sMAXIMUM_MEMORY=4GB/-sMAXIMUM_MEMORY=2GB/' \
+            Makefile
+
+          # The yield patches call emscripten_sleep() inside deep call
+          # chains (overmap/mapgen).  Asyncify unwinds every live frame into
+          # a fixed buffer; the upstream 16KiB ASYNCIFY_STACK_SIZE overflows
+          # there and corrupts memory silently (blank screen, no menu).
+          # 4MiB is a one-time allocation that removes that failure mode.
+          sed -i \
+            's/-sASYNCIFY_STACK_SIZE=16384/-sASYNCIFY_STACK_SIZE=4194304/' \
+            Makefile
+
+          # Deeply nested overmap specials also press on the 256KiB main
+          # stack.  1MiB costs one megabyte of the heap and prevents native
+          # stack exhaustion during mapgen recursion.
+          sed -i \
+            's/-sSTACK_SIZE=262144/-sSTACK_SIZE=1048576/' \
+            Makefile
+
+          grep -n -E 'INITIAL_MEMORY|MAXIMUM_MEMORY|ASYNCIFY_STACK_SIZE|-sSTACK_SIZE|LDFLAGS \+= -O0' Makefile
+          grep -q -- '-sMAXIMUM_MEMORY=2GB' Makefile
+          grep -q -- '-sASYNCIFY_STACK_SIZE=4194304' Makefile
+          grep -q -- '-sSTACK_SIZE=1048576' Makefile
+
+      - name: Build CDDA WebAssembly
+        working-directory: cdda
+        run: |
+          set -euo pipefail
+
+          source "$EMSDK/emsdk_env.sh"
+
+          # The Emscripten JavaScript optimizer is the recurrent long-running
+          # stage.  The link is deliberately -O0 (while source compilation
+          # remains optimized) so this stage is not required.  Four workers
+          # match the successful historical runs, and plain-text heartbeats
+          # make every running minute observable.
+          build_started_at="$(date +%s)"
+          build_jobs=4
+          heartbeat() {
+            while sleep 60; do
+              elapsed="$(( $(date +%s) - build_started_at ))"
+              echo "[HEARTBEAT] WebAssembly build active: elapsed=${elapsed}s"
+              free -h
+              df -h /
+              ps -eo pid,ppid,stat,etime,pcpu,pmem,cmd --sort=-pcpu | sed -n '1,12p'
+            done
+          }
+          heartbeat &
+          heartbeat_pid="$!"
+          stop_heartbeat() {
+            kill "$heartbeat_pid" 2>/dev/null || true
+            wait "$heartbeat_pid" 2>/dev/null || true
+          }
+          trap stop_heartbeat EXIT
+
+          build_cdda() {
+            make -j"$build_jobs" \
+              NATIVE=emscripten \
+              BACKTRACE=0 \
+              TILES=1 \
+              TESTS=0 \
+              RUNTESTS=0 \
+              RELEASE=1 \
+              LOCALIZE=1 \
+              LANGUAGES=ja \
+              CCACHE=0 \
+              LINTJSON=0 \
+              cataclysm-tiles.js
+          }
+
+          echo "[BUILD] stable mode: jobs=${build_jobs}, link optimization=-O0, memory=256MiB initial / 2GiB maximum, asyncify stack=4MiB"
+          time build_cdda
+          echo "[BUILD] stable mode completed successfully"
+          stop_heartbeat
+          trap - EXIT
+
+          test -s cataclysm-tiles.js
+          test -s cataclysm-tiles.wasm
+
+      - name: Compile Japanese translation
+        working-directory: cdda
+        run: |
+          set -euo pipefail
+
+          # cataclysm-tiles.js does not depend on the top-level `all` target,
+          # so it does not automatically build localization artifacts.
+          make localization LANGUAGES=ja
+
+      - name: Verify Japanese translation
+        working-directory: cdda
+        run: |
+          set -euo pipefail
+
+          test -s lang/mo/ja/LC_MESSAGES/cataclysm-dda.mo
+
+          ls -lh \
+            lang/mo/ja/LC_MESSAGES/cataclysm-dda.mo
+
+      - name: Create Japanese web preparation script
+        working-directory: cdda
+        run: |
+          set -euo pipefail
+
+          cp \
+            build-scripts/prepare-web.sh \
+            build-scripts/prepare-web-ja.sh
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("build-scripts/prepare-web-ja.sh")
+          text = path.read_text(encoding="utf-8")
+
+          marker = "$EMSDK/upstream/emscripten/tools/file_packager"
+
+          if text.count(marker) != 1:
+              raise SystemExit(
+                  "Expected exactly one file_packager command"
+              )
+
+          japanese_copy = """\
+          echo "Adding Japanese translation..."
+
+          mkdir -p "$BUNDLE_DIR/lang/mo/ja/LC_MESSAGES"
+
+          cp \
+            lang/mo/ja/LC_MESSAGES/cataclysm-dda.mo \
+            "$BUNDLE_DIR/lang/mo/ja/LC_MESSAGES/cataclysm-dda.mo"
+
+          test -s \
+            "$BUNDLE_DIR/lang/mo/ja/LC_MESSAGES/cataclysm-dda.mo"
+
+          """
+
+          text = text.replace(
+              marker,
+              japanese_copy + marker,
+              1
+          )
+
+          path.write_text(text, encoding="utf-8")
+          PY
+
+          grep -n \
+            -A12 \
+            -B3 \
+            "Adding Japanese translation" \
+            build-scripts/prepare-web-ja.sh
+
+      - name: Prepare Web bundle
+        working-directory: cdda
+        run: |
+          set -euo pipefail
+
+          source "$EMSDK/emsdk_env.sh"
+
+          bash build-scripts/prepare-web-ja.sh
+
+      - name: Verify Japanese locale in bundle
+        working-directory: cdda
+        run: |
+          set -euo pipefail
+
+          test -s \
+            web_bundle/lang/mo/ja/LC_MESSAGES/cataclysm-dda.mo
+
+          test -s build/cataclysm-tiles.data
+          test -s build/cataclysm-tiles.data.js
+          test -s build/cataclysm-tiles.js
+          test -s build/cataclysm-tiles.wasm
+
+      - name: Copy custom index
+        run: |
+          set -euo pipefail
+
+          test -f shell/index.html
+
+          cp \
+            shell/index.html \
+            cdda/build/index.html
+
+      - name: Stage GitHub Pages site
+        run: |
+          set -euo pipefail
+
+          rm -rf site
+          mkdir -p site
+
+          cp -a cdda/build/. site/
+
+          test -s site/index.html
+          test -s site/cataclysm-tiles.js
+          test -s site/cataclysm-tiles.wasm
+          test -s site/cataclysm-tiles.data
+          test -s site/cataclysm-tiles.data.js
+          test -s site/Terminus.ttf
+          test -s site/favicon.ico
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cdda-0I-web-bundle
+          path: site/
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload GitHub Pages artifact
+        if: ${{ inputs.deploy_pages != false }}
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site/
+
+  deploy:
+    name: Deploy to GitHub Pages
+    if: ${{ inputs.deploy_pages != false }}
+    needs: build
+    runs-on: ubuntu-latest
+
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
