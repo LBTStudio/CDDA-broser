@@ -64,14 +64,23 @@ jobs:
           # start_game -> overmap::generate -> mapgen is the deepest call
           # chain in the game and previously never yielded, which froze the
           # tab on 4GB devices right after character creation.  Yield at
-          # bounded, time-throttled points (Emscripten only).
+          # bounded, time-throttled points (Emscripten only).  This patch
+          # also puts a throttled yield inside input_manager::pump_events so
+          # every upstream cooperative marker (map/overmap saving, JSON
+          # verification, world serialization) actually yields on the web,
+          # removing the "wait or leave page" dialog after world creation.
           git apply --check ../patches/cdda-0I-emscripten-world-yield.patch
           git apply ../patches/cdda-0I-emscripten-world-yield.patch
 
           # World setup mutates many small files; upstream schedules one full
           # IDBFS sync per mutation on the next animation frame.  Debounce
           # and serialize those syncs so IndexedDB transactions do not pile
-          # up while the world is being generated.
+          # up while the world is being generated.  The patch also mounts
+          # IDBFS at the profile's real HOME (fixing silent save loss),
+          # defines window.setFsNeedsSync before the first await (fixing the
+          # "Exception thrown, see JavaScript console" hang right after
+          # character creation), and degrades to MEMFS when IndexedDB is
+          # unavailable instead of aborting startup.
           git apply --check ../patches/cdda-0I-emscripten-idbfs-debounce.patch
           git apply ../patches/cdda-0I-emscripten-idbfs-debounce.patch
 
@@ -82,6 +91,11 @@ jobs:
           grep -n "give the browser a paint frame" src/game.cpp
           grep -n "deeply nested overmap specials" src/mapgen.cpp
           grep -n "fsSyncDebounceMs" src/main.cpp
+          grep -n "mount_idbfs( idbfs_dir.c_str() )" src/main.cpp
+          grep -n "fsPersistenceReady" src/main.cpp
+          grep -n "CDDA_ON_IDBFS_MOUNTED" src/main.cpp
+          grep -n "pagehide" src/main.cpp
+          grep -n "cdda_last_pump_yield" src/sdltiles.cpp
 
       - name: Install dependencies
         run: |
