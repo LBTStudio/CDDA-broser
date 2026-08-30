@@ -2,6 +2,12 @@ name: QA build — full staged CDDA 0.I artifact
 
 on:
   workflow_dispatch:
+    inputs:
+      deploy_pages:
+        description: 'Deploy the verified artifact to GitHub Pages'
+        required: false
+        default: true
+        type: boolean
 
 permissions:
   contents: read
@@ -31,6 +37,8 @@ jobs:
           set -euo pipefail
           test "$(git -C cdda rev-parse HEAD)" = "27939e29b8b4ddc081490d9f51de59a459c88df6"
           test -s patches/cdda-0I-emscripten-mo-reader.patch
+          test -s patches/cdda-0I-emscripten-mod-finalize-yield.patch
+          test -s patches/cdda-0I-emscripten-world-yield.patch
           test -s qa/true-phase-runtime/cdda-0I-emscripten-staged-phase-loader.patch
           test -s qa/true-phase-runtime/staged-package-manifest.json
 
@@ -56,7 +64,13 @@ jobs:
           sed -i \
             's/^[[:space:]]*LDFLAGS[[:space:]]*+=[[:space:]]*-Os[[:space:]]*$/LDFLAGS += -O0/' \
             Makefile
-          grep -n -E 'LDFLAGS \+= -O0|LDFLAGS \+= -sASYNCIFY' Makefile
+          sed -i \
+            's/-sSTACK_SIZE=262144/-sSTACK_SIZE=1048576/' \
+            Makefile
+          sed -i \
+            's/-sASYNCIFY_STACK_SIZE=16384/-sASYNCIFY_STACK_SIZE=4194304/' \
+            Makefile
+          grep -n -E 'LDFLAGS \+= -O0|LDFLAGS \+= -sASYNCIFY|STACK_SIZE|MAXIMUM_MEMORY' Makefile
 
       - name: Apply source-level Japanese and phase patches
         working-directory: cdda
@@ -66,10 +80,17 @@ jobs:
           git apply ../patches/cdda-0I-emscripten-mo-reader.patch
           git apply --check ../qa/true-phase-runtime/cdda-0I-emscripten-staged-phase-loader.patch
           git apply ../qa/true-phase-runtime/cdda-0I-emscripten-staged-phase-loader.patch
+          git apply --check ../patches/cdda-0I-emscripten-mod-finalize-yield.patch
+          git apply ../patches/cdda-0I-emscripten-mod-finalize-yield.patch
+          git apply --check ../patches/cdda-0I-emscripten-world-yield.patch
+          git apply ../patches/cdda-0I-emscripten-world-yield.patch
           git diff --check
           grep -q 'staged_ensure_world_groups' src/game.cpp
           grep -q 'ensure_staged_tileset_assets' src/sdltiles.cpp
           grep -q 'mmap_file' src/mmap_file.cpp
+          grep -q '#include <emscripten.h>' src/init.cpp
+          grep -q 'emscripten_sleep' src/init.cpp
+          grep -q 'emscripten_sleep' src/overmap.cpp
 
       - name: Build Asyncify WebAssembly
         working-directory: cdda
@@ -157,12 +178,14 @@ jobs:
           retention-days: 14
 
       - name: Upload QA site to GitHub Pages
+        if: ${{ inputs.deploy_pages != false }}
         uses: actions/upload-pages-artifact@v3
         with:
           path: site/
 
   deploy-pages:
     name: Publish QA site on GitHub Pages
+    if: ${{ inputs.deploy_pages != false }}
     needs: build-full-staged-artifact
     runs-on: ubuntu-latest
     permissions:

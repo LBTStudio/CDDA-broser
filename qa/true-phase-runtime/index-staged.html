@@ -126,10 +126,23 @@
         // Module.ENV is created before a player chooses a profile.  Set only
         // profile paths here.  Locale is set later only for a profile with no
         // existing options or prior migration marker.
-        if (window.Module && Module.ENV) {
-          const home = "/home/" + profile;
+        const home = "/home/" + profile;
+        if (window.Module) {
+          // Emscripten 3.1.51 resolves POSIX getenv() from its generated
+          // global ENV object, not from Module.ENV. Install this before the
+          // generated script runs main(); otherwise PATH_INFO falls back to
+          // /home/web_user and the selected profile is never mounted.
+          Module.ENV = Module.ENV || {};
           Module.ENV.HOME = home;
           Module.ENV.XDG_CONFIG_HOME = home + "/.config";
+          Module.preRun = Module.preRun || [];
+          Module.preRun.push(function () {
+            window.ENV = window.ENV || {};
+            window.ENV.HOME = home;
+            window.ENV.XDG_CONFIG_HOME = home + "/.config";
+            window.ENV.LANG = "ja_JP.UTF-8";
+            window.ENV.LANGUAGE = "ja";
+          });
         }
         profileScreen.style.display = "none";
         loadingMessage.style.display = "block";
@@ -224,10 +237,10 @@
         }
         // Only a genuinely new persistent profile receives Japanese language
         // environment defaults and mirrored USE_LANG options.
-        if (typeof ENV === "object") {
-          ENV.XDG_CONFIG_HOME = "/home/" + profile + "/.config";
-          ENV.LANG = "ja_JP.UTF-8";
-          ENV.LANGUAGE = "ja";
+        if (typeof window.ENV === "object") {
+          window.ENV.XDG_CONFIG_HOME = "/home/" + profile + "/.config";
+          window.ENV.LANG = "ja_JP.UTF-8";
+          window.ENV.LANGUAGE = "ja";
         }
         for (const configDir of configDirs) {
           fs.mkdirTree(configDir);

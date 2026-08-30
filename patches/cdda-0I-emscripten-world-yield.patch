@@ -1,0 +1,123 @@
+diff --git a/src/game.cpp b/src/game.cpp
+index dc083dd..a2f772b 100644
+--- a/src/game.cpp
++++ b/src/game.cpp
+@@ -895,6 +895,13 @@ void game::legacy_migrate_npctalk_var_prefix( global_variables::impl_t &map_of_v
+ // Set up all default values for a new game
+ bool game::start_game()
+ {
++#if defined(EMSCRIPTEN)
++    // [CDDA-BROSER] give the browser a paint frame and let the Asyncify
++    // shadow stack unwind before load_map -> overmapbuffer::get ->
++    // overmap::generate (the deepest Asyncify recursion in the game).
++    emscripten_sleep( 16 );
++#endif
++
+     if( !gamemode ) {
+         gamemode = std::make_unique<special_game>();
+     }
+diff --git a/src/mapgen.cpp b/src/mapgen.cpp
+index eb5b3fd..37348ca 100644
+--- a/src/mapgen.cpp
++++ b/src/mapgen.cpp
+@@ -20,6 +20,10 @@
+ #include <typeinfo>
+ #include <unordered_map>
+ 
++#if defined(EMSCRIPTEN)
++#include <emscripten.h>
++#endif
++
+ #include "all_enum_values.h"
+ #include "avatar.h"
+ #include "calendar.h"
+@@ -5987,6 +5991,17 @@ static ret_val<void> apply_mapgen_in_phases(
+     const jmapgen_objects &objects, const tripoint_rel_ms &offset, const std::string &context,
+     bool verify = false )
+ {
++#if defined(EMSCRIPTEN)
++    // [CDDA-BROSER] deeply nested overmap specials (refugee_center, mall_a_1)
++    // push hundreds of frames onto the Asyncify shadow stack.  Time-throttled
++    // yield (50ms, matching Chrome's long-task threshold) lets it unwind.
++    static double cdda_last_mapgen_yield = 0.0;
++    const double now_ms = emscripten_get_now();
++    if( now_ms - cdda_last_mapgen_yield >= 50.0 ) {
++        cdda_last_mapgen_yield = now_ms;
++        emscripten_sleep( 0 );
++    }
++#endif
+     const ret_val<void> has_vehicle_collision = objects.has_vehicle_collision( md, offset );
+     if( verify &&  !has_vehicle_collision.success() ) {
+ 
+diff --git a/src/overmap.cpp b/src/overmap.cpp
+index d068ac0..72df7e0 100644
+--- a/src/overmap.cpp
++++ b/src/overmap.cpp
+@@ -17,6 +17,10 @@
+ #include <unordered_set>
+ #include <vector>
+ 
++#if defined(EMSCRIPTEN)
++#include <emscripten.h>
++#endif
++
+ #include "all_enum_values.h"
+ #include "assign.h"
+ #include "auto_note.h"
+@@ -3668,6 +3672,11 @@ void overmap::set_scent( const tripoint_abs_omt &loc, const scent_trace &new_sce
+ void overmap::generate( const std::vector<const overmap *> &neighbor_overmaps,
+                         overmap_special_batch &enabled_specials )
+ {
++#if defined(EMSCRIPTEN)
++    // [CDDA-BROSER] yield so ChromeOS Chrome does not mark the tab
++    // unresponsive during initial map generation.
++    emscripten_sleep( 0 );
++#endif
+     dbg( D_INFO ) << "overmap::generate start…";
+     const oter_id omt_outside_defined_omap = static_cast<oter_id>
+             ( get_option<std::string>( "OUTSIDE_DEFINED_OMAP_OMT" ) );
+@@ -7445,6 +7454,13 @@ void overmap::place_specials( overmap_special_batch &enabled_specials )
+     }
+     om_special_sectors sectors = get_sectors( OMSPEC_FREQ );
+ 
++#if defined(EMSCRIPTEN)
++    // [CDDA-BROSER] yield before recursing into place_specials_pass ->
++    // create_custom_overmap -> overmap::populate (re-enters place_specials on
++    // the neighbor overmap), bounding the Asyncify shadow-stack peak.
++    emscripten_sleep( 0 );
++#endif
++
+     // First, place the mandatory specials to ensure that all minimum instance
+     // counts are met.
+     place_specials_pass( enabled_specials, sectors, false, false );
+diff --git a/src/sdltiles.cpp b/src/sdltiles.cpp
+index 020cf3d..22203ab 100644
+--- a/src/sdltiles.cpp
++++ b/src/sdltiles.cpp
+@@ -3914,6 +3914,26 @@ void input_manager::pump_events()
+         return;
+     }
+ 
++#if defined(EMSCRIPTEN)
++    // [CDDA-BROSER] Upstream marks every heavy loop (map/overmap saving,
++    // JSON verification, world serialization, ...) with pump_events(), but
++    // on the web this never yielded to the browser event loop, so those
++    // loops still ran as one long task and triggered Chrome's
++    // "page unresponsive" dialog during post-worldgen finalization.  A
++    // time-throttled emscripten_sleep(0) makes every upstream cooperative
++    // point actually cooperative without touching any call site.  The
++    // reentrancy guard makes nested Asyncify unwinds impossible.
++    static double cdda_last_pump_yield = 0.0;
++    static bool cdda_pump_yielding = false;
++    const double cdda_now_ms = emscripten_get_now();
++    if( !cdda_pump_yielding && cdda_now_ms - cdda_last_pump_yield >= 50.0 ) {
++        cdda_pump_yielding = true;
++        emscripten_sleep( 0 );
++        cdda_last_pump_yield = emscripten_get_now();
++        cdda_pump_yielding = false;
++    }
++#endif
++
+     // Handle all events, but ignore any keypress
+     CheckMessages();
+ 

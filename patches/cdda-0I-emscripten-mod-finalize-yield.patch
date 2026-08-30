@@ -1,0 +1,120 @@
+--- a/src/init.cpp
++++ b/src/init.cpp
+@@ -8,3 +8,7 @@
+ #include <vector>
+
++#if defined(EMSCRIPTEN)
++#include <emscripten.h>
++#endif
++
+ #include "achievement.h"
+@@ -571,6 +575,11 @@
+
+     std::vector<mod_id> &loaded_mods = world_generator->active_world->active_mod_order;
+     std::multimap<mod_id, cata_path> files;
++#if defined(EMSCRIPTEN)
++    // World mod interactions were not covered by the ordinary mod-loader
++    // budget.  Keep their directory scan and JSON dispatch cooperative.
++    double last_browser_yield = emscripten_get_now();
++#endif
+
+     if( dir_exist( path.get_unrelative_path() ) ) {
+
+@@ -588,6 +593,12 @@
+                     files.emplace( associated_mod, path );
+                 }
+             }
++#if defined(EMSCRIPTEN)
++            if( emscripten_get_now() - last_browser_yield >= 50.0 ) {
++                emscripten_sleep( 0 );
++                last_browser_yield = emscripten_get_now();
++            }
++#endif
+         }
+     }
+     // iterate over each file
+@@ -599,21 +610,44 @@
+         } catch( const JsonError &err ) {
+             throw std::runtime_error( err.what() );
+         }
++#if defined(EMSCRIPTEN)
++        if( emscripten_get_now() - last_browser_yield >= 50.0 ) {
++            emscripten_sleep( 0 );
++            last_browser_yield = emscripten_get_now();
++        }
++#endif
+     }
+ }
+
+ void DynamicDataLoader::load_all_from_json( const JsonValue &jsin, const std::string &src,
+         const cata_path &base_path, const cata_path &full_path )
+ {
++#if defined(EMSCRIPTEN)
++    // A single JSON array can contain many objects, so per-file yielding is
++    // insufficient for large mod interaction definitions.
++    double last_browser_yield = emscripten_get_now();
++#endif
+     if( jsin.test_object() ) {
+         // find type and dispatch single object
+         JsonObject jo = jsin.get_object();
+         load_object( jo, src, base_path, full_path );
++#if defined(EMSCRIPTEN)
++        if( emscripten_get_now() - last_browser_yield >= 50.0 ) {
++            emscripten_sleep( 0 );
++            last_browser_yield = emscripten_get_now();
++        }
++#endif
+     } else if( jsin.test_array() ) {
+         JsonArray ja = jsin.get_array();
+         // find type and dispatch each object until array close
+         for( JsonObject jo : ja ) {
+             load_object( jo, src, base_path, full_path );
++#if defined(EMSCRIPTEN)
++            if( emscripten_get_now() - last_browser_yield >= 50.0 ) {
++                emscripten_sleep( 0 );
++                last_browser_yield = emscripten_get_now();
++            }
++#endif
+         }
+     } else {
+         // not an object or an array?
+@@ -839,9 +873,20 @@
+         }
+     };
+
++#if defined(EMSCRIPTEN)
++    // Finalization has many independent registries and can otherwise occupy
++    // one browser turn after world-specific mod data is parsed.
++    double last_browser_yield = emscripten_get_now();
++#endif
+     for( const named_entry &e : entries ) {
+         loading_ui::show( _( "Finalizing" ), e.first );
+         e.second();
++#if defined(EMSCRIPTEN)
++        if( emscripten_get_now() - last_browser_yield >= 50.0 ) {
++            emscripten_sleep( 0 );
++            last_browser_yield = emscripten_get_now();
++        }
++#endif
+     }
+
+     if( !get_option<bool>( "SKIP_VERIFICATION" ) ) {
+@@ -940,8 +985,18 @@
+         }
+     };
+
++#if defined(EMSCRIPTEN)
++    // Verification is also a sequence of independent full-data passes.
++    double last_browser_yield = emscripten_get_now();
++#endif
+     for( const named_entry &e : entries ) {
+         loading_ui::show( _( "Verifying" ), e.first );
+         e.second();
++#if defined(EMSCRIPTEN)
++        if( emscripten_get_now() - last_browser_yield >= 50.0 ) {
++            emscripten_sleep( 0 );
++            last_browser_yield = emscripten_get_now();
++        }
++#endif
+     }
+ }
