@@ -1,5 +1,5 @@
 diff --git a/src/mmap_file.cpp b/src/mmap_file.cpp
-index 348a9a1..5ddd8c0 100644
+index 348a9a1..0b01ba0 100644
 --- a/src/mmap_file.cpp
 +++ b/src/mmap_file.cpp
 @@ -17,6 +17,11 @@
@@ -14,7 +14,27 @@ index 348a9a1..5ddd8c0 100644
  
  #include "cata_scope_helpers.h"
  #include "cata_utility.h"
-@@ -338,7 +343,28 @@ std::unique_ptr<mmap_file> mmap_file::map_file_generic(
+@@ -218,6 +223,19 @@ struct file_impl : mmap_file::impl {
+         }
+         size_t file_size = buf.st_size;
+ 
++#if defined(EMSCRIPTEN)
++        // Emscripten's MEMFS mmap throws a JavaScript TypeError ("Cannot
++        // read properties of null (reading 'buffer')") for files that have
++        // never been written, instead of failing the way POSIX mmap fails a
++        // zero-length mapping.  A freshly created compressed save (zzip) is
++        // exactly such a file.  Mirror the native failure mode so callers
++        // take their existing empty-file path (base == nullptr, len == 0),
++        // from which zzip regenerates the footer and resizes the file.
++        if( file_size == 0 ) {
++            return false;
++        }
++#endif
++
+         void *map_base = mmap( nullptr, file_size, ( writeable ? PROT_WRITE : 0 ) | PROT_READ, MAP_SHARED,
+                                file, 0 );
+         if( map_base == MAP_FAILED ) {
+@@ -338,7 +356,28 @@ std::unique_ptr<mmap_file> mmap_file::map_file_generic(
  
  std::shared_ptr<const mmap_file> mmap_file::map_file( const std::filesystem::path &file_path )
  {
@@ -43,3 +63,48 @@ index 348a9a1..5ddd8c0 100644
  }
  
  std::unique_ptr<mmap_file> mmap_file::map_writeable_file( const std::filesystem::path &file_path )
+diff --git a/src/options.cpp b/src/options.cpp
+index a671b4a..8d12649 100644
+--- a/src/options.cpp
++++ b/src/options.cpp
+@@ -1775,7 +1775,16 @@ void options_manager::add_options_general()
+ 
+     add( "WORLD_COMPRESSION2", "general", to_translation( "World data compression" ),
+          to_translation( "If true, new worlds store data in a compressed format." ),
++#if defined(EMSCRIPTEN)
++         // zzip's writeable mmap views must be emulated with heap copies on
++         // Emscripten's MEMFS, which is slow and fragile on low-memory
++         // devices.  Plain saves plus the debounced IDBFS sync are the
++         // reliable path in the browser; players can still enable
++         // compression per-world if they want it.
++         false
++#else
+          true
++#endif
+        );
+ }
+ 
+diff --git a/src/zzip.cpp b/src/zzip.cpp
+index e353638..0a748c3 100644
+--- a/src/zzip.cpp
++++ b/src/zzip.cpp
+@@ -420,10 +420,15 @@ std::optional<zzip> zzip::load(
+         std::vector<char> dictionary;
+         if( !dictionary_path.empty() ) {
+             std::shared_ptr<const mmap_file> dictionary_file = mmap_file::map_file( dictionary_path );
+-            dictionary.resize( dictionary_file->len() );
+-            memcpy( dictionary.data(), dictionary_file->base(), dictionary_file->len() );
+-            ZSTD_CCtx_loadDictionary_byReference( cctx, dictionary.data(), dictionary.size() );
+-            ZSTD_DCtx_loadDictionary_byReference( dctx, dictionary.data(), dictionary.size() );
++            // map_file returns nullptr for missing or empty dictionaries
++            // (e.g. on Emscripten, where empty files cannot be mapped).
++            // Skip loading the dictionary instead of dereferencing null.
++            if( dictionary_file ) {
++                dictionary.resize( dictionary_file->len() );
++                memcpy( dictionary.data(), dictionary_file->base(), dictionary_file->len() );
++                ZSTD_CCtx_loadDictionary_byReference( cctx, dictionary.data(), dictionary.size() );
++                ZSTD_DCtx_loadDictionary_byReference( dctx, dictionary.data(), dictionary.size() );
++            }
+         }
+ 
+         cached_contexts.emplace( dictionary_path.generic_u8string(), cached_zstd_context{ std::move( dictionary ), cctx, dctx } );
