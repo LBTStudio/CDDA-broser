@@ -4,33 +4,44 @@
 権限がないため、この `manual/build-and-release.yml` を **あなたの手で**
 リポジトリの `.github/workflows/build-and-release.yml` に上書きしてください。
 
-## なぜ置き換えるのか
+## 今回は置き換えが【必須】です
 
-中身の実行内容（パッチ適用・メモリ設定・ビルド手順）は現行と同一です。
-違いは「パッチが正しく当たったかを CI が確認する検証行」の追加のみ:
+今回の更新には、ワークフロー本体の設定変更が含まれています。
+置き換えないと以下の改善が反映されません:
 
-- `mount_idbfs( idbfs_dir.c_str() )` — セーブ消失バグ修正の確認
-- `fsPersistenceReady` — キャラ作成直後の Exception 停止修正の確認
-- `CDDA_ON_IDBFS_MOUNTED` / `pagehide` — 設定移行フック・タブ破棄対策の確認
-- `cdda_last_pump_yield` — ワールド作成後の過負荷ダイアログ修正の確認
-
-**置き換えなくてもビルドは成功します**（パッチ自体は既に反映済み）。
-置き換えると、将来パッチが壊れたときに CI が早期検知できるようになります。
+1. **SIGILL クラッシュ対策**（ワールド作成直後・キャラ作成直後のロード中に
+   まれに発生していたもの）:
+   - Asyncify 退避バッファを 4MiB → **16MiB** に拡大
+     （深い呼び出し中の巻き戻しでバッファが尽きると SIGILL 型のトラップに
+     なるため、観測された最深チェーンより十分上に上限を設定）
+   - wasm メインスタックを 1MiB → **4MiB** に拡大
+     （マップ生成の再帰でのスタック枯渇も SIGILL 型トラップの原因）
+2. **動作の高速化**: リンク最適化を `-O0` → 本家標準の **`-Os`** に変更。
+   これまで `-O0` でビルド時間を短縮していましたが、Asyncify 計装が
+   未最適化のまま残るため、プレイ中の動作が全体的に重くなっていました。
+   `-Os` は本家が Web 版の公式ビルドに使っている実績ある設定です。
+   （代わりにビルド時間は 1〜2 時間 → 2〜3 時間程度に伸びます）
+3. **Stats Through Kills MOD の同梱**: リポジトリの `mods/` フォルダを
+   ゲームデータに同梱するステップを追加。初回はキル経験値 MOD
+   「Stats Through Kills」が入ります（ワールド作成時の MOD 一覧に表示）。
+4. **日本語入力（IME）対応の検証行**: パッチが正しく当たったかを CI が
+   確認する grep を 2 行追加。
 
 ## 置き換え手順（ブラウザだけで完結、5分）
 
 1. ブラウザで以下を開く:
-   https://github.com/LBTStudio/CDDA-broser/blob/genspark_ai_developer/manual/build-and-release.yml
+   https://github.com/LBTStudio/CDDA-broser/blob/main/manual/build-and-release.yml
+   （プルリクエストをマージした**あと**に開いてください）
 2. 右上の「Raw」ボタンを押し、表示された全文を Ctrl+A → Ctrl+C でコピー
 3. 次に以下を開く:
-   https://github.com/LBTStudio/CDDA-broser/blob/genspark_ai_developer/.github/workflows/build-and-release.yml
+   https://github.com/LBTStudio/CDDA-broser/blob/main/.github/workflows/build-and-release.yml
 4. 右上の鉛筆アイコン（Edit this file）を押す
 5. エディタ内を Ctrl+A で全選択 → Ctrl+V で貼り付け（全文置き換え）
 6. 右上の緑ボタン「Commit changes...」を押す
 7. 出てきたダイアログで:
    - Commit message はそのままで OK
-   - 「Commit directly to the `genspark_ai_developer` branch」が
-     選ばれていることを確認（重要）
+   - 「Commit directly to the `main` branch」が選ばれていることを確認
    - 緑の「Commit changes」を押す
 
-これで完了です。以降のビルドで新しい検証が有効になります。
+これで完了です。そのあと Actions からビルドを実行してください
+（手順は PR の説明文にあります）。

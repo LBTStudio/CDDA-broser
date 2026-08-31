@@ -34,6 +34,18 @@
       #error-overlay pre { white-space: pre-wrap; word-break: break-all; background: #200; padding: 10px; border-radius: 4px; font-size: 13px; }
       #error-overlay button { font-family: Terminus, monospace; font-size: 18px; padding: 8px 22px; background: #632; color: #fff; border: none; border-radius: 4px; cursor: pointer; margin-right: 10px; }
       #error-overlay button:hover { background: #853; }
+      /* IME proxy: a real editable element the browser IME can compose into.
+         It must stay focusable and visible to the compositor (not
+         display:none), but effectively invisible to the player.  The IME
+         candidate window anchors to this element's position. */
+      #mod-overlay { display: none; position: absolute; inset: 0; z-index: 15; background: rgba(0, 0, 0, 0.88); color: #eee; font-family: Terminus, monospace; padding: 28px; box-sizing: border-box; overflow: auto; }
+      #mod-overlay h2 { margin-top: 0; }
+      .mod-row { display: flex; align-items: center; gap: 12px; padding: 6px 10px; border-bottom: 1px solid #333; }
+      .mod-row .mod-name { flex: 1; }
+      .mod-row button { font-family: Terminus, monospace; font-size: 14px; padding: 4px 12px; background: #632; color: #fff; border: none; border-radius: 4px; cursor: pointer; }
+      .mod-row button:hover { background: #853; }
+      #mod-overlay .close-btn { font-family: Terminus, monospace; font-size: 18px; padding: 8px 22px; background: #444; color: #fff; border: none; border-radius: 4px; cursor: pointer; margin-top: 16px; }
+      #ime-proxy { position: fixed; left: 50%; bottom: 12px; transform: translateX(-50%); width: 2px; height: 2px; padding: 0; margin: 0; border: none; outline: none; opacity: 0.01; background: transparent; color: transparent; caret-color: transparent; z-index: 5; pointer-events: none; }
     </style>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.2.1/css/all.min.css" integrity="sha512-MV7K8+y+gLIBoVD59lQIYicR65iaqukzvf/nwasF0nqhPay5w/9lJmVM2hMDcnK1OnMGCdVK+iQrJ7lzPJQd1w==" crossorigin="anonymous" referrerpolicy="no-referrer" />
     <script defer src="https://cdnjs.cloudflare.com/ajax/libs/screenfull.js/5.2.0/screenfull.min.js" integrity="sha512-GoG2/bE6QSPKSrjuoII6iPL2ODnwUJvFgysFYLTW2ltpx6G5nj+mYvhPq5rLPZby0rdMFU2fo4BMlWND7+QZ5g==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
@@ -65,6 +77,13 @@
         <div id="export-saves" class="menu-button"><i class="fa-solid fa-download"></i><span style="margin-left: 0.7em">Export Saves</span></div>
       </div>
       <div style="margin-bottom: 10px">
+        <div id="install-mod" class="menu-button"><i class="fa-solid fa-puzzle-piece"></i><span style="margin-left: 0.7em">Install Mod (zip)</span></div>
+        <input id="mod-zip-input" type="file" accept=".zip,application/zip" style="display: none" />
+      </div>
+      <div style="margin-bottom: 10px">
+        <div id="manage-mods" class="menu-button"><i class="fa-solid fa-list-check"></i><span style="margin-left: 0.7em">Manage Mods</span></div>
+      </div>
+      <div style="margin-bottom: 10px">
         <div id="switch-player" class="menu-button"><i class="fa-solid fa-user"></i><span style="margin-left: 0.7em">Switch Player</span></div>
       </div>
       <div>
@@ -75,7 +94,18 @@
     </div>
 
     <canvas id="canvas" style="width: 100%; height: 100%; min-width: 640px; min-height: 384px;" tabindex="-1"></canvas>
+    <input id="ime-proxy" type="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" aria-hidden="true" tabindex="-1" />
     <div id="loading-message" style="display: none">Loading...</div>
+
+    <div id="mod-overlay">
+      <h2>Mods / MOD管理</h2>
+      <div style="opacity: 0.7; font-size: 14px; margin-bottom: 14px; line-height: 1.6;">
+        Installed under this player's save area. Changes take effect after reload.<br />
+        このプレイヤーのセーブ領域に保存されます。変更は再読み込み後に反映されます。
+      </div>
+      <div id="mod-list"></div>
+      <button class="close-btn" onclick="document.getElementById('mod-overlay').style.display='none'">閉じる / Close</button>
+    </div>
 
     <div id="error-overlay">
       <h2>エラーが発生しました / An error occurred</h2>
@@ -312,6 +342,264 @@
           "\u6ce8\u610f: \u3053\u306e\u30d6\u30e9\u30a6\u30b6\u3067\u306f\u30bb\u30fc\u30d6\u3092\u4fdd\u5b58\u3067\u304d\u307e\u305b\u3093\uff08\u518d\u8aad\u307f\u8fbc\u307f\u3067\u6d88\u3048\u307e\u3059\uff09\u3002 / " +
           "Warning: saves cannot be persisted in this browser session.");
       };
+
+
+      /* ---- Mod installer: drop a mod zip in, no rebuild needed ----
+         Mods are unpacked into <profile HOME>/.cataclysm-dda/mods/<id>/,
+         which is the game's standard user-mod search path
+         (PATH_INFO::user_moddir) AND lives inside the IDBFS mount, so
+         installed mods persist across reloads like saves do.  The game
+         scans that directory at startup, so newly installed mods appear
+         in the world's mod list after one reload. */
+      function modRoot() {
+        const profile = window.CDDA_PROFILE || "web_user";
+        return "/home/" + profile + "/.cataclysm-dda/mods";
+      }
+      function fsReady() {
+        return booted && window.Module && Module.FS;
+      }
+      function requestPersist() {
+        if (typeof window.setFsNeedsSync === "function") window.setFsNeedsSync();
+      }
+      function listInstalledMods() {
+        const fs = Module.FS;
+        const root = modRoot();
+        if (!fs.analyzePath(root).exists) return [];
+        const out = [];
+        for (const entry of fs.readdir(root)) {
+          if (entry === "." || entry === "..") continue;
+          const dir = root + "/" + entry;
+          try {
+            if (!fs.isDir(fs.stat(dir).mode)) continue;
+          } catch (e) { continue; }
+          let name = entry;
+          try {
+            const raw = fs.readFile(dir + "/modinfo.json", { encoding: "utf8" });
+            const info = JSON.parse(raw).find((o) => o && o.type === "MOD_INFO");
+            if (info) name = (info.name || entry) + "  [" + (info.id || entry) + "]";
+          } catch (e) { /* keep directory name */ }
+          out.push({ dir: entry, label: name });
+        }
+        return out;
+      }
+      function removeDirRecursive(fs, path) {
+        for (const entry of fs.readdir(path)) {
+          if (entry === "." || entry === "..") continue;
+          const child = path + "/" + entry;
+          if (fs.isDir(fs.stat(child).mode)) removeDirRecursive(fs, child);
+          else fs.unlink(child);
+        }
+        fs.rmdir(path);
+      }
+      function renderModList() {
+        const listEl = document.getElementById("mod-list");
+        listEl.innerHTML = "";
+        const mods = listInstalledMods();
+        if (mods.length === 0) {
+          listEl.innerHTML = '<div style="opacity:0.6; padding: 10px;">No user mods installed. / 追加MODはまだありません。</div>';
+          return;
+        }
+        for (const mod of mods) {
+          const row = document.createElement("div");
+          row.className = "mod-row";
+          const name = document.createElement("span");
+          name.className = "mod-name";
+          name.textContent = mod.label;
+          const del = document.createElement("button");
+          del.textContent = "削除 / Remove";
+          del.onclick = () => {
+            if (!confirm('Remove mod "' + mod.dir + '"?\n（このMODを削除します。ワールドが使用中の場合はロードできなくなる可能性があります）')) return;
+            try {
+              removeDirRecursive(Module.FS, modRoot() + "/" + mod.dir);
+              requestPersist();
+              renderModList();
+              noticeMessage("MODを削除しました。反映には再読み込みが必要です。 / Mod removed. Reload to apply.");
+            } catch (error) {
+              console.error("Mod removal failed:", error);
+              noticeMessage("削除に失敗しました: " + error + " / Removal failed.");
+            }
+          };
+          row.appendChild(name);
+          row.appendChild(del);
+          listEl.appendChild(row);
+        }
+      }
+      document.getElementById("manage-mods").onclick = () => {
+        settingsMenu.style.display = "none";
+        if (!fsReady()) {
+          noticeMessage("ゲーム起動後にお使いください。 / Start the game first.");
+          return;
+        }
+        renderModList();
+        document.getElementById("mod-overlay").style.display = "block";
+      };
+      document.getElementById("install-mod").onclick = () => {
+        settingsMenu.style.display = "none";
+        if (typeof JSZip === "undefined") {
+          noticeMessage("ZIP展開ライブラリを読み込めていません。接続を確認して再読み込みしてください。 / Zip library did not load. Reload and try again.");
+          return;
+        }
+        if (!fsReady()) {
+          noticeMessage("ゲーム起動後にお使いください。 / Start the game first, then install mods.");
+          return;
+        }
+        document.getElementById("mod-zip-input").click();
+      };
+      document.getElementById("mod-zip-input").addEventListener("change", async (ev) => {
+        const file = ev.target.files && ev.target.files[0];
+        ev.target.value = "";
+        if (!file) return;
+        try {
+          noticeMessage("MODを展開しています... / Unpacking mod...");
+          const zip = await JSZip.loadAsync(await file.arrayBuffer());
+          // Find every modinfo.json; each parent directory is one mod.
+          // Handles zips with a top-level folder, without one, and
+          // multi-mod bundles alike.
+          const modDirs = [];
+          zip.forEach((relPath, entry) => {
+            if (entry.dir) return;
+            const parts = relPath.split("/");
+            if (parts[parts.length - 1].toLowerCase() === "modinfo.json") {
+              modDirs.push(parts.slice(0, -1).join("/"));
+            }
+          });
+          if (modDirs.length === 0) {
+            noticeMessage("modinfo.json が見つかりません。CDDA用MODのzipか確認してください。 / No modinfo.json found in this zip.");
+            return;
+          }
+          // Deepest-first so nested duplicates resolve to the closest mod dir.
+          modDirs.sort((a, b) => b.length - a.length);
+          const fs = Module.FS;
+          let installed = 0;
+          const installedNames = [];
+          const handled = new Set();
+          for (const prefix of modDirs) {
+            if ([...handled].some((h) => prefix.startsWith(h + "/") || prefix === h)) continue;
+            handled.add(prefix);
+            // Mod directory name: last path segment, or the zip name for root-level mods.
+            const dirName = (prefix ? prefix.split("/").pop() : file.name.replace(/\.zip$/i, ""))
+              .replace(/[^A-Za-z0-9 ._-]/g, "_").trim() || "mod";
+            const target = modRoot() + "/" + dirName;
+            if (fs.analyzePath(target).exists) {
+              if (!confirm('Mod "' + dirName + '" already exists. Overwrite?\n（同名のMODを上書きします）')) continue;
+              removeDirRecursive(fs, target);
+            }
+            fs.mkdirTree(target);
+            const prefixSlash = prefix ? prefix + "/" : "";
+            const files = [];
+            zip.forEach((relPath, entry) => {
+              if (!entry.dir && relPath.startsWith(prefixSlash)) files.push([relPath, entry]);
+            });
+            for (const [relPath, entry] of files) {
+              const rel = relPath.slice(prefixSlash.length);
+              if (!rel || rel.includes("..")) continue;
+              const dest = target + "/" + rel;
+              const parent = dest.slice(0, dest.lastIndexOf("/"));
+              fs.mkdirTree(parent);
+              fs.writeFile(dest, new Uint8Array(await entry.async("arraybuffer")));
+            }
+            installed++;
+            installedNames.push(dirName);
+          }
+          if (installed > 0) {
+            requestPersist();
+            noticeMessage("MODを導入しました: " + installedNames.join(", ") +
+              " — 再読み込み後、ワールド作成/編集画面のMOD一覧に表示されます。 / Installed. Reload, then enable it in the world's mod list.");
+          }
+        } catch (error) {
+          console.error("Mod install failed:", error);
+          noticeMessage("MODの導入に失敗しました: " + error + " / Mod install failed.");
+        }
+      });
+
+      /* ---- Japanese (IME) input bridge ----
+         Browser IMEs compose only into focused editable DOM elements; the
+         game's canvas never receives composition events, so kanji/kana
+         could not be typed into any in-game text field.  The patched game
+         runtime calls window.CDDA_SET_TEXT_INPUT(1/0) whenever it starts or
+         stops SDL text input (i.e. whenever an in-game text field is or is
+         not accepting characters), and drains window.cddaImeState from its
+         event pump, re-injecting the text as regular SDL text events.
+
+         Plain ASCII typing is unaffected: keydown/keyup bubble from the
+         proxy up to the document, where SDL's own listeners consume them
+         (and preventDefault keeps them out of the proxy's value).  During
+         IME composition the browser suppresses those raw key events itself,
+         so nothing is double-entered. */
+      window.cddaImeState = { commits: [], preview: null };
+      const imeProxy = document.getElementById("ime-proxy");
+      let imeWanted = false;   // game-side text input state
+      let imeComposing = false;
+
+      function imeRefocus() {
+        if (!imeWanted || errorShown) return;
+        // Never steal focus from real UI (profile screen, dialogs).
+        const a = document.activeElement;
+        if (a && a !== document.body && a !== canvas && a !== imeProxy) return;
+        try { imeProxy.focus({ preventScroll: true }); } catch (e) { /* ignore */ }
+      }
+
+      window.CDDA_SET_TEXT_INPUT = function (on) {
+        const want = !!on;
+        if (want === imeWanted) { if (want) imeRefocus(); return; }
+        imeWanted = want;
+        if (want) {
+          imeRefocus();
+        } else {
+          imeComposing = false;
+          imeProxy.value = "";
+          window.cddaImeState.preview = null;
+          if (document.activeElement === imeProxy) imeProxy.blur();
+        }
+      };
+
+      /* While a composition is in progress the raw key events (the Enter
+         that confirms a conversion, arrow keys that move between candidates,
+         Escape that cancels it) belong to the IME, not to the game.  SDL's
+         own listeners live on window; register capture-phase handlers first
+         so those keys never reach the game as game input.  keyCode 229 is
+         the standard "IME is processing" marker. */
+      function imeSwallowKey(e) {
+        if (imeComposing || e.isComposing || e.keyCode === 229) {
+          e.stopImmediatePropagation();
+        }
+      }
+      window.addEventListener("keydown", imeSwallowKey, true);
+      window.addEventListener("keyup", imeSwallowKey, true);
+
+      imeProxy.addEventListener("compositionstart", () => {
+        imeComposing = true;
+        window.cddaImeState.preview = "";
+      });
+      imeProxy.addEventListener("compositionupdate", (e) => {
+        window.cddaImeState.preview = e.data || "";
+      });
+      imeProxy.addEventListener("compositionend", (e) => {
+        imeComposing = false;
+        const text = e.data || "";
+        if (text) window.cddaImeState.commits.push(text);
+        window.cddaImeState.preview = "";
+        imeProxy.value = "";
+      });
+      // Anything that lands in the proxy outside a composition (e.g. a
+      // paste, or an IME that commits without composition events) is
+      // forwarded as committed text as well.
+      imeProxy.addEventListener("input", (e) => {
+        if (imeComposing || e.isComposing) return;
+        const text = imeProxy.value;
+        if (text) window.cddaImeState.commits.push(text);
+        imeProxy.value = "";
+      });
+      // Keep the proxy focused while the game wants text input: clicking
+      // the canvas (to move the cursor, close menus, ...) must not silently
+      // turn Japanese input off.
+      imeProxy.addEventListener("blur", () => {
+        if (!imeWanted) return;
+        setTimeout(imeRefocus, 0);
+      });
+      document.addEventListener("mousedown", () => {
+        if (imeWanted) setTimeout(imeRefocus, 0);
+      });
 
       var Module = {
         preRun: [function () {
