@@ -91,7 +91,7 @@ index d068ac0..72df7e0 100644
      // counts are met.
      place_specials_pass( enabled_specials, sectors, false, false );
 diff --git a/src/sdltiles.cpp b/src/sdltiles.cpp
-index 020cf3d..12a3a4a 100644
+index 020cf3d..0468f90 100644
 --- a/src/sdltiles.cpp
 +++ b/src/sdltiles.cpp
 @@ -2629,6 +2629,17 @@ static bool text_input_active_when_regaining_focus = false;
@@ -126,7 +126,7 @@ index 020cf3d..12a3a4a 100644
  #if defined(__ANDROID__)
      SDL_StopTextInput();
  #else
-@@ -2657,6 +2675,106 @@ void StopTextInput()
+@@ -2657,6 +2675,114 @@ void StopTextInput()
  #endif
  }
  
@@ -140,6 +140,13 @@ index 020cf3d..12a3a4a 100644
 +// re-inject them as standard SDL_TEXTINPUT / SDL_TEXTEDITING events so
 +// every existing consumer (string_input_popup, the string editor, search
 +// boxes, ...) works completely unmodified.
++//
++// EM_ASM_INT interpolates its C++ arguments as $0/$1 inside the JS body;
++// that is the documented Emscripten calling convention, but the '$' hits
++// -Wdollar-in-identifier-extension under this project's -Wpedantic -Werror
++// build, so silence exactly that diagnostic for exactly this bridge.
++#pragma clang diagnostic push
++#pragma clang diagnostic ignored "-Wdollar-in-identifier-extension"
 +static void cdda_pump_web_ime()
 +{
 +    static char ime_buf[4096];
@@ -228,12 +235,13 @@ index 020cf3d..12a3a4a 100644
 +        SDL_PushEvent( &edit_event );
 +    }
 +}
++#pragma clang diagnostic pop
 +#endif
 +
  //Check for any window messages (keypress, paint, mousemove, etc)
  static void CheckMessages()
  {
-@@ -2974,6 +3092,12 @@ static void CheckMessages()
+@@ -2974,6 +3100,12 @@ static void CheckMessages()
  
      last_input = input_event();
  
@@ -246,7 +254,7 @@ index 020cf3d..12a3a4a 100644
      std::optional<point> resize_dims;
      bool render_target_reset = false;
      using cata::options::mouse;
-@@ -3914,6 +4038,26 @@ void input_manager::pump_events()
+@@ -3914,6 +4046,26 @@ void input_manager::pump_events()
          return;
      }
  

@@ -49,6 +49,14 @@ Chromebook は Linux 不要・Chrome で URL を開くだけです。
   セーブと同様に IndexedDB に永続化される
 - **Stats Through Kills 同梱**: キル経験値でステータスを上げられる公式 MOD
   （0.I 本体からファイルだけ削除されたがエンジン側の対応は健在）を同梱
+- **アセットの永続キャッシュ（2 回目以降の起動を数秒に）**: GitHub Pages は
+  `max-age=600`（10 分）でしか HTTP キャッシュを許さず、約 120MB の
+  wasm+データを訪問のたびに再ダウンロードしていた。Cache Storage API に
+  期限なしで保存し、`navigator.storage.persist()` でディスク圧迫時の退避から
+  保護（セーブデータの IndexedDB も同時に保護される）。ETag の条件付き GET で
+  新デプロイは自動検知し、オフラインでもキャッシュから起動できる。
+  wasm は `instantiateStreaming` で読み込みとコンパイルを同時進行。
+  Cache Storage が使えない環境では従来のローダーに自動フォールバック
 - **メモリ方針**: 起動時 256MB・上限 2GB（成長方式）。世界生成のピークで
   1GB 上限だと確保に失敗して固まるため 2GB に設定
 - **Asyncify スタック 16MB**: 深い呼び出し中の yield でも状態が壊れないように

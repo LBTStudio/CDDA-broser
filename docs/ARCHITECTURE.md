@@ -62,6 +62,34 @@ Pipeline (all in CI, nothing large is committed to the repo):
   engine implementation (kill_tracker XP accrual, upgrade prompts, scores UI,
   `STATS_THROUGH_KILLS` external option) is still present and functional.
 
+## Persistent asset cache (shell only, no engine change)
+
+GitHub Pages serves everything with `cache-control: max-age=600` and no
+immutable variant, so the regular HTTP cache re-downloads the ~120MB
+(gzip-transfer) wasm+data pair on nearly every visit; low-disk Chromebooks
+evict it even sooner. The shell therefore:
+- stores `cataclysm-tiles.wasm` and `cataclysm-tiles.data` in Cache Storage
+  (`cdda-assets-v1`), which has no header-driven expiry, and requests
+  `navigator.storage.persist()` so the bucket (asset cache + IDBFS saves)
+  survives disk pressure;
+- revalidates with a conditional GET against the stored ETag on every boot:
+  HTTP 304 (or a network failure = offline) boots from cache, anything else
+  refreshes the cache — new deployments are picked up automatically with a
+  one-`If-None-Match` roundtrip;
+- hands the data package to the stock loader via `Module.getPreloadedPackage`
+  (dropping its own reference so the buffer is not retained twice) and the
+  wasm via `Module.instantiateWasm` + `WebAssembly.instantiateStreaming`,
+  overlapping disk read/download with compilation;
+- falls back per-asset to the stock XHR loader whenever Cache Storage,
+  fetch-streaming, or the quota is unavailable, so the fast path can never
+  make loading less reliable than before.
+
+`-Werror` note: EM_ASM argument interpolation (`$0`/`$1`) trips
+`-Wdollar-in-identifier-extension` under the project's `-Wpedantic -Werror`;
+`cdda_pump_web_ime` is wrapped in a targeted
+`#pragma clang diagnostic ignored` push/pop (compile-verified against
+emsdk 3.1.51 with the exact CI flag set).
+
 ## Japanese IME input (web)
 
 Browser IMEs compose only into focused editable DOM elements; SDL's canvas
