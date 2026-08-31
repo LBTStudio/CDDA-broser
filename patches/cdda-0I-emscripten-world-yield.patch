@@ -91,10 +91,162 @@ index d068ac0..72df7e0 100644
      // counts are met.
      place_specials_pass( enabled_specials, sectors, false, false );
 diff --git a/src/sdltiles.cpp b/src/sdltiles.cpp
-index 020cf3d..22203ab 100644
+index 020cf3d..12a3a4a 100644
 --- a/src/sdltiles.cpp
 +++ b/src/sdltiles.cpp
-@@ -3914,6 +3914,26 @@ void input_manager::pump_events()
+@@ -2629,6 +2629,17 @@ static bool text_input_active_when_regaining_focus = false;
+ 
+ void StartTextInput()
+ {
++#if defined(EMSCRIPTEN)
++    // Keep the shell's hidden IME proxy field focused while text input is
++    // wanted.  Browser IMEs only compose into focused editable DOM
++    // elements, and clicking the canvas steals focus, so this is invoked
++    // unconditionally (the shell makes it idempotent).
++    EM_ASM( {
++        if( window.CDDA_SET_TEXT_INPUT ) {
++            window.CDDA_SET_TEXT_INPUT( 1 );
++        }
++    } );
++#endif
+     // prevent sending spurious empty SDL_TEXTEDITING events
+     if( SDL_IsTextInputActive() == SDL_TRUE ) {
+         return;
+@@ -2646,6 +2657,13 @@ void StartTextInput()
+ 
+ void StopTextInput()
+ {
++#if defined(EMSCRIPTEN)
++    EM_ASM( {
++        if( window.CDDA_SET_TEXT_INPUT ) {
++            window.CDDA_SET_TEXT_INPUT( 0 );
++        }
++    } );
++#endif
+ #if defined(__ANDROID__)
+     SDL_StopTextInput();
+ #else
+@@ -2657,6 +2675,106 @@ void StopTextInput()
+ #endif
+ }
+ 
++#if defined(EMSCRIPTEN)
++// Bridge browser IME composition into regular SDL text events.  The
++// Emscripten SDL backend only translates browser keypress events, which
++// IME based input methods (Japanese, Chinese, Korean, ...) never fire;
++// composition happens inside a hidden DOM <input> managed by the shell.
++// The shell queues committed strings and preview updates on
++// window.cddaImeState; drain them here, inside the normal event pump, and
++// re-inject them as standard SDL_TEXTINPUT / SDL_TEXTEDITING events so
++// every existing consumer (string_input_popup, the string editor, search
++// boxes, ...) works completely unmodified.
++static void cdda_pump_web_ime()
++{
++    static char ime_buf[4096];
++    // Committed text can be arbitrarily long; split it into SDL_TEXTINPUT
++    // events at UTF-8 character boundaries, exactly like a desktop IME
++    // commit that exceeds SDL's fixed event payload would arrive.
++    while( EM_ASM_INT( {
++    var st = window.cddaImeState;
++    if( !st || !st.commits || st.commits.length === 0 ) {
++        return 0;
++    }
++    var bytes = new TextEncoder().encode( String( st.commits.shift() ) );
++    var n = bytes.length < $1 ? bytes.length : $1 - 1;
++    if( n < bytes.length ) {
++        // Truncated: back off to a UTF-8 character boundary, dropping the
++        // partial character entirely.
++        while( n > 0 && ( bytes[n] & 0xC0 ) === 0x80 ) {
++            n--;
++        }
++    }
++    HEAPU8.set( bytes.subarray( 0, n ), $0 );
++    HEAPU8[$0 + n] = 0;
++    return 1;
++}, ime_buf, sizeof( ime_buf ) ) ) {
++        const char *p = ime_buf;
++        size_t remaining = strlen( ime_buf );
++        while( remaining > 0 ) {
++            size_t chunk = remaining;
++            const size_t max_chunk = static_cast<size_t>( SDL_TEXTINPUTEVENT_TEXT_SIZE ) - 1;
++            if( chunk > max_chunk ) {
++                chunk = max_chunk;
++                while( chunk > 0 &&
++                       ( static_cast<unsigned char>( p[chunk] ) & 0xC0 ) == 0x80 ) {
++                    chunk--;
++                }
++                if( chunk == 0 ) {
++                    // malformed UTF-8; drop instead of looping forever
++                    break;
++                }
++            }
++            SDL_Event commit_event {};
++            commit_event.type = SDL_TEXTINPUT;
++            memcpy( commit_event.text.text, p, chunk );
++            commit_event.text.text[chunk] = '\0';
++            SDL_PushEvent( &commit_event );
++            p += chunk;
++            remaining -= chunk;
++        }
++    }
++    // Composition preview: only the latest state matters.  An empty string
++    // must still be forwarded so a cancelled composition clears the
++    // preview inside the game.
++    if( EM_ASM_INT( {
++    var st = window.cddaImeState;
++    if( !st || st.preview === null || st.preview === undefined ) {
++        return 0;
++    }
++    var bytes = new TextEncoder().encode( String( st.preview ) );
++    st.preview = null;
++    var n = bytes.length < $1 ? bytes.length : $1 - 1;
++    if( n < bytes.length ) {
++        while( n > 0 && ( bytes[n] & 0xC0 ) === 0x80 ) {
++            n--;
++        }
++    }
++    HEAPU8.set( bytes.subarray( 0, n ), $0 );
++    HEAPU8[$0 + n] = 0;
++    return 1;
++}, ime_buf, sizeof( ime_buf ) ) ) {
++        size_t chunk = strlen( ime_buf );
++        const size_t max_edit = static_cast<size_t>( SDL_TEXTEDITINGEVENT_TEXT_SIZE ) - 1;
++        if( chunk > max_edit ) {
++            // preview only; the full text always arrives via the commit path
++            chunk = max_edit;
++            while( chunk > 0 &&
++                   ( static_cast<unsigned char>( ime_buf[chunk] ) & 0xC0 ) == 0x80 ) {
++                chunk--;
++            }
++        }
++        SDL_Event edit_event {};
++        edit_event.type = SDL_TEXTEDITING;
++        memcpy( edit_event.edit.text, ime_buf, chunk );
++        edit_event.edit.text[chunk] = '\0';
++        edit_event.edit.start = 0;
++        edit_event.edit.length = 0;
++        SDL_PushEvent( &edit_event );
++    }
++}
++#endif
++
+ //Check for any window messages (keypress, paint, mousemove, etc)
+ static void CheckMessages()
+ {
+@@ -2974,6 +3092,12 @@ static void CheckMessages()
+ 
+     last_input = input_event();
+ 
++#if defined(EMSCRIPTEN)
++    // Inject any pending browser IME text before draining the SDL queue so
++    // it is consumed by this very pump, like any other pending event.
++    cdda_pump_web_ime();
++#endif
++
+     std::optional<point> resize_dims;
+     bool render_target_reset = false;
+     using cata::options::mouse;
+@@ -3914,6 +4038,26 @@ void input_manager::pump_events()
          return;
      }
  

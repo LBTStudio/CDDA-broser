@@ -33,12 +33,55 @@ Pipeline (all in CI, nothing large is committed to the repo):
   during world generation (the peak-memory moment), which surfaced as a
   frozen/blank worldgen menu. 2GB keeps idle usage identical and gives the
   generation spike headroom while still protecting the device from runaway growth.
-- `ASYNCIFY_STACK_SIZE 16KB -> 4MB`: the yield patches call `emscripten_sleep()`
+- `ASYNCIFY_STACK_SIZE 16KB -> 16MB`: the yield patches call `emscripten_sleep()`
   from deep call chains (overmap specials, mapgen). Asyncify unwinds every live
-  frame into this fixed buffer; 16KB overflows there and corrupts state silently.
-- `STACK_SIZE 256KB -> 1MB`: headroom for mapgen recursion on the native stack.
-- Link stays at `-O0` (sources still `-O3`): avoids the multi-hour
-  binaryen/JS-optimizer stage that made CI unreliable; wasm-opt is skipped.
+  frame into this fixed buffer; 16KB overflows there and corrupts state silently,
+  and an exhausted unwind buffer surfaces as a SIGILL-style trap in the loading
+  phases right after world/character creation (4MB was close to the observed
+  peak; 16MB is 0.8% of the 2GB cap and puts the limit far above it).
+- `STACK_SIZE 256KB -> 4MB`: wasm stack exhaustion during mapgen recursion is
+  the other SIGILL-style trap; 4MB of one-time heap removes it with margin.
+- Link at upstream's `-Os` (sources still `-O3`): an `-O0` link was used
+  previously to skip the long Binaryen stage, but it leaves the Asyncify
+  instrumentation unoptimized — measurably sluggish gameplay on 4GB devices —
+  and roughly doubles the wasm download. `-Os` matches upstream's shipped web
+  builds; the CI heartbeat keeps the long link stage observable.
+
+## In-browser mod support
+
+- The shell can install mod zips at runtime: files are unpacked (JSZip, already
+  bundled for save export) into `<HOME>/.cataclysm-dda/mods/<dir>/`, which is
+  `PATH_INFO::user_moddir` — the game's standard user-mod search path — and
+  lives inside the IDBFS mount, so mods persist like saves. The installer keys
+  on `modinfo.json` locations inside the zip (works with or without a top-level
+  folder, and with multi-mod bundles), skips path-traversal entries, and asks
+  before overwriting. `Manage Mods` lists installed mods and removes them.
+- `mods/` in this repo is copied into `data/mods/` at bundle time (workflow
+  step). First bundled mod: `stats_through_kills` (modinfo.json byte-identical
+  to 0.H). The mod's data files were removed from the 0.I tree, but the entire
+  engine implementation (kill_tracker XP accrual, upgrade prompts, scores UI,
+  `STATS_THROUGH_KILLS` external option) is still present and functional.
+
+## Japanese IME input (web)
+
+Browser IMEs compose only into focused editable DOM elements; SDL's canvas
+never receives composition events, so IME text could not be typed at all.
+Bridge (world-yield patch, sdltiles.cpp + shell):
+- Game -> shell: `StartTextInput`/`StopTextInput` call
+  `window.CDDA_SET_TEXT_INPUT(1/0)`; the shell focuses/blurs a tiny,
+  effectively invisible `#ime-proxy` input, so the IME candidate window
+  appears only while an in-game text field accepts characters.
+- Shell -> game: composition events fill `window.cddaImeState`
+  ({commits[], preview}); `cdda_pump_web_ime()` (called at the top of
+  `CheckMessages`) drains it and re-injects commits as `SDL_TEXTINPUT` and
+  previews as `SDL_TEXTEDITING` via `SDL_PushEvent`, so `string_input_popup`
+  and every other consumer works unmodified, including the composition
+  preview (`edit`/`edit_refresh`) path.
+- Commits are split at UTF-8 boundaries to fit SDL's fixed event payload;
+  raw keydown/keyup are swallowed at capture phase while composing (Enter /
+  arrows / Esc belong to the IME; keyCode 229 included), so candidate
+  selection never leaks into the game. ASCII typing is untouched: the proxy
+  lets those keys bubble to SDL's own window-level listeners.
 
 Per-player save isolation:
 The game resolves its user dir as getenv("HOME") + "/.cataclysm-dda/"
