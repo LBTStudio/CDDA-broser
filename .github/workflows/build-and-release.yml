@@ -96,6 +96,8 @@ jobs:
           grep -n "CDDA_ON_IDBFS_MOUNTED" src/main.cpp
           grep -n "pagehide" src/main.cpp
           grep -n "cdda_last_pump_yield" src/sdltiles.cpp
+          grep -n "cdda_pump_web_ime" src/sdltiles.cpp
+          grep -n "CDDA_SET_TEXT_INPUT" src/sdltiles.cpp
 
       - name: Install dependencies
         run: |
@@ -128,11 +130,16 @@ jobs:
 
           # The upstream web target reserves 512MiB immediately and permits a
           # 4GiB heap.  A local browser test proved that the Japanese menu
-          # starts at 256MiB with growth enabled.  Keep link optimization at
-          # -O0 for the separately established reliable build path.
-          sed -i \
-            's/^[[:space:]]*LDFLAGS[[:space:]]*+=[[:space:]]*-Os[[:space:]]*$/LDFLAGS += -O0/' \
-            Makefile
+          # starts at 256MiB with growth enabled.
+          #
+          # Link optimization stays at the upstream default (-Os).  An -O0
+          # link was used previously to skip the long Binaryen stage, but it
+          # roughly doubles the wasm download and, critically, leaves the
+          # Asyncify instrumentation unoptimized, which made moment-to-moment
+          # gameplay measurably sluggish on 4GB devices.  Upstream ships -Os
+          # web builds from CI, so this is the proven configuration; the
+          # heartbeat below keeps the long link stage observable.
+          grep -n 'LDFLAGS += -Os' Makefile
           sed -i \
             's/-sINITIAL_MEMORY=512MB/-sINITIAL_MEMORY=256MB/' \
             Makefile
@@ -150,23 +157,27 @@ jobs:
           # The yield patches call emscripten_sleep() inside deep call
           # chains (overmap/mapgen).  Asyncify unwinds every live frame into
           # a fixed buffer; the upstream 16KiB ASYNCIFY_STACK_SIZE overflows
-          # there and corrupts memory silently (blank screen, no menu).
-          # 4MiB is a one-time allocation that removes that failure mode.
+          # there and corrupts memory silently (blank screen, no menu), and
+          # an exhausted unwind buffer surfaces as a SIGILL-style trap in the
+          # loading phases right after world/character creation.  16MiB is a
+          # single one-time allocation (0.8% of the 2GiB cap) that puts the
+          # limit far above the deepest observed chain.
           sed -i \
-            's/-sASYNCIFY_STACK_SIZE=16384/-sASYNCIFY_STACK_SIZE=4194304/' \
+            's/-sASYNCIFY_STACK_SIZE=16384/-sASYNCIFY_STACK_SIZE=16777216/' \
             Makefile
 
           # Deeply nested overmap specials also press on the 256KiB main
-          # stack.  1MiB costs one megabyte of the heap and prevents native
-          # stack exhaustion during mapgen recursion.
+          # stack.  Wasm stack exhaustion is another SIGILL-style trap during
+          # mapgen recursion; 4MiB of one-time heap removes it with margin.
           sed -i \
-            's/-sSTACK_SIZE=262144/-sSTACK_SIZE=1048576/' \
+            's/-sSTACK_SIZE=262144/-sSTACK_SIZE=4194304/' \
             Makefile
 
-          grep -n -E 'INITIAL_MEMORY|MAXIMUM_MEMORY|ASYNCIFY_STACK_SIZE|-sSTACK_SIZE|LDFLAGS \+= -O0' Makefile
+          grep -n -E 'INITIAL_MEMORY|MAXIMUM_MEMORY|ASYNCIFY_STACK_SIZE|-sSTACK_SIZE|LDFLAGS \+= -Os' Makefile
           grep -q -- '-sMAXIMUM_MEMORY=2GB' Makefile
-          grep -q -- '-sASYNCIFY_STACK_SIZE=4194304' Makefile
-          grep -q -- '-sSTACK_SIZE=1048576' Makefile
+          grep -q -- '-sASYNCIFY_STACK_SIZE=16777216' Makefile
+          grep -q -- '-sSTACK_SIZE=4194304' Makefile
+          grep -q -- 'LDFLAGS += -Os' Makefile
 
       - name: Build CDDA WebAssembly
         working-directory: cdda
@@ -175,11 +186,10 @@ jobs:
 
           source "$EMSDK/emsdk_env.sh"
 
-          # The Emscripten JavaScript optimizer is the recurrent long-running
-          # stage.  The link is deliberately -O0 (while source compilation
-          # remains optimized) so this stage is not required.  Four workers
-          # match the successful historical runs, and plain-text heartbeats
-          # make every running minute observable.
+          # The Binaryen/wasm-opt link stage is the long-running part of an
+          # -Os link; the heartbeat below prints memory/CPU once a minute so
+          # a slow link is distinguishable from a hung one.  Four workers
+          # match the successful historical runs.
           build_started_at="$(date +%s)"
           build_jobs=4
           heartbeat() {
@@ -265,6 +275,13 @@ jobs:
               )
 
           japanese_copy = """\
+          echo "Adding bundled extra mods..."
+
+          cp -R ../mods/. "$BUNDLE_DIR/data/mods/"
+
+          test -s \
+            "$BUNDLE_DIR/data/mods/stats_through_kills/modinfo.json"
+
           echo "Adding Japanese translation..."
 
           mkdir -p "$BUNDLE_DIR/lang/mo/ja/LC_MESSAGES"
@@ -309,6 +326,9 @@ jobs:
 
           test -s \
             web_bundle/lang/mo/ja/LC_MESSAGES/cataclysm-dda.mo
+
+          test -s \
+            web_bundle/data/mods/stats_through_kills/modinfo.json
 
           test -s build/cataclysm-tiles.data
           test -s build/cataclysm-tiles.data.js
