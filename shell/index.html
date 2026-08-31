@@ -198,10 +198,152 @@
           document.body.appendChild(script);
         });
       }
+
+      /* ---- Persistent asset cache ----------------------------------------
+         GitHub Pages serves every asset with cache-control: max-age=600, so
+         the regular HTTP cache re-downloads the ~120MB wasm+data pair on
+         almost every visit (and low-disk Chromebooks evict it even sooner).
+         Cache Storage entries do not expire by header; combined with
+         navigator.storage.persist() they survive disk pressure, making every
+         visit after the first start from local disk in seconds and keeping
+         the game playable offline.  A conditional GET against the stored
+         ETag still picks up new deployments automatically, and every failure
+         path falls back to the stock Emscripten XHR loader, so this can only
+         ever make loading faster, never break it. */
+      const ASSET_CACHE = "cdda-assets-v1";
+      const assetProgress = {};
+      function showLoadProgress(label, loaded, total) {
+        assetProgress[label] = { loaded: loaded, total: total };
+        const parts = [];
+        for (const key in assetProgress) {
+          const p = assetProgress[key];
+          const mb = (p.loaded / (1024 * 1024)).toFixed(1);
+          if (p.total > 0) {
+            /* Content-Length is the compressed size while the reader counts
+               decompressed bytes, so never announce more than 99%. */
+            const pct = Math.min(99, Math.floor((p.loaded / p.total) * 100));
+            parts.push(key + " " + mb + " MB (" + pct + "%)");
+          } else {
+            parts.push(key + " " + mb + " MB");
+          }
+        }
+        loadingMessage.textContent = "ダウンロード中 / Downloading: " + parts.join(" ・ ");
+      }
+      async function cachedAssetResponse(url, label) {
+        let cache = null;
+        try { cache = await caches.open(ASSET_CACHE); } catch (e) { /* http:// or blocked storage */ }
+        let cached = null;
+        if (cache) { try { cached = await cache.match(url); } catch (e) { cached = null; } }
+        const condHeaders = {};
+        if (cached) {
+          const etag = cached.headers.get("x-cdda-etag");
+          if (etag) condHeaders["If-None-Match"] = etag;
+        }
+        let net = null;
+        try { net = await fetch(url, { headers: condHeaders, cache: "no-cache" }); } catch (e) { net = null; }
+        if (cached && net && net.status === 304) return cached;      // still current
+        if (cached && (!net || !net.ok)) return cached;              // offline: play from cache
+        if (!net || !net.ok) throw new Error("Could not download " + url);
+        const total = Number(net.headers.get("Content-Length")) || 0;
+        const etag = net.headers.get("ETag") || "";
+        let body;
+        if (net.body && net.body.getReader) {
+          const reader = net.body.getReader();
+          const chunks = [];
+          let loaded = 0;
+          for (;;) {
+            const step = await reader.read();
+            if (step.done) break;
+            chunks.push(step.value);
+            loaded += step.value.length;
+            showLoadProgress(label, loaded, total);
+          }
+          body = new Blob(chunks);
+        } else {
+          body = await net.blob();
+        }
+        const storeHeaders = {
+          "Content-Type": net.headers.get("Content-Type") || "application/octet-stream",
+        };
+        if (etag) storeHeaders["x-cdda-etag"] = etag;
+        const resp = new Response(body, { headers: storeHeaders });
+        if (cache) {
+          try { await cache.put(url, resp.clone()); } catch (e) { console.warn("Asset cache write failed (quota?):", e); }
+        }
+        return resp;
+      }
+
       async function boot() {
         if (booted) return;
         booted = true;
         try {
+          /* Ask the browser to shield our storage bucket from eviction.
+             This protects the cached assets above AND the IDBFS save data.
+             Denial is fine; everything still works, just less durably. */
+          try {
+            if (navigator.storage && navigator.storage.persist) navigator.storage.persist();
+          } catch (e) { /* optional */ }
+
+          /* Drop cache buckets from older shell versions so a naming bump
+             never strands ~200MB of unreachable data on a small disk. */
+          try {
+            const names = await caches.keys();
+            for (const name of names) {
+              if (name.indexOf("cdda-assets-") === 0 && name !== ASSET_CACHE) await caches.delete(name);
+            }
+          } catch (e) { /* optional */ }
+
+          /* Fetch both large assets in parallel through the persistent
+             cache.  Either failing independently falls back to the stock
+             loader for that asset. */
+          const dataPromise = cachedAssetResponse("cataclysm-tiles.data", "データ")
+            .then((r) => r.arrayBuffer())
+            .catch((e) => { console.warn("Data cache path unavailable; stock XHR loader will run:", e); return null; });
+          const wasmPromise = cachedAssetResponse("cataclysm-tiles.wasm", "本体")
+            .catch((e) => { console.warn("Wasm cache path unavailable; stock loader will run:", e); return null; });
+          let dataBuf = await dataPromise;
+          const wasmResp = await wasmPromise;
+
+          if (dataBuf) {
+            /* file_packager's generated loader asks this hook for the
+               package before falling back to its own XHR.  Hand the buffer
+               over exactly once and drop our reference so the ~85MB is not
+               retained twice. */
+            Module.getPreloadedPackage = function () {
+              const buf = dataBuf;
+              dataBuf = null;
+              return buf;
+            };
+          }
+          if (wasmResp) {
+            Module.instantiateWasm = function (imports, receiveInstance) {
+              (async () => {
+                try {
+                  let out;
+                  try {
+                    /* Streaming compile overlaps disk read (or download) and
+                       compilation, and lets Chrome attach its compiled-code
+                       cache to the response. */
+                    out = await WebAssembly.instantiateStreaming(wasmResp.clone(), imports);
+                  } catch (e) {
+                    out = await WebAssembly.instantiate(await wasmResp.arrayBuffer(), imports);
+                  }
+                  receiveInstance(out.instance, out.module);
+                } catch (e) {
+                  /* Last resort: bypass the cache entirely. */
+                  try {
+                    const out = await WebAssembly.instantiateStreaming(fetch("cataclysm-tiles.wasm"), imports);
+                    receiveInstance(out.instance, out.module);
+                  } catch (e2) {
+                    console.error(e, e2);
+                    showFatalError("WebAssembly instantiation failed", String(e2));
+                  }
+                }
+              })();
+              return {};
+            };
+          }
+
           /* The data pack registers its preRun callback.  It must finish
              evaluating before the game runtime starts, otherwise CDDA scans
              lang/mo before the Japanese MO catalog exists in its virtual FS. */

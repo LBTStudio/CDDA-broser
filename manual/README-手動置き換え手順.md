@@ -1,10 +1,22 @@
 # Workflow ファイルの手動置き換え手順
 
 自動 push ではワークフローファイル（`.github/workflows/` 以下）を変更する
-権限がないため、この `manual/build-and-release.yml` を **あなたの手で**
+権限がないため、ワークフロー変更があった場合はこの
+`manual/build-and-release.yml` を **あなたの手で**
 リポジトリの `.github/workflows/build-and-release.yml` に上書きしてください。
 
-## 今回は置き換えが【必須】です
+## 【お知らせ】ビルド失敗(-Wdollar)修正の回では置き換え不要です
+
+`-Wdollar-in-identifier-extension` によるビルド失敗の修正と
+アセット永続キャッシュの追加（PR #4）は `patches/` と `shell/` のみの
+変更で、ワークフローはビルド時にそれらをリポジトリから読み込むため、
+**ワークフローファイルの置き換えは不要**です。マージして Actions を
+再実行するだけで反映されます。
+（下記の「必須」は前回 PR #3 の回の内容で、すでに置き換え済みのはずです。
+`.github/workflows/build-and-release.yml` と `manual/build-and-release.yml`
+の内容が同じであれば、この節は読み飛ばしてください。）
+
+## （前回 PR #3 の回）置き換えが【必須】でした
 
 今回の更新には、ワークフロー本体の設定変更が含まれています。
 置き換えないと以下の改善が反映されません:
