@@ -229,23 +229,29 @@
         }
         loadingMessage.textContent = "ダウンロード中 / Downloading: " + parts.join(" ・ ");
       }
+      /* Resolved content identity per asset URL.  The game runtime keys
+         its persisted JSON parse cache on the data package's identity, so
+         a game update invalidates stale parse results wholesale. */
+      const assetTags = {};
       async function cachedAssetResponse(url, label) {
         let cache = null;
         try { cache = await caches.open(ASSET_CACHE); } catch (e) { /* http:// or blocked storage */ }
         let cached = null;
         if (cache) { try { cached = await cache.match(url); } catch (e) { cached = null; } }
         const condHeaders = {};
+        let cachedTag = "";
         if (cached) {
-          const etag = cached.headers.get("x-cdda-etag");
-          if (etag) condHeaders["If-None-Match"] = etag;
+          cachedTag = cached.headers.get("x-cdda-etag") || "";
+          if (cachedTag) condHeaders["If-None-Match"] = cachedTag;
         }
         let net = null;
         try { net = await fetch(url, { headers: condHeaders, cache: "no-cache" }); } catch (e) { net = null; }
-        if (cached && net && net.status === 304) return cached;      // still current
-        if (cached && (!net || !net.ok)) return cached;              // offline: play from cache
+        if (cached && net && net.status === 304) { assetTags[url] = cachedTag; return cached; }  // still current
+        if (cached && (!net || !net.ok)) { assetTags[url] = cachedTag; return cached; }          // offline: play from cache
         if (!net || !net.ok) throw new Error("Could not download " + url);
         const total = Number(net.headers.get("Content-Length")) || 0;
         const etag = net.headers.get("ETag") || "";
+        assetTags[url] = etag;
         let body;
         if (net.body && net.body.getReader) {
           const reader = net.body.getReader();
@@ -756,6 +762,15 @@
             ENV.XDG_CONFIG_HOME = home + "/.config";
             ENV.LANG = "ja_JP.UTF-8";
             ENV.LANGUAGE = "ja";
+            /* Identity of the loaded data package (its HTTP ETag).  The
+               runtime keeps its persisted JSON parse cache under a
+               directory named after this value, so a new release starts a
+               fresh cache and old ones are cleaned up.  When unknown
+               (stock loader path) the runtime falls back to the game
+               version string. */
+            if (assetTags["cataclysm-tiles.data"]) {
+              ENV.CDDA_DATA_VERSION = assetTags["cataclysm-tiles.data"];
+            }
           }
           // The XDG path is not IDBFS-mounted (only used by USE_XDG_DIR
           // builds); seed it here so either compile configuration starts in

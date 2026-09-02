@@ -22,7 +22,8 @@ Pipeline (all in CI, nothing large is committed to the repo):
 | `mo-reader` | MEMFS cannot mmap LZ4-preloaded files; read MO catalogs into owned memory. Also hardens the mmap layer for the browser: (1) MEMFS `mmap` throws a JS `TypeError` ("Cannot read properties of null (reading 'buffer')") for never-written files instead of failing like POSIX, so `map_view()` returns `false` for zero-length files on EMSCRIPTEN — callers then take their existing empty-file path (`base=nullptr, len=0`), from which zzip regenerates the footer and resizes the file; (2) `WORLD_COMPRESSION2` defaults to `false` on EMSCRIPTEN (writeable mmap views are heap-emulated on MEMFS — slow and fragile on 4GB devices; the option itself is untouched and can still be enabled per world); (3) `zzip.cpp` null-guards the dictionary `map_file()` result before dereferencing. Together these fix the post-character-creation crash `TypeError ... at Object.mmap` seen when a freshly created, still-empty compressed save (`.zzip`) was mapped |
 | `loader-yield` | yield to the browser every 50ms while iterating core/mod JSON files |
 | `mod-finalize-yield` | same 50ms budget for mod interactions, per-object JSON array dispatch, finalization and verification passes (the phases that run during world creation) |
-| `world-yield` | yields in `start_game` / `overmap::generate` / `place_specials` / mapgen so the deepest post-worldgen call chain cannot hold the main thread; additionally a throttled (50ms) yield inside `input_manager::pump_events` (SDL build) turns every upstream cooperative marker — map/overmap saving, JSON verification, world serialization, submap generation — into a real browser yield, which removes the "wait or leave page" dialog during post-worldgen finalization |
+| `world-yield` | yields in `start_game` / `overmap::generate` / `place_specials` / mapgen so the deepest post-worldgen call chain cannot hold the main thread; a throttled yield inside `input_manager::pump_events` (SDL build) turns every upstream cooperative marker — map/overmap saving, JSON verification, world serialization, submap generation — into a real browser yield, which removes the "wait or leave page" dialog during post-worldgen finalization (throttle raised 50ms→250ms: each yield is a full Asyncify stack round trip and showed up as per-turn overhead during map movement); ui_manager's unconditional post-redraw `emscripten_sleep(1)` is throttled to ~30fps pacing for the same reason (the input wait loop's `SDL_Delay(1)` already yields after each keypress redraw, so responsiveness is unaffected); carries the web IME bridge in `sdltiles.cpp` — see "Japanese IME input" below — now including string-input-context gating: `input_context` registers itself on the (previously Android-only) `input_context_stack` on EMSCRIPTEN too, and `StartTextInput()` engages the browser IME proxy only when the top-of-stack category is `STRING_INPUT` / `STRING_EDITOR` / `HELP_KEYBINDINGS` (mirroring Android's `is_string_input`), so an active Japanese IME can no longer swallow movement keys during normal play |
+| `json-cache` | the stock flexbuffer disk caches (`<base>/cache`, `<data>/cache`) live in MEMFS on the web and vanish every page load, so every start re-parsed ~60MB of core JSON during "core loading / finalization"; redirect the base/data caches to `<user_dir>/json_cache/<data-package-tag>/` (inside the IDBFS mount, persisted like saves), run them in a new `assume_immutable_root` mode (packaged files get fresh, meaningless mtimes each load, so mtime staleness checks are skipped), and version the directory by the data package's HTTP ETag (`CDDA_DATA_VERSION` env exported by the shell; falls back to the game version string) — a game update starts a fresh cache and older tag directories are removed to bound IndexedDB usage |
 | `idbfs-debounce` | mount IDBFS at the profile's real user dir (`$HOME/.cataclysm-dda`, resolved at runtime) instead of the hardcoded `/home/web_user`; coalesce persistence into one debounced (250ms), serialized `FS.syncfs` instead of one transaction per file mutation; force-flush on `pagehide` / `visibilitychange: hidden` so ChromeOS tab discard cannot drop the last writes; expose a `window.CDDA_ON_IDBFS_MOUNTED(mountPoint)` hook so the shell can migrate config *after* the mount (an IDBFS mount shadows anything written there during preRun); `window.setFsNeedsSync` is defined *before* the first `await` because `filesystem.cpp` invokes it on every file mutation and character creation writes files while the initial restore is still pending (calling an undefined function was the "Exception thrown, see JavaScript console" hang); a failed IndexedDB mount now degrades to MEMFS and notifies the shell via `window.CDDA_ON_IDBFS_ERROR` instead of halting the game with an uncaught rejection |
 
 ## Memory / stack policy for 4GB devices (applied to the Makefile in CI)
@@ -41,11 +42,18 @@ Pipeline (all in CI, nothing large is committed to the repo):
   peak; 16MB is 0.8% of the 2GB cap and puts the limit far above it).
 - `STACK_SIZE 256KB -> 4MB`: wasm stack exhaustion during mapgen recursion is
   the other SIGILL-style trap; 4MB of one-time heap removes it with margin.
-- Link at upstream's `-Os` (sources still `-O3`): an `-O0` link was used
-  previously to skip the long Binaryen stage, but it leaves the Asyncify
-  instrumentation unoptimized — measurably sluggish gameplay on 4GB devices —
-  and roughly doubles the wasm download. `-Os` matches upstream's shipped web
-  builds; the CI heartbeat keeps the long link stage observable.
+- Link at upstream's `-Os`: an `-O0` link was used previously to skip the
+  long Binaryen stage, but it leaves the Asyncify instrumentation
+  unoptimized — measurably sluggish gameplay on 4GB devices — and roughly
+  doubles the wasm download. `-Os` matches upstream's shipped web builds;
+  the CI heartbeat keeps the long link stage observable.
+- Compile at `-O3` (upstream web default was `-Os`): map movement runs the
+  mapgen/event/AI hot loops through this code and `-O3`'s vectorization and
+  inlining reduce per-turn CPU. The size cost is bounded because the `-Os`
+  link stage still runs Binaryen's size-aware whole-module optimizer, and
+  the persistent asset cache makes the one-time download less critical. The
+  workflow edits only the emscripten branch of the Makefile's OPTLEVEL
+  selection (bounded sed range + awk assertion).
 
 ## In-browser mod support
 
@@ -99,6 +107,18 @@ Bridge (world-yield patch, sdltiles.cpp + shell):
   `window.CDDA_SET_TEXT_INPUT(1/0)`; the shell focuses/blurs a tiny,
   effectively invisible `#ime-proxy` input, so the IME candidate window
   appears only while an in-game text field accepts characters.
+- String-input-context gating: `get_input_event()` calls `StartTextInput()`
+  on **every** input poll in keychar mode (the default), i.e. also during
+  ordinary map movement. The first bridge version forwarded that signal
+  unconditionally, so the proxy stayed focused during play and an active
+  Japanese IME turned every movement key into a kana composition and
+  swallowed it. Now `input_context` registers itself on the (previously
+  Android-only) `input_context_stack` on EMSCRIPTEN too, and
+  `cdda_web_wants_ime()` reports 1 only when the top-of-stack category is
+  `STRING_INPUT` / `STRING_EDITOR` / `HELP_KEYBINDINGS` — the exact
+  classification Android's `is_string_input()` uses. Notifications are
+  edge-triggered (`cdda_web_notify_ime`) so the JS boundary is not crossed
+  on every poll.
 - Shell -> game: composition events fill `window.cddaImeState`
   ({commits[], preview}); `cdda_pump_web_ime()` (called at the top of
   `CheckMessages`) drains it and re-injects commits as `SDL_TEXTINPUT` and
