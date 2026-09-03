@@ -72,6 +72,16 @@ jobs:
           git apply --check ../patches/cdda-0I-emscripten-world-yield.patch
           git apply ../patches/cdda-0I-emscripten-world-yield.patch
 
+          # The web build unpacks game data into volatile MEMFS on every
+          # page load, so the stock JSON parse caches (<base>/cache,
+          # <data>/cache) vanish between visits and every start re-parses
+          # ~60MB of core JSON during "core loading / finalization".  Keep
+          # those caches in the persisted user directory (IDBFS) instead,
+          # keyed by the data package identity (HTTP ETag exported by the
+          # shell) so a game update invalidates them wholesale.
+          git apply --check ../patches/cdda-0I-emscripten-json-cache.patch
+          git apply ../patches/cdda-0I-emscripten-json-cache.patch
+
           # World setup mutates many small files; upstream schedules one full
           # IDBFS sync per mutation on the next animation frame.  Debounce
           # and serialize those syncs so IndexedDB transactions do not pile
@@ -98,6 +108,11 @@ jobs:
           grep -n "cdda_last_pump_yield" src/sdltiles.cpp
           grep -n "cdda_pump_web_ime" src/sdltiles.cpp
           grep -n "CDDA_SET_TEXT_INPUT" src/sdltiles.cpp
+          grep -n "cdda_web_wants_ime" src/sdltiles.cpp
+          grep -n "cdda_last_redraw_yield" src/ui_manager.cpp
+          grep -n "EMSCRIPTEN" src/input_context.h
+          grep -n "web_data_cache_root" src/json_loader.cpp
+          grep -n "assume_immutable_root" src/flexbuffer_cache.cpp
 
       - name: Install dependencies
         run: |
@@ -140,6 +155,22 @@ jobs:
           # web builds from CI, so this is the proven configuration; the
           # heartbeat below keeps the long link stage observable.
           grep -n 'LDFLAGS += -Os' Makefile
+
+          # COMPILE optimization moves from the upstream web default (-Os,
+          # size-first) to -O3 (speed-first).  Map movement runs the mapgen/
+          # event/AI hot loops through this code; -O3's vectorization and
+          # inlining measurably reduce per-turn CPU on low-end devices.  The
+          # size cost is bounded because the -Os LINK stage above still runs
+          # Binaryen's size-aware optimizer over the whole module, and the
+          # persistent asset cache makes the one-time download less critical.
+          grep -n 'OPTLEVEL = -Os' Makefile
+          # Bounded range: only the emscripten branch of the OPTLEVEL
+          # selection changes (osx/mingw branches keep their own values).
+          sed -i \
+            '/else ifeq ($(NATIVE), emscripten)/,/else/ s/OPTLEVEL = -Os/OPTLEVEL = -O3/' \
+            Makefile
+          grep -n 'OPTLEVEL = -O3' Makefile
+
           sed -i \
             's/-sINITIAL_MEMORY=512MB/-sINITIAL_MEMORY=256MB/' \
             Makefile
@@ -178,6 +209,8 @@ jobs:
           grep -q -- '-sASYNCIFY_STACK_SIZE=16777216' Makefile
           grep -q -- '-sSTACK_SIZE=4194304' Makefile
           grep -q -- 'LDFLAGS += -Os' Makefile
+          # The emscripten compile branch must now say -O3.
+          awk '/else ifeq \(\$\(NATIVE\), emscripten\)/{found=1} found && /OPTLEVEL = -O3/{ok=1} END{exit ok?0:1}' Makefile
 
       - name: Build CDDA WebAssembly
         working-directory: cdda

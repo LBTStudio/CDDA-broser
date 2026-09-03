@@ -5,16 +5,28 @@
 `manual/build-and-release.yml` を **あなたの手で**
 リポジトリの `.github/workflows/build-and-release.yml` に上書きしてください。
 
-## 【お知らせ】ビルド失敗(-Wdollar)修正の回では置き換え不要です
+## 【今回 PR #5】置き換えが【必須】です
 
-`-Wdollar-in-identifier-extension` によるビルド失敗の修正と
-アセット永続キャッシュの追加（PR #4）は `patches/` と `shell/` のみの
-変更で、ワークフローはビルド時にそれらをリポジトリから読み込むため、
-**ワークフローファイルの置き換えは不要**です。マージして Actions を
-再実行するだけで反映されます。
-（下記の「必須」は前回 PR #3 の回の内容で、すでに置き換え済みのはずです。
-`.github/workflows/build-and-release.yml` と `manual/build-and-release.yml`
-の内容が同じであれば、この節は読み飛ばしてください。）
+今回の更新（読み込み高速化・日本語入力バグ修正・マップ移動の軽量化）には
+ワークフロー本体の変更が含まれています。**マージ後に必ず下記の
+「置き換え手順」を実行してください**。置き換えないと:
+
+- 新パッチ `cdda-0I-emscripten-json-cache.patch`（JSON 解析キャッシュの
+  永続化 = 2 回目以降のロード短縮）が**ビルドに取り込まれず**、
+  検証 grep も走りません
+- コンパイル最適化の `-Os` → **`-O3`** 変更（マップ移動の軽量化の柱）が
+  反映されません
+
+今回ワークフローに入った変更は次の 3 点です:
+
+1. **JSON キャッシュ永続化パッチの適用ステップ追加**
+   （`git apply ../patches/cdda-0I-emscripten-json-cache.patch`）
+2. **コンパイル最適化を `-O3` に変更**（emscripten ブランチの
+   `OPTLEVEL = -Os` だけを書き換える限定 sed + 確認用 awk）。
+   ビルド時間は多少伸びる可能性がありますが、リンク段の `-Os` は
+   維持しているため wasm サイズの増加は限定的です
+3. **新パッチの検証 grep を 5 行追加**（IME ゲーティング / 描画 yield
+   間引き / input_context スタック / JSON キャッシュ / immutable root）
 
 ## （前回 PR #3 の回）置き換えが【必須】でした
 

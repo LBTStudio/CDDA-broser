@@ -16,6 +16,91 @@ index dc083dd..a2f772b 100644
      if( !gamemode ) {
          gamemode = std::make_unique<special_game>();
      }
+diff --git a/src/input_context.cpp b/src/input_context.cpp
+index 42563ae..d8fbe43 100644
+--- a/src/input_context.cpp
++++ b/src/input_context.cpp
+@@ -153,9 +153,12 @@ const std::string &input_context::input_to_action( const input_event &inp ) cons
+     return CATA_ERROR;
+ }
+ 
+-#if defined(__ANDROID__)
++#if defined(__ANDROID__) || defined(EMSCRIPTEN)
++// [CDDA-BROSER] Shared with the web build; see input_context.h.
+ std::list<input_context *> input_context::input_context_stack;
++#endif
+ 
++#if defined(__ANDROID__)
+ void input_context::register_manual_key( manual_key mk )
+ {
+     // Prevent duplicates
+diff --git a/src/input_context.h b/src/input_context.h
+index 7b24dcf..a2ea159 100644
+--- a/src/input_context.h
++++ b/src/input_context.h
+@@ -8,7 +8,7 @@
+ #include <string_view>
+ #include <vector>
+ 
+-#if defined(__ANDROID__)
++#if defined(__ANDROID__) || defined(EMSCRIPTEN)
+ #include <list>
+ #endif
+ 
+@@ -41,15 +41,22 @@ class input_context
+ {
+         friend class keybindings_ui;
+     public:
+-#if defined(__ANDROID__)
++#if defined(__ANDROID__) || defined(EMSCRIPTEN)
+         // Whatever's on top is our current input context.
++        // [CDDA-BROSER] The web build needs the same "what is the active
++        // input context" question answered as Android: the browser IME
++        // proxy must engage only while a real text field is active, not
++        // during map movement (where an active IME would swallow every
++        // movement key into a kana composition).
+         static std::list<input_context *> input_context_stack;
+ #endif
+ 
+         input_context() : registered_any_input( false ), category( "default" ),
+             coordinate_input_received( false ), handling_coordinate_input( false ) {
+-#if defined(__ANDROID__)
++#if defined(__ANDROID__) || defined(EMSCRIPTEN)
+             input_context_stack.push_back( this );
++#endif
++#if defined(__ANDROID__)
+             allow_text_entry = false;
+ #endif
+             register_action( "toggle_language_to_en" );
+@@ -61,13 +68,27 @@ class input_context
+             : registered_any_input( false ), category( category ),
+               coordinate_input_received( false ), handling_coordinate_input( false ),
+               preferred_keyboard_mode( preferred_keyboard_mode ) {
+-#if defined(__ANDROID__)
++#if defined(__ANDROID__) || defined(EMSCRIPTEN)
+             input_context_stack.push_back( this );
++#endif
++#if defined(__ANDROID__)
+             allow_text_entry = false;
+ #endif
+             register_action( "toggle_language_to_en" );
+         }
+ 
++#if defined(EMSCRIPTEN) && !defined(__ANDROID__)
++        virtual ~input_context() {
++            input_context_stack.remove( this );
++        }
++
++        // Same accessor Android exposes below; the web IME gating in
++        // sdltiles.cpp classifies the active context by its category.
++        std::string &get_category() {
++            return category;
++        }
++#endif
++
+ #if defined(__ANDROID__)
+         virtual ~input_context() {
+             input_context_stack.remove( this );
 diff --git a/src/mapgen.cpp b/src/mapgen.cpp
 index eb5b3fd..37348ca 100644
 --- a/src/mapgen.cpp
@@ -91,42 +176,94 @@ index d068ac0..72df7e0 100644
      // counts are met.
      place_specials_pass( enabled_specials, sectors, false, false );
 diff --git a/src/sdltiles.cpp b/src/sdltiles.cpp
-index 020cf3d..0468f90 100644
+index 020cf3d..a377ff9 100644
 --- a/src/sdltiles.cpp
 +++ b/src/sdltiles.cpp
-@@ -2629,6 +2629,17 @@ static bool text_input_active_when_regaining_focus = false;
+@@ -52,6 +52,7 @@
+ #include "game_ui.h"
+ #include "hash_utils.h"
+ #include "input.h"
++#include "input_context.h"
+ #include "json.h"
+ #include "line.h"
+ #include "map.h"
+@@ -2627,8 +2628,65 @@ static bool window_focus = false;
+ static bool text_input_active_when_regaining_focus = false;
+ #endif
  
++#if defined(EMSCRIPTEN)
++// The browser IME proxy must engage only while a real text field is
++// active.  get_input_event() calls StartTextInput() on every poll in
++// keychar mode (the default), i.e. also during ordinary map movement --
++// and once the hidden proxy is focused, an active Japanese IME turns
++// every movement key into a kana composition and swallows it.  Android
++// answers the same "is a text field active?" question with its
++// is_string_input() check on the top of the input context stack; mirror
++// exactly that classification here (STRING_INPUT covers
++// string_input_popup and the ImGui input_popup, STRING_EDITOR the
++// multi-line editor, HELP_KEYBINDINGS its live keybinding filter).
++static bool cdda_web_wants_ime()
++{
++    if( input_context::input_context_stack.empty() ) {
++        return false;
++    }
++    input_context *top = input_context::input_context_stack.back();
++    if( top == nullptr ) {
++        return false;
++    }
++    const std::string &category = top->get_category();
++    return category == "STRING_INPUT"
++           || category == "STRING_EDITOR"
++           || category == "HELP_KEYBINDINGS";
++}
++
++// EM_ASM interpolates its C++ arguments as $0 inside the JS body; that is
++// the documented Emscripten calling convention, but the '$' trips
++// -Wdollar-in-identifier-extension under this project's -Wpedantic -Werror
++// build, so silence exactly that diagnostic for exactly this bridge.
++#pragma clang diagnostic push
++#pragma clang diagnostic ignored "-Wdollar-in-identifier-extension"
++static void cdda_web_notify_ime( const bool want )
++{
++    // The shell makes repeat notifications idempotent, but crossing the
++    // JS boundary on every input poll is wasted work; only notify edges.
++    static bool last_want = false;
++    if( want == last_want ) {
++        return;
++    }
++    last_want = want;
++    EM_ASM( {
++        if( window.CDDA_SET_TEXT_INPUT ) {
++            window.CDDA_SET_TEXT_INPUT( $0 );
++        }
++    }, want ? 1 : 0 );
++}
++#pragma clang diagnostic pop
++#endif
++
  void StartTextInput()
  {
 +#if defined(EMSCRIPTEN)
-+    // Keep the shell's hidden IME proxy field focused while text input is
-+    // wanted.  Browser IMEs only compose into focused editable DOM
-+    // elements, and clicking the canvas steals focus, so this is invoked
-+    // unconditionally (the shell makes it idempotent).
-+    EM_ASM( {
-+        if( window.CDDA_SET_TEXT_INPUT ) {
-+            window.CDDA_SET_TEXT_INPUT( 1 );
-+        }
-+    } );
++    // Focus the shell's hidden IME proxy field only while an actual text
++    // field is accepting input.  Browser IMEs only compose into focused
++    // editable DOM elements, and clicking the canvas steals focus, so
++    // this is re-evaluated on every poll (the shell is idempotent).
++    cdda_web_notify_ime( cdda_web_wants_ime() );
 +#endif
      // prevent sending spurious empty SDL_TEXTEDITING events
      if( SDL_IsTextInputActive() == SDL_TRUE ) {
          return;
-@@ -2646,6 +2657,13 @@ void StartTextInput()
+@@ -2646,6 +2704,9 @@ void StartTextInput()
  
  void StopTextInput()
  {
 +#if defined(EMSCRIPTEN)
-+    EM_ASM( {
-+        if( window.CDDA_SET_TEXT_INPUT ) {
-+            window.CDDA_SET_TEXT_INPUT( 0 );
-+        }
-+    } );
++    cdda_web_notify_ime( false );
 +#endif
  #if defined(__ANDROID__)
      SDL_StopTextInput();
  #else
-@@ -2657,6 +2675,114 @@ void StopTextInput()
+@@ -2657,6 +2718,114 @@ void StopTextInput()
  #endif
  }
  
@@ -241,7 +378,7 @@ index 020cf3d..0468f90 100644
  //Check for any window messages (keypress, paint, mousemove, etc)
  static void CheckMessages()
  {
-@@ -2974,6 +3100,12 @@ static void CheckMessages()
+@@ -2974,6 +3143,12 @@ static void CheckMessages()
  
      last_input = input_event();
  
@@ -254,7 +391,7 @@ index 020cf3d..0468f90 100644
      std::optional<point> resize_dims;
      bool render_target_reset = false;
      using cata::options::mouse;
-@@ -3914,6 +4046,26 @@ void input_manager::pump_events()
+@@ -3914,6 +4089,30 @@ void input_manager::pump_events()
          return;
      }
  
@@ -267,10 +404,14 @@ index 020cf3d..0468f90 100644
 +    // time-throttled emscripten_sleep(0) makes every upstream cooperative
 +    // point actually cooperative without touching any call site.  The
 +    // reentrancy guard makes nested Asyncify unwinds impossible.
++    // 250ms keeps Chrome's unresponsiveness detector (which triggers on
++    // multi-second stalls) comfortably away while paying the Asyncify
++    // unwind/rewind cost five times less often than the previous 50ms,
++    // which showed up as constant per-turn overhead during map movement.
 +    static double cdda_last_pump_yield = 0.0;
 +    static bool cdda_pump_yielding = false;
 +    const double cdda_now_ms = emscripten_get_now();
-+    if( !cdda_pump_yielding && cdda_now_ms - cdda_last_pump_yield >= 50.0 ) {
++    if( !cdda_pump_yielding && cdda_now_ms - cdda_last_pump_yield >= 250.0 ) {
 +        cdda_pump_yielding = true;
 +        emscripten_sleep( 0 );
 +        cdda_last_pump_yield = emscripten_get_now();
@@ -281,3 +422,32 @@ index 020cf3d..0468f90 100644
      // Handle all events, but ignore any keypress
      CheckMessages();
  
+diff --git a/src/ui_manager.cpp b/src/ui_manager.cpp
+index 6a90311..f16e930 100644
+--- a/src/ui_manager.cpp
++++ b/src/ui_manager.cpp
+@@ -467,7 +467,23 @@ void ui_adaptor::redraw_invalidated( )
+         }
+     } while( restart_redrawing );
+ #if defined(EMSCRIPTEN)
+-    emscripten_sleep( 1 );
++    // [CDDA-BROSER] Upstream unconditionally slept here so every redraw
++    // yields the browser a paint frame.  But each emscripten_sleep() is a
++    // full Asyncify unwind/rewind of the entire live call stack, and the
++    // input wait loop (SDL_Delay(1) -> emscripten_sleep(1) in the port)
++    // already yields right after the per-keypress redraw -- so during
++    // ordinary map movement this line only added a second stack round
++    // trip plus a >=1ms timer to every single turn.  Throttling to ~30fps
++    // pacing keeps long redraw sequences (animations, loading screens)
++    // visibly painting while removing the per-turn overhead.
++    {
++        static double cdda_last_redraw_yield = 0.0;
++        const double cdda_now_ms = emscripten_get_now();
++        if( cdda_now_ms - cdda_last_redraw_yield >= 33.0 ) {
++            emscripten_sleep( 1 );
++            cdda_last_redraw_yield = emscripten_get_now();
++        }
++    }
+ #endif
+ 
+     imclient->end_frame();

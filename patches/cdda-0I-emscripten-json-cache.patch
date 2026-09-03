@@ -1,0 +1,181 @@
+diff --git a/src/flexbuffer_cache.cpp b/src/flexbuffer_cache.cpp
+index c9ed693..123be69 100644
+--- a/src/flexbuffer_cache.cpp
++++ b/src/flexbuffer_cache.cpp
+@@ -235,9 +235,10 @@ class flexbuffer_disk_cache
+     public:
+         static std::unique_ptr<flexbuffer_disk_cache> init_from_folder( const std::filesystem::path
+                 &cache_path,
+-                const std::filesystem::path &root_path ) {
++                const std::filesystem::path &root_path,
++                bool assume_immutable_root ) {
+             // Private constructor, make_unique doesn't have access.
+-            std::unique_ptr<flexbuffer_disk_cache> cache{ new flexbuffer_disk_cache( cache_path, root_path ) };
++            std::unique_ptr<flexbuffer_disk_cache> cache{ new flexbuffer_disk_cache( cache_path, root_path, assume_immutable_root ) };
+ 
+             std::string cache_path_string = cache_path.u8string();
+             std::vector<std::string> all_cached_flexbuffers = get_files_from_path(
+@@ -324,8 +325,11 @@ class flexbuffer_disk_cache
+                 return storage;
+             }
+ 
+-            // Does the source file's mtime match what we cached previously
+-            if( source_mtime != disk_entry->second.mtime ) {
++            // Does the source file's mtime match what we cached previously.
++            // An immutable root (web data package) gets a fresh, meaningless
++            // mtime on every page load, so skip the comparison there; the
++            // cache directory itself is versioned against the package.
++            if( !assume_immutable_root_ && source_mtime != disk_entry->second.mtime ) {
+                 std::string filepath_and_name = disk_entry->first;
+                 // we use this as an exclusion condition. Configuration options can be changed all the time, we don't want to warn over those. Same for achievements.
+                 bool stale_game_data = *root_relative_source_path.begin() != std::filesystem::u8path( "config" ) &&
+@@ -400,11 +404,14 @@ class flexbuffer_disk_cache
+ 
+     private:
+         explicit flexbuffer_disk_cache( std::filesystem::path cache_path,
+-                                        std::filesystem::path root_path ) : cache_path_{ std::move( cache_path ) },
+-            root_path_{ std::move( root_path ) } {}
++                                        std::filesystem::path root_path,
++                                        bool assume_immutable_root ) : cache_path_{ std::move( cache_path ) },
++            root_path_{ std::move( root_path ) },
++            assume_immutable_root_{ assume_immutable_root } {}
+ 
+         std::filesystem::path cache_path_;
+         std::filesystem::path root_path_;
++        bool assume_immutable_root_ = false;
+ 
+         struct disk_cache_entry {
+             std::filesystem::path flexbuffer_path;
+@@ -415,10 +422,12 @@ class flexbuffer_disk_cache
+ };
+ 
+ flexbuffer_cache::flexbuffer_cache( const std::filesystem::path &cache_directory,
+-                                    const std::filesystem::path &root_directory )
++                                    const std::filesystem::path &root_directory,
++                                    const bool assume_immutable_root )
+ {
+     if( !cache_directory.empty() ) {
+-        disk_cache_ = flexbuffer_disk_cache::init_from_folder( cache_directory, root_directory );
++        disk_cache_ = flexbuffer_disk_cache::init_from_folder( cache_directory, root_directory,
++                      assume_immutable_root );
+     }
+ }
+ 
+diff --git a/src/flexbuffer_cache.h b/src/flexbuffer_cache.h
+index e79e00f..d98b9f3 100644
+--- a/src/flexbuffer_cache.h
++++ b/src/flexbuffer_cache.h
+@@ -52,8 +52,16 @@ class flexbuffer_cache
+         using shared_flexbuffer = std::shared_ptr<parsed_flexbuffer>;
+ 
+     public:
++        // assume_immutable_root: treat every file under root_directory as
++        // never changing, so cached flexbuffers are valid regardless of the
++        // source file's mtime.  Used by the web build, where the game data
++        // is unpacked from a read-only package into MEMFS on every page
++        // load and therefore gets a fresh (meaningless) mtime each time;
++        // cache invalidation is handled externally by versioning the cache
++        // directory against the data package identity.
+         explicit flexbuffer_cache( const std::filesystem::path &cache_directory,
+-                                   const std::filesystem::path &root_directory );
++                                   const std::filesystem::path &root_directory,
++                                   bool assume_immutable_root = false );
+         ~flexbuffer_cache();
+ 
+         // Throw exceptions on IO and parse errors.
+diff --git a/src/json_loader.cpp b/src/json_loader.cpp
+index 1863c50..9efabf7 100644
+--- a/src/json_loader.cpp
++++ b/src/json_loader.cpp
+@@ -4,6 +4,14 @@
+ #include <memory>
+ #include <unordered_map>
+ 
++#if defined(EMSCRIPTEN)
++#include <cctype>
++#include <cstdlib>
++#include <string>
++#include <system_error>
++#include "get_version.h"
++#endif
++
+ #include "filesystem.h"
+ #include "flexbuffer_cache.h"
+ #include "flexbuffer_json.h"
+@@ -11,9 +19,64 @@
+ 
+ namespace
+ {
++#if defined(EMSCRIPTEN)
++// The web build unpacks all game data into volatile MEMFS on every page
++// load, so the stock cache directories (<base>/cache, <data>/cache) vanish
++// between visits and every start re-parses ~60MB of core JSON during the
++// "core loading / finalization" phase.  Keep those caches inside the
++// persisted user directory (IDBFS) instead, keyed by the data package
++// identity so a game update invalidates them wholesale: the packaged
++// files' mtimes are meaningless (fresh each load), so the flexbuffer
++// cache runs in assume-immutable-root mode and versioning the directory
++// is the only invalidation needed.  Caches from other versions are
++// removed to keep IndexedDB usage bounded.
++std::filesystem::path web_data_cache_root()
++{
++    static const std::filesystem::path root = []() {
++        // The shell exports the data package's HTTP ETag; fall back to the
++        // game version string when it is unavailable (stock loader path).
++        const char *tag_env = std::getenv( "CDDA_DATA_VERSION" );
++        std::string tag = tag_env != nullptr ? tag_env : "";
++        if( tag.empty() ) {
++            tag = getVersionString();
++        }
++        for( char &c : tag ) {
++            const unsigned char uc = static_cast<unsigned char>( c );
++            if( std::isalnum( uc ) == 0 && c != '.' && c != '-' && c != '_' ) {
++                c = '_';
++            }
++        }
++        if( tag.empty() ) {
++            tag = "unversioned";
++        }
++        const std::filesystem::path base = std::filesystem::u8path( PATH_INFO::user_dir() ) /
++                                           std::filesystem::u8path( "json_cache" );
++        std::error_code ec;
++        if( std::filesystem::is_directory( base, ec ) ) {
++            for( const std::filesystem::directory_entry &entry :
++                 std::filesystem::directory_iterator( base, ec ) ) {
++                if( entry.path().filename().u8string() != tag ) {
++                    std::error_code remove_ec;
++                    std::filesystem::remove_all( entry.path(), remove_ec );
++                }
++            }
++        }
++        const std::filesystem::path versioned = base / std::filesystem::u8path( tag );
++        // Also schedules an IDBFS sync via the filesystem.cpp hook.
++        assure_dir_exist( versioned );
++        return versioned;
++    }();
++    return root;
++}
++#endif
++
+ flexbuffer_cache &base_cache()
+ {
++#if defined(EMSCRIPTEN)
++    static flexbuffer_cache cache{ web_data_cache_root() / "base", PATH_INFO::base_path().get_unrelative_path(), true };
++#else
+     static flexbuffer_cache cache{ ( PATH_INFO::base_path() / "cache" ).get_unrelative_path(), PATH_INFO::base_path().get_unrelative_path() };
++#endif
+     return cache;
+ }
+ 
+@@ -25,7 +88,11 @@ flexbuffer_cache &config_cache()
+ 
+ flexbuffer_cache &data_cache()
+ {
++#if defined(EMSCRIPTEN)
++    static flexbuffer_cache cache{ web_data_cache_root() / "data", PATH_INFO::datadir_path().get_unrelative_path(), true };
++#else
+     static flexbuffer_cache cache{ ( PATH_INFO::datadir_path() / "cache" ).get_unrelative_path(), PATH_INFO::datadir_path().get_unrelative_path() };
++#endif
+     return cache;
+ }
+ 
