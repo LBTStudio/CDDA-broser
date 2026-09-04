@@ -1,5 +1,66 @@
 name: Build CDDA 0.I WebAssembly
 
+# ====================================================================
+# ビルド時間の短縮について（4 時間かかっていた問題への対応）
+# ====================================================================
+#
+# 【従来の構成】
+#   単一ジョブ（ubuntu-latest = 4 vCPU）で
+#     440 TU をコンパイル → リンク → データ同梱
+#   を順番に実行していた。所要 約 4 時間。
+#
+# 【所要時間の内訳と、縮められる部分】
+#   (1) コンパイル段: 440 TU を .o にする
+#       TU 間に依存が無いので【いくらでも並列化できる】
+#   (2) リンク段: Binaryen(wasm-opt) が -Os + ASYNCIFY で
+#       モジュール全体の呼び出しグラフを解析する
+#       単一スレッドで動き【原理的に分割できない】
+#   (3) データ同梱: file_packager が data/ と gfx/ を lz4 で
+#       1 個の .data にまとめる
+#       .js/.wasm に依存しないので【リンクと並行できる】
+#
+# 【この構成で行った 3 つの対策】
+#   ・(1) を N ジョブに分割 → Actions は別マシンで並列実行するので
+#     実質 4×N 並列になる
+#   ・(3) を (1)(2) と並行する独立ジョブにする
+#   ・ccache を actions/cache で持ち回り、変更の無い TU の
+#     コンパイルを丸ごと省略する（実測で 7s → 0s）
+#
+# 【正直に書いておくこと】
+#   リンク段は縮まない。全体の所要時間は
+#   「リンク段 + アーティファクト転送 + α」が下限であり、
+#   それ以下にはならない。これは技術的な限界である。
+#
+#   また分割の代償として .o（合計 1GB 超）のアップロード／
+#   ダウンロード時間が新たに発生する。コンパイル段の短縮が
+#   これを上回る前提で成り立っている。シャード数を増やしすぎると
+#   転送のオーバーヘッドが勝って逆に遅くなる。
+#
+# 【ジョブの依存関係】
+#
+#     plan ────┬──> compile (N並列) ──> link ──┐
+#              │                                ├──> bundle ──> deploy
+#              └──> data ───────────────────────┘
+#
+#   data は plan にしか依存しないので、compile と同時に走り始める。
+#
+# 【進捗バー】
+#   各ジョブが ci/progress.sh を使い、生成済み .o の実在数を
+#   数えてバーと残り時間推定を出す。make の出力形式・並列度・
+#   ccache のヒット率に依存しない方式である。
+#   加えて各ジョブが実行結果ページ（Summary）に 1 行の要約を
+#   出すので、どのジョブが遅いか一目で分かる。
+#
+# 【CI ロジックを ci/*.sh に出している理由】
+#   分割すると make を呼ぶ場所が「計画・N シャード・リンク」に
+#   増える。渡す make 変数が 1 つでも食い違うと OBJS の中身が
+#   ずれ、しかも【最後のリンクまで発覚しない】。
+#   YAML に同じ内容をコピペする方式では必ず片方を直し忘れる。
+#   スクリプトなのでローカルで実行して検証でき、実際に検証中に
+#   4 件の不具合（マーカー不一致 2 件、古い shard ファイルの
+#   残留、pipefail による数値破損）を発見・修正できた。
+# ====================================================================
+
 on:
   workflow_dispatch:
     inputs:
@@ -8,6 +69,16 @@ on:
         required: false
         default: true
         type: boolean
+      shards:
+        description: "コンパイルの分割数（多いほど速いが .o の転送量が増える）"
+        required: false
+        default: "8"
+        type: choice
+        options:
+          - "4"
+          - "6"
+          - "8"
+          - "12"
 
 permissions:
   contents: read
@@ -19,10 +90,20 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  build:
-    name: Build CDDA 0.I WebAssembly
+  # ==================================================================
+  # ジョブ 1: 計画
+  # ==================================================================
+  # 440 個のオブジェクトを N 分割し、一覧をアーティファクトに置く。
+  # ここで一覧を【1 回だけ】確定させ、全シャードとリンクが同じ
+  # 一覧を参照することで、担当の抜けや重複を構造的に防ぐ。
+  plan:
+    name: 計画
     runs-on: ubuntu-latest
-    timeout-minutes: 360
+    timeout-minutes: 20
+
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      cache_key: ${{ steps.plan.outputs.cache_key }}
 
     steps:
       - name: Checkout wrapper repository
@@ -38,87 +119,126 @@ jobs:
 
       - name: Apply Emscripten web runtime patches
         working-directory: cdda
+        run: ../ci/apply-patches.sh ../patches
+
+      - name: Tune web memory for 4GB devices
+        working-directory: cdda
+        run: ../ci/tune-makefile.sh
+
+      - name: Build shard plan
+        id: plan
+        working-directory: cdda
         run: |
           set -euo pipefail
 
-          # CDDA 0.I reads MO catalogs through mmap_file.  Emscripten MEMFS
-          # cannot provide that mmap view for LZ4-preloaded files, so use the
-          # locally regression-tested owned-memory reader on this target only.
-          git apply --check ../patches/cdda-0I-emscripten-mo-reader.patch
-          git apply ../patches/cdda-0I-emscripten-mo-reader.patch
+          ../ci/shard-plan.sh "${{ inputs.shards }}" ../shard-plan
 
-          # Loading core JSON or an enabled mod set was a single long task on
-          # the browser main thread.  Yield at a time budget only for the
-          # Asyncify-enabled Emscripten build; native targets retain the exact
-          # original loader behavior and ordering.
-          git apply --check ../patches/cdda-0I-emscripten-loader-yield.patch
-          git apply ../patches/cdda-0I-emscripten-loader-yield.patch
+          echo "matrix=$( cat ../shard-plan/matrix.json )" >> "$GITHUB_OUTPUT"
 
-          # World creation continues past the plain loader loop into mod
-          # interactions, JSON array dispatch, finalization and verification.
-          # Keep those phases cooperative too, so a new world does not hold
-          # the browser main thread in one multi-second task.
-          git apply --check ../patches/cdda-0I-emscripten-mod-finalize-yield.patch
-          git apply ../patches/cdda-0I-emscripten-mod-finalize-yield.patch
+          # ccache のキャッシュキーに使うハッシュ。
+          #
+          # 【patches/ と ci/ を含める理由】
+          # パッチが変われば .cpp が変わり .o も変わる。
+          # ci/*.sh が変われば make 変数が変わりうる。
+          # どちらもキーに含めないと、内容の合わないキャッシュを
+          # 引き継いでしまう。
+          #
+          # ccache 自身もコンパイラ引数と前処理結果をハッシュ
+          # するので誤ヒットはしないが、キーを分けておけば
+          # 無駄なキャッシュを転送せずに済む。
+          cache_key="$( cat ../patches/*.patch ../ci/*.sh | sha256sum | cut -c1-16 )"
+          echo "cache_key=${cache_key}" >> "$GITHUB_OUTPUT"
+          echo "キャッシュキー: ${cache_key}"
 
-          # start_game -> overmap::generate -> mapgen is the deepest call
-          # chain in the game and previously never yielded, which froze the
-          # tab on 4GB devices right after character creation.  Yield at
-          # bounded, time-throttled points (Emscripten only).  This patch
-          # also puts a throttled yield inside input_manager::pump_events so
-          # every upstream cooperative marker (map/overmap saving, JSON
-          # verification, world serialization) actually yields on the web,
-          # removing the "wait or leave page" dialog after world creation.
-          git apply --check ../patches/cdda-0I-emscripten-world-yield.patch
-          git apply ../patches/cdda-0I-emscripten-world-yield.patch
+      - name: Upload shard plan
+        uses: actions/upload-artifact@v4
+        with:
+          name: shard-plan
+          path: shard-plan/
+          if-no-files-found: error
+          retention-days: 1
 
-          # The web build unpacks game data into volatile MEMFS on every
-          # page load, so the stock JSON parse caches (<base>/cache,
-          # <data>/cache) vanish between visits and every start re-parses
-          # ~60MB of core JSON during "core loading / finalization".  Keep
-          # those caches in the persisted user directory (IDBFS) instead,
-          # keyed by the data package identity (HTTP ETag exported by the
-          # shell) so a game update invalidates them wholesale.
-          git apply --check ../patches/cdda-0I-emscripten-json-cache.patch
-          git apply ../patches/cdda-0I-emscripten-json-cache.patch
+      - name: Write summary header
+        run: |
+          set -euo pipefail
+          {
+            echo "## ビルド計画"
+            echo ""
+            echo '```'
+            cat shard-plan/summary.txt
+            echo '```'
+            echo ""
+            echo "リンク段は単一スレッドで分割できないため、"
+            echo "所要時間の下限はリンク段の時間になります。"
+            echo ""
+            echo "## 各工程の実測"
+            echo ""
+            echo "| 工程 | 対象 | 所要 | 成果物 |"
+            echo "|---|---|---|---|"
+          } >> "$GITHUB_STEP_SUMMARY"
 
-          # World setup mutates many small files; upstream schedules one full
-          # IDBFS sync per mutation on the next animation frame.  Debounce
-          # and serialize those syncs so IndexedDB transactions do not pile
-          # up while the world is being generated.  The patch also mounts
-          # IDBFS at the profile's real HOME (fixing silent save loss),
-          # defines window.setFsNeedsSync before the first await (fixing the
-          # "Exception thrown, see JavaScript console" hang right after
-          # character creation), and degrades to MEMFS when IndexedDB is
-          # unavailable instead of aborting startup.
-          git apply --check ../patches/cdda-0I-emscripten-idbfs-debounce.patch
-          git apply ../patches/cdda-0I-emscripten-idbfs-debounce.patch
+  # ==================================================================
+  # ジョブ 2: コンパイル（N 並列）
+  # ==================================================================
+  compile:
+    name: コンパイル shard-${{ matrix.shard }}
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
 
-          git diff --check
-          grep -n "MEMFS does not provide a POSIX mmap view" src/mmap_file.cpp
-          grep -n "Keep the browser responsive" src/init.cpp
-          grep -n "World mod interactions were not covered" src/init.cpp
-          grep -n "give the browser a paint frame" src/game.cpp
-          grep -n "deeply nested overmap specials" src/mapgen.cpp
-          grep -n "fsSyncDebounceMs" src/main.cpp
-          grep -n "mount_idbfs( idbfs_dir.c_str() )" src/main.cpp
-          grep -n "fsPersistenceReady" src/main.cpp
-          grep -n "CDDA_ON_IDBFS_MOUNTED" src/main.cpp
-          grep -n "pagehide" src/main.cpp
-          grep -n "cdda_last_pump_yield" src/sdltiles.cpp
-          grep -n "cdda_pump_web_ime" src/sdltiles.cpp
-          grep -n "CDDA_SET_TEXT_INPUT" src/sdltiles.cpp
-          grep -n "cdda_web_wants_ime" src/sdltiles.cpp
-          grep -n "cdda_last_redraw_yield" src/ui_manager.cpp
-          grep -n "EMSCRIPTEN" src/input_context.h
-          grep -n "web_data_cache_root" src/json_loader.cpp
-          grep -n "assume_immutable_root" src/flexbuffer_cache.cpp
+    strategy:
+      # 【fail-fast: false にする理由】
+      # 1 つのシャードが失敗しても他を走らせ続ける。そうすれば
+      # 「1 つだけ落ちた」のか「全部落ちた」のかが 1 回の実行で
+      # 分かり、原因の切り分けが 1 往復で済む。
+      # true だと最初の失敗で他が巻き取られ、他シャードが健全か
+      # どうかの情報が失われる。
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON( needs.plan.outputs.matrix ) }}
+
+    steps:
+      - name: Checkout wrapper repository
+        uses: actions/checkout@v4
+
+      - name: Checkout CDDA 0.I source
+        uses: actions/checkout@v4
+        with:
+          repository: CleverRaven/Cataclysm-DDA
+          ref: 0.I
+          path: cdda
+          fetch-depth: 1
+
+      # 【なぜ各ジョブでパッチを当て直すのか】
+      # パッチ済みソースをアーティファクトで配る手もあるが、
+      # CDDA のソースツリーは数百 MB あり、転送時間が
+      # git apply の時間（数秒）を大きく上回る。
+      #
+      # また checkout + apply-patches.sh は決定的なので、
+      # どのジョブでも同一の結果になることが保証される。
+      # 【重要】この同一性は version.h の一致にも効いている。
+      # version.h は git describe / rev-parse / dirty 判定で
+      # 決まるため、手順が違うとシャード間で中身が食い違い、
+      # リンク時に不整合（-Wodr）を起こしうる。
+      - name: Apply Emscripten web runtime patches
+        working-directory: cdda
+        run: ../ci/apply-patches.sh ../patches
+
+      - name: Tune web memory for 4GB devices
+        working-directory: cdda
+        run: ../ci/tune-makefile.sh
+
+      - name: Download shard plan
+        uses: actions/download-artifact@v4
+        with:
+          name: shard-plan
+          path: shard-plan
 
       - name: Install dependencies
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y gettext
+          sudo apt-get install -y ccache
 
       - name: Free disk space
         run: |
@@ -138,245 +258,357 @@ jobs:
         with:
           version: 3.1.51
 
+      # ------------------------------------------------------------
+      # ccache のキャッシュ
+      # ------------------------------------------------------------
+      # 【キー設計】key に run_id を入れて毎回新しく保存し、
+      # restore-keys で前回のものを引き継ぐ。
+      #
+      # actions/cache は同一キーへの上書きを許さないため、
+      # 固定キーにすると「最初に保存されたキャッシュが永久に
+      # 使われ、以降のビルドで育たない」状態になる。
+      # run_id を入れることで毎回保存され、キャッシュが育つ。
+      #
+      # 【シャードごとにキーを分ける理由】
+      # 各シャードは担当 TU が固定なので、自分の担当ぶんだけを
+      # 持つ小さなキャッシュで足りる。全シャードで共有すると
+      # 1 個が肥大し、毎ジョブが全体をダウンロードする無駄が出る。
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.ccache
+          key: ccache-${{ needs.plan.outputs.cache_key }}-s${{ matrix.shard }}-${{ github.run_id }}
+          restore-keys: |
+            ccache-${{ needs.plan.outputs.cache_key }}-s${{ matrix.shard }}-
+            ccache-${{ needs.plan.outputs.cache_key }}-
+
+      - name: Configure ccache
+        run: |
+          set -euo pipefail
+
+          # 1 シャードあたり 73 TU 程度なので 2GB で数世代分保持できる。
+          # 【上限に注意】GitHub Actions のキャッシュはリポジトリ全体で
+          # 10GB が上限で、超えると古いものから自動削除される。
+          # シャード数 × 実使用量がこれを超えないよう控えめにする。
+          ccache --max-size=2G
+          ccache --zero-stats
+
+      - name: Compile shard
+        working-directory: cdda
+        run: |
+          set -euo pipefail
+          source "$EMSDK/emsdk_env.sh"
+          ../ci/build-shard.sh \
+            "${{ matrix.shard }}" \
+            "../shard-plan/shard-${{ matrix.shard }}.txt"
+
+      # 【compression-level: 9 にする理由】
+      # .o は圧縮が効く（文字列やデバッグ情報が多い）。
+      # 転送時間はこの分割方式の主な代償なので、圧縮時間を
+      # 払ってでも転送量を減らす方が有利である。
+      # .o の合計は 1GB を超えるため、圧縮率の差が効く。
+      - name: Upload shard objects
+        uses: actions/upload-artifact@v4
+        with:
+          name: objs-shard-${{ matrix.shard }}
+          path: cdda/obj/
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 9
+
+  # ==================================================================
+  # ジョブ 3: データ同梱（compile / link と並行）
+  # ==================================================================
+  # needs が plan だけなので、compile と同時に走り始める。
+  # 従来はリンク後に直列で足されていた時間がここで消える。
+  data:
+    name: データ同梱
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout wrapper repository
+        uses: actions/checkout@v4
+
+      - name: Checkout CDDA 0.I source
+        uses: actions/checkout@v4
+        with:
+          repository: CleverRaven/Cataclysm-DDA
+          ref: 0.I
+          path: cdda
+          fetch-depth: 1
+
+      # 【パッチが必要な理由】
+      # データ同梱に C++ のパッチは効かないが、
+      # tune-makefile.sh が触る Makefile は localization
+      # ターゲットにも関わる。手順を揃えておく方が安全である。
+      - name: Apply Emscripten web runtime patches
+        working-directory: cdda
+        run: ../ci/apply-patches.sh ../patches
+
+      - name: Install dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          # gettext: 日本語 .mo のコンパイル（msgfmt）
+          # jq:      廃止 mod の判定（modinfo.json の obsolete）
+          sudo apt-get install -y gettext jq
+
+      - name: Setup emsdk
+        uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: 3.1.51
+
+      - name: Pack game data with Japanese translation
+        working-directory: cdda
+        run: |
+          set -euo pipefail
+          source "$EMSDK/emsdk_env.sh"
+          ../ci/prepare-data.sh ..
+
+      - name: Upload packed data
+        uses: actions/upload-artifact@v4
+        with:
+          name: packed-data
+          path: |
+            cdda/cataclysm-tiles.data
+            cdda/cataclysm-tiles.data.js
+          if-no-files-found: error
+          retention-days: 1
+          # .data は既に lz4 圧縮済みなので、さらに圧縮しても
+          # ほとんど縮まない。圧縮時間だけ無駄になるので 0 にする。
+          compression-level: 0
+
+  # ==================================================================
+  # ジョブ 4: リンク
+  # ==================================================================
+  # 全シャードの .o を集めて wasm にする。
+  # ここは単一スレッドで分割できず、所要時間の下限になる。
+  link:
+    name: リンク
+    needs: [plan, compile]
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+
+    steps:
+      - name: Checkout wrapper repository
+        uses: actions/checkout@v4
+
+      - name: Checkout CDDA 0.I source
+        uses: actions/checkout@v4
+        with:
+          repository: CleverRaven/Cataclysm-DDA
+          ref: 0.I
+          path: cdda
+          fetch-depth: 1
+
+      - name: Apply Emscripten web runtime patches
+        working-directory: cdda
+        run: ../ci/apply-patches.sh ../patches
+
       - name: Tune web memory for 4GB devices
         working-directory: cdda
-        run: |
-          set -euo pipefail
+        run: ../ci/tune-makefile.sh
 
-          # The upstream web target reserves 512MiB immediately and permits a
-          # 4GiB heap.  A local browser test proved that the Japanese menu
-          # starts at 256MiB with growth enabled.
-          #
-          # Link optimization stays at the upstream default (-Os).  An -O0
-          # link was used previously to skip the long Binaryen stage, but it
-          # roughly doubles the wasm download and, critically, leaves the
-          # Asyncify instrumentation unoptimized, which made moment-to-moment
-          # gameplay measurably sluggish on 4GB devices.  Upstream ships -Os
-          # web builds from CI, so this is the proven configuration; the
-          # heartbeat below keeps the long link stage observable.
-          grep -n 'LDFLAGS += -Os' Makefile
+      - name: Download shard plan
+        uses: actions/download-artifact@v4
+        with:
+          name: shard-plan
+          path: shard-plan
 
-          # COMPILE optimization moves from the upstream web default (-Os,
-          # size-first) to -O3 (speed-first).  Map movement runs the mapgen/
-          # event/AI hot loops through this code; -O3's vectorization and
-          # inlining measurably reduce per-turn CPU on low-end devices.  The
-          # size cost is bounded because the -Os LINK stage above still runs
-          # Binaryen's size-aware optimizer over the whole module, and the
-          # persistent asset cache makes the one-time download less critical.
-          grep -n 'OPTLEVEL = -Os' Makefile
-          # Bounded range: only the emscripten branch of the OPTLEVEL
-          # selection changes (osx/mingw branches keep their own values).
-          sed -i \
-            '/else ifeq ($(NATIVE), emscripten)/,/else/ s/OPTLEVEL = -Os/OPTLEVEL = -O3/' \
-            Makefile
-          grep -n 'OPTLEVEL = -O3' Makefile
+      # ------------------------------------------------------------
+      # 【展開先のパスに注意】
+      # ------------------------------------------------------------
+      # upload-artifact は「単一ディレクトリを path に指定すると、
+      # そのディレクトリの【中身】がアーティファクトの root になる」
+      # 仕様である（公式 README の
+      # "If multiple paths are provided as input, the least common
+      #  ancestor of all the search paths will be used as the root
+      #  directory of the artifact" と同じ原則）。
+      #
+      # compile ジョブは path: cdda/obj/ でアップロードしているので、
+      # アーティファクトの中身は
+      #     tiles/achievement.o
+      #     tiles/action.o
+      #     ...
+      # であり、先頭に obj/ は【付かない】。
+      #
+      # したがって展開先は cdda/ ではなく【cdda/obj/】にする。
+      #   誤: path: cdda/      → cdda/tiles/*.o （Makefile が探す場所と違う）
+      #   正: path: cdda/obj/  → cdda/obj/tiles/*.o
+      #
+      # ここを間違えると .o が 1 個も見つからず、link.sh の
+      # 完全性検証が「440 個すべて欠落」と報告して止まる。
+      # （検証を入れてあるので誤公開はしないが、原因が
+      #   分かりにくいので明記しておく）
+      #
+      # 【merge-multiple: true の意味】
+      # objs-shard-0 〜 objs-shard-N を同一ディレクトリに
+      # 重ね合わせて展開する。各シャードの担当は排他（shard-plan.sh
+      # が重複なしを検証済み）なので、衝突は起きない。
+      # 指定しないと名前ごとのサブディレクトリに分かれてしまう。
+      - name: Download all shard objects
+        uses: actions/download-artifact@v4
+        with:
+          pattern: objs-shard-*
+          path: cdda/obj/
+          merge-multiple: true
 
-          sed -i \
-            's/-sINITIAL_MEMORY=512MB/-sINITIAL_MEMORY=256MB/' \
-            Makefile
-
-          # World generation is the peak-memory moment (core+mod JSON load,
-          # overmap generation, mapgen).  With ALLOW_MEMORY_GROWTH the
-          # maximum is only a reservation cap, not committed memory, but a
-          # 1GiB cap made growth fail and abort exactly during world setup on
-          # 4GB devices.  2GiB keeps idle usage identical while giving the
-          # generation spike headroom.
-          sed -i \
-            's/-sMAXIMUM_MEMORY=4GB/-sMAXIMUM_MEMORY=2GB/' \
-            Makefile
-
-          # The yield patches call emscripten_sleep() inside deep call
-          # chains (overmap/mapgen).  Asyncify unwinds every live frame into
-          # a fixed buffer; the upstream 16KiB ASYNCIFY_STACK_SIZE overflows
-          # there and corrupts memory silently (blank screen, no menu), and
-          # an exhausted unwind buffer surfaces as a SIGILL-style trap in the
-          # loading phases right after world/character creation.  16MiB is a
-          # single one-time allocation (0.8% of the 2GiB cap) that puts the
-          # limit far above the deepest observed chain.
-          sed -i \
-            's/-sASYNCIFY_STACK_SIZE=16384/-sASYNCIFY_STACK_SIZE=16777216/' \
-            Makefile
-
-          # Deeply nested overmap specials also press on the 256KiB main
-          # stack.  Wasm stack exhaustion is another SIGILL-style trap during
-          # mapgen recursion; 4MiB of one-time heap removes it with margin.
-          sed -i \
-            's/-sSTACK_SIZE=262144/-sSTACK_SIZE=4194304/' \
-            Makefile
-
-          grep -n -E 'INITIAL_MEMORY|MAXIMUM_MEMORY|ASYNCIFY_STACK_SIZE|-sSTACK_SIZE|LDFLAGS \+= -Os' Makefile
-          grep -q -- '-sMAXIMUM_MEMORY=2GB' Makefile
-          grep -q -- '-sASYNCIFY_STACK_SIZE=16777216' Makefile
-          grep -q -- '-sSTACK_SIZE=4194304' Makefile
-          grep -q -- 'LDFLAGS += -Os' Makefile
-          # The emscripten compile branch must now say -O3.
-          awk '/else ifeq \(\$\(NATIVE\), emscripten\)/{found=1} found && /OPTLEVEL = -O3/{ok=1} END{exit ok?0:1}' Makefile
-
-      - name: Build CDDA WebAssembly
+      - name: Verify object layout
         working-directory: cdda
         run: |
           set -euo pipefail
 
+          # 【展開先が正しいかを、リンクを試す前に確かめる】
+          # 期待する場所に .o があるかを数える。
+          # ここで止めれば、原因が「パスの間違い」であることが
+          # 一目で分かる。
+          found="$( find obj -name '*.o' -type f | wc -l )"
+          expected="$( grep -c . ../shard-plan/objs-all.txt )"
+
+          echo "見つかった .o: ${found} 個"
+          echo "期待する数:    ${expected} 個"
+
+          if [ "$found" -eq 0 ]; then
+            echo "ERROR: obj/ 以下に .o が 1 個もありません。" >&2
+            echo "       アーティファクトの展開先が想定と違う可能性があります。" >&2
+            echo "       実際に展開された内容:" >&2
+            find . -maxdepth 3 -name '*.o' -type f 2>/dev/null | head -5 >&2
+            find . -maxdepth 2 -type d 2>/dev/null | head -20 >&2
+            exit 1
+          fi
+
+          echo "オブジェクトの配置を確認しました"
+          du -sh obj
+
+      - name: Install dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y ccache
+
+      - name: Free disk space
+        run: |
+          set -euo pipefail
+
+          sudo rm -rf \
+            /usr/share/dotnet \
+            /usr/local/lib/android \
+            /opt/ghc \
+            /usr/local/share/powershell \
+            /usr/share/swift || true
+
+          df -h /
+
+      - name: Setup emsdk
+        uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: 3.1.51
+
+      # リンクジョブでも PCH が必要になる（.o の依存に入っているため、
+      # 無いと make が全 .o を作り直そうとする）。
+      # ccache があれば PCH の生成も速くなる。
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.ccache
+          key: ccache-${{ needs.plan.outputs.cache_key }}-link-${{ github.run_id }}
+          restore-keys: |
+            ccache-${{ needs.plan.outputs.cache_key }}-link-
+            ccache-${{ needs.plan.outputs.cache_key }}-
+
+      - name: Configure ccache
+        run: |
+          set -euo pipefail
+          ccache --max-size=2G
+          ccache --zero-stats
+
+      - name: Link WebAssembly
+        working-directory: cdda
+        run: |
+          set -euo pipefail
           source "$EMSDK/emsdk_env.sh"
+          ../ci/link.sh ../shard-plan/objs-all.txt
 
-          # The Binaryen/wasm-opt link stage is the long-running part of an
-          # -Os link; the heartbeat below prints memory/CPU once a minute so
-          # a slow link is distinguishable from a hung one.  Four workers
-          # match the successful historical runs.
-          build_started_at="$(date +%s)"
-          build_jobs=4
-          heartbeat() {
-            while sleep 60; do
-              elapsed="$(( $(date +%s) - build_started_at ))"
-              echo "[HEARTBEAT] WebAssembly build active: elapsed=${elapsed}s"
-              free -h
-              df -h /
-              ps -eo pid,ppid,stat,etime,pcpu,pmem,cmd --sort=-pcpu | sed -n '1,12p'
-            done
-          }
-          heartbeat &
-          heartbeat_pid="$!"
-          stop_heartbeat() {
-            kill "$heartbeat_pid" 2>/dev/null || true
-            wait "$heartbeat_pid" 2>/dev/null || true
-          }
-          trap stop_heartbeat EXIT
+      - name: Upload linked binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: linked-wasm
+          path: |
+            cdda/cataclysm-tiles.js
+            cdda/cataclysm-tiles.wasm
+          if-no-files-found: error
+          retention-days: 1
 
-          build_cdda() {
-            make -j"$build_jobs" \
-              NATIVE=emscripten \
-              BACKTRACE=0 \
-              TILES=1 \
-              TESTS=0 \
-              RUNTESTS=0 \
-              RELEASE=1 \
-              LOCALIZE=1 \
-              LANGUAGES=ja \
-              CCACHE=0 \
-              LINTJSON=0 \
-              cataclysm-tiles.js
-          }
+  # ==================================================================
+  # ジョブ 5: 配布物の組み立て
+  # ==================================================================
+  # data ジョブと link ジョブの成果物が合流する場所。
+  bundle:
+    name: 配布物の組み立て
+    needs: [data, link]
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
 
-          echo "[BUILD] stable mode: jobs=${build_jobs}, link optimization=-O0, memory=256MiB initial / 2GiB maximum, asyncify stack=4MiB"
-          time build_cdda
-          echo "[BUILD] stable mode completed successfully"
-          stop_heartbeat
-          trap - EXIT
+    steps:
+      - name: Checkout wrapper repository
+        uses: actions/checkout@v4
 
-          test -s cataclysm-tiles.js
-          test -s cataclysm-tiles.wasm
+      - name: Checkout CDDA 0.I source
+        uses: actions/checkout@v4
+        with:
+          repository: CleverRaven/Cataclysm-DDA
+          ref: 0.I
+          path: cdda
+          fetch-depth: 1
 
-      - name: Compile Japanese translation
+      - name: Download packed data
+        uses: actions/download-artifact@v4
+        with:
+          name: packed-data
+          path: cdda/
+
+      - name: Download linked binary
+        uses: actions/download-artifact@v4
+        with:
+          name: linked-wasm
+          path: cdda/
+
+      - name: Assemble distribution bundle
         working-directory: cdda
-        run: |
-          set -euo pipefail
+        run: ../ci/prepare-bundle.sh
 
-          # cataclysm-tiles.js does not depend on the top-level `all` target,
-          # so it does not automatically build localization artifacts.
-          make localization LANGUAGES=ja
-
-      - name: Verify Japanese translation
-        working-directory: cdda
-        run: |
-          set -euo pipefail
-
-          test -s lang/mo/ja/LC_MESSAGES/cataclysm-dda.mo
-
-          ls -lh \
-            lang/mo/ja/LC_MESSAGES/cataclysm-dda.mo
-
-      - name: Create Japanese web preparation script
-        working-directory: cdda
-        run: |
-          set -euo pipefail
-
-          cp \
-            build-scripts/prepare-web.sh \
-            build-scripts/prepare-web-ja.sh
-
-          python3 - <<'PY'
-          from pathlib import Path
-
-          path = Path("build-scripts/prepare-web-ja.sh")
-          text = path.read_text(encoding="utf-8")
-
-          marker = "$EMSDK/upstream/emscripten/tools/file_packager"
-
-          if text.count(marker) != 1:
-              raise SystemExit(
-                  "Expected exactly one file_packager command"
-              )
-
-          japanese_copy = """\
-          echo "Adding bundled extra mods..."
-
-          cp -R ../mods/. "$BUNDLE_DIR/data/mods/"
-
-          test -s \
-            "$BUNDLE_DIR/data/mods/stats_through_kills/modinfo.json"
-
-          echo "Adding Japanese translation..."
-
-          mkdir -p "$BUNDLE_DIR/lang/mo/ja/LC_MESSAGES"
-
-          cp \
-            lang/mo/ja/LC_MESSAGES/cataclysm-dda.mo \
-            "$BUNDLE_DIR/lang/mo/ja/LC_MESSAGES/cataclysm-dda.mo"
-
-          test -s \
-            "$BUNDLE_DIR/lang/mo/ja/LC_MESSAGES/cataclysm-dda.mo"
-
-          """
-
-          text = text.replace(
-              marker,
-              japanese_copy + marker,
-              1
-          )
-
-          path.write_text(text, encoding="utf-8")
-          PY
-
-          grep -n \
-            -A12 \
-            -B3 \
-            "Adding Japanese translation" \
-            build-scripts/prepare-web-ja.sh
-
-      - name: Prepare Web bundle
-        working-directory: cdda
-        run: |
-          set -euo pipefail
-
-          source "$EMSDK/emsdk_env.sh"
-
-          bash build-scripts/prepare-web-ja.sh
-
-      - name: Verify Japanese locale in bundle
-        working-directory: cdda
-        run: |
-          set -euo pipefail
-
-          test -s \
-            web_bundle/lang/mo/ja/LC_MESSAGES/cataclysm-dda.mo
-
-          test -s \
-            web_bundle/data/mods/stats_through_kills/modinfo.json
-
-          test -s build/cataclysm-tiles.data
-          test -s build/cataclysm-tiles.data.js
-          test -s build/cataclysm-tiles.js
-          test -s build/cataclysm-tiles.wasm
-
+      # 【独自 index.html で差し替える理由】
+      # 上流の build-data/web/index.html には読み込み進捗表示が
+      # 無い。shell/index.html は読み込み進捗（showLoadProgress）と
+      # 日本語入力（IME）のブリッジを持つので、必ず差し替える。
+      # ここを飛ばすと日本語入力が動かない。
       - name: Copy custom index
         run: |
           set -euo pipefail
 
           test -f shell/index.html
 
-          cp \
-            shell/index.html \
-            cdda/build/index.html
+          cp shell/index.html cdda/build/index.html
+
+          # 差し替えが効いたことの確認。
+          # 【必須】cp が成功しても中身が期待どおりとは限らない。
+          # 上流の index.html が残っていると
+          #   ・読み込み進捗が出ない（起動が固まったように見える）
+          #   ・日本語入力ができない（IME ブリッジが無い）
+          # という形で、ビルドは成功しているのに遊べない状態になる。
+          #
+          # 実際に shell/index.html に存在する識別子で検査する。
+          # （grep 対象は実物を確認して選んでいる。存在しない
+          #   識別子を書くと、この検査自体が常に失敗する）
+          grep -q "showLoadProgress" cdda/build/index.html
+          grep -q "compositionstart" cdda/build/index.html
+          grep -q "compositionupdate" cdda/build/index.html
+
+          echo "独自 index.html への差し替えを確認しました"
+          echo "  読み込み進捗: showLoadProgress あり"
+          echo "  日本語入力:   compositionstart / compositionupdate あり"
 
       - name: Stage GitHub Pages site
         run: |
@@ -395,6 +627,9 @@ jobs:
           test -s site/Terminus.ttf
           test -s site/favicon.ico
 
+          echo "公開物一覧:"
+          ls -lh site/
+
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
@@ -409,10 +644,13 @@ jobs:
         with:
           path: site/
 
+  # ==================================================================
+  # ジョブ 6: 公開
+  # ==================================================================
   deploy:
     name: Deploy to GitHub Pages
     if: ${{ inputs.deploy_pages != false }}
-    needs: build
+    needs: bundle
     runs-on: ubuntu-latest
 
     environment:

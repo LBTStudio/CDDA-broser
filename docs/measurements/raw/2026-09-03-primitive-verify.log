@@ -1,0 +1,65 @@
+=== cata_web_yield プリミティブ 実機検証ログ ===
+日付: 2026-09-03
+ソース: bench/verify_primitive.cpp + src/cata_web_yield.{h,cpp}
+
+--- 環境 ---
+Emscripten 3.1.51
+Chromium (playwright chromium-1234) --no-sandbox --disable-dev-shm-usage
+サンドボックス: 2 vCPU / 985MiB
+
+--- コンパイル検証 ---
+$ em++ -std=c++17 -c cata_web_yield.cpp -o cata_web_yield.o \
+      -Wall -Wextra -Wpedantic -Werror -DEMSCRIPTEN
+EXIT=0
+-rw-r--r-- 1 user user 2466 Sep  3 17:45 cata_web_yield.o
+
+読み取り: CDDA 本体は -Wpedantic -Werror でビルドされるので、これが通ることは
+必須条件。警告 0 で通過。
+
+--- ビルド ---
+$ em++ -std=c++17 verify.cpp cata_web_yield.cpp -o verify.html -O2 \
+      -sASYNCIFY -sINITIAL_MEMORY=64MB -sALLOW_MEMORY_GROWTH \
+      -sASYNCIFY_STACK_SIZE=1048576 -sSTACK_SIZE=1048576
+(成功)
+
+--- 実行結果（そのまま） ---
+yield_now: 2000 回 = 73.30ms / 1 回 0.0366ms
+emscripten_sleep(0): 200 回 = 831.60ms / 1 回 4.1580ms
+yield_if_due: 200.0ms 中 12 回 yield（期待 12 回前後）
+再入ガード: OK（クラッシュせず）
+yield_paint: 20 回 = 325.90ms / 1 回 16.30ms, フレーム進行 20
+yield_now 連打 500ms 中の rAF 発火: 30 回（60fps なら約 30 回）
+DONE
+
+--- 読み取り ---
+
+[1] yield_now() は 0.0366ms、emscripten_sleep(0) は 4.1580ms。
+    同一実行・同一環境での対照実験なので比較が厳密。114 倍の差。
+    F-01 で測った 4.25ms / 0.075ms と整合する（本実装は
+    MessageChannel のポートを Module に載せて再利用するため、
+    F-01 のベンチ（毎回生成）よりさらに速い）。
+
+[2] yield_if_due() は 200ms 中 12 回 yield した。
+    予算 16ms なので 200/16 = 12.5 回が期待値。
+    yield 後に時刻を再取得する実装が正しく動いている証拠。
+
+[3] yield_paint() は 20 回呼んで rAF カウンタが 20 進んだ。
+    1 回 16.30ms は 60Hz のディスプレイ同期そのもの。
+    「必ず 1 フレーム描く」保証が取れている。
+
+[4] 最重要: yield_now() を 500ms 間連打した状態でも rAF は 30 回発火。
+    500ms / 30 = 16.7ms 間隔 = 60fps 維持。
+    MessageChannel はマクロタスクなので、ブラウザは各タスク境界で
+    通常のレンダリングステップを実行する。
+    F-04 で scheduler.yield() が rAF を 103〜115ms まで飢餓させたのと
+    対照的で、「速い」と「描画が止まらない」を同時に満たす。
+
+[5] 再入ガード（yield_in_progress）が機能。
+    Asyncify のスタック巻き戻しは入れ子にできないため、
+    pump_events() の中から redraw が走ってさらに yield 判定に到達する
+    経路を安全に無視できる。
+
+--- 結論 ---
+設計時の計測（F-01〜F-05）に基づく実装が、実機で全項目期待どおりに
+動作することを確認。以降の適用箇所（sdltiles/ui_manager/mapgen/
+overmap/game/init）は全てこのプリミティブ経由に統一済み。

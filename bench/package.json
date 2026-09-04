@@ -1,0 +1,12 @@
+{
+  "name": "cdda-web-bench",
+  "version": "1.0.0",
+  "private": true,
+  "description": "CDDA ウェブビルドの性能検証ベンチマーク用ランナー。README.md を参照。",
+  "scripts": {
+    "all": "./run-all.sh"
+  },
+  "dependencies": {
+    "playwright-core": "^1.62.1"
+  }
+}

@@ -1,0 +1,14 @@
+# bench/paint_starve.c  turn_cpu=3.0ms, 2s per scenario, rAF monitor installed
+RESULT prim=sleep0 yield_every_ms=250 turns=660 elapsed_ms=2003 turns_per_sec=329.5 raf_frames=11 raf_max_gap_ms=258.8
+RESULT prim=sleep0 yield_every_ms=16 turns=524 elapsed_ms=2001 turns_per_sec=261.8 raf_frames=118 raf_max_gap_ms=249.1
+RESULT prim=msgchan yield_every_ms=16 turns=655 elapsed_ms=2001 turns_per_sec=327.4 raf_frames=109 raf_max_gap_ms=27.0
+RESULT prim=msgchan yield_every_ms=4 turns=651 elapsed_ms=2002 turns_per_sec=325.2 raf_frames=122 raf_max_gap_ms=23.7
+RESULT prim=schedyld yield_every_ms=16 turns=660 elapsed_ms=2000 turns_per_sec=330.0 raf_frames=18 raf_max_gap_ms=115.3
+RESULT prim=schedyld yield_every_ms=4 turns=662 elapsed_ms=2000 turns_per_sec=331.0 raf_frames=19 raf_max_gap_ms=103.3
+DONE
+
+# bench/per_turn_yield.c  400 turns, 1.0ms CPU each, yield EVERY turn
+RESULT scenario=yield_every_turn prim=sleep0 turns=400 turn_cpu_ms=1.0 total_ms=2202 per_turn_ms=5.506
+RESULT scenario=yield_every_turn prim=sleep1 turns=400 turn_cpu_ms=1.0 total_ms=2080 per_turn_ms=5.199
+RESULT scenario=yield_every_turn prim=msgchan turns=400 turn_cpu_ms=1.0 total_ms=411 per_turn_ms=1.028
+DONE

@@ -1,0 +1,1483 @@
+# CDDA 0.I ブラウザ版: ターン処理・アクティビティ・日本語入力の改善
+#
+# 適用順: 既存 6 パッチ（json-cache / loader-yield / mod-finalize-yield /
+#         world-yield / idbfs-debounce / mo-reader）を当てた【後】に当てる。
+#
+# 前提: src/cata_web_yield.{h,cpp} と src/cata_web_text_input.{h,cpp} を
+#       新規追加する。CDDA の Makefile は
+#           SOURCES := $(wildcard $(SRC_DIR)/*.cpp)   (Makefile:967)
+#       なので、新しい .cpp は自動で検出されビルド対象になる。
+#       Makefile の変更は不要。
+#
+# ------------------------------------------------------------------
+# 含まれる変更（詳細は docs/measurements/FACTS.md）
+# ------------------------------------------------------------------
+#
+# 1. yield プリミティブの共通化（F-01〜F-05, F-17）
+#    src/cata_web_yield.{h,cpp} を新規追加。
+#    ブラウザに制御を返す手段を emscripten_sleep() から
+#    MessageChannel.postMessage に置き換える。
+#    理由: setTimeout には HTML 仕様の 4ms クランプ（入れ子 5 段以上）が
+#    あり、emscripten_sleep(0) は実測 4.17ms かかる。
+#    MessageChannel は 0.037ms でクランプがなく、rAF を飢餓させない。
+#    → スループット 5.4 倍、描画の滑らかさ 10 倍。
+#    Asyncify は原因ではない（スタック深さ非依存 + CPU 同等を実証済み）。
+#
+#    置き換えた箇所: ui_manager.cpp / sdltiles.cpp x2 / init.cpp x8 /
+#                    mapgen.cpp / overmap.cpp x2 / game.cpp::start_game
+#
+# 2. 製作・分解が進まない問題（F-18）
+#    do_turn.cpp のキーポーリング間隔を 100ms → 16ms（Emscripten のみ）。
+#    真因: do_turn.cpp の通常の redraw は
+#        if( !u.activity && ... )
+#    という条件なので、製作・分解・読書中は実行されない。
+#    残る唯一の描画経路 handle_key_blocking_activity() が
+#    100ms に絞られていたため、ブラウザは 100ms に 1 回しか
+#    制御を取り戻せなかった。
+#    併せて 146 アクションの input_context を static 化
+#    （1 回 0.0521ms > 製作 1 ターン 0.0401ms だった）。
+#    → フレーム 9 倍、最大停止 5.9 分の 1、総時間も 6% 短縮。
+#
+# 3. 読書などの長時間アクティビティが遅い問題（F-20）★本パッチの主眼
+#    do_turn.cpp に mon_info_update_throttled() を追加し、
+#    613 / 696 / 762 行の 3 箇所を差し替え。
+#    真因: 技能書 1 冊 = 1800 ターンぶん do_turn() の全パイプラインが回る。
+#    その 72% が g->mon_info_update()（実測 0.6170ms / 1 ターン 0.8600ms）。
+#    重いのは get_visible_creatures( MAPSIZE_X ) が可視クリーチャ全件に
+#    rl_dist() + sees() の完全 LOS 判定を行うため。
+#    3 箇所すべてレート制限がなかった。
+#
+#    ただし safemode を駆動している（game.cpp:4845-4875 で
+#    set_safe_mode / cancel_activity_or_ignore_query / mostseen を更新）
+#    ため、スキップは不可。ゲームターン数で上限を切って間引く。
+#
+#    実時間ではなくゲームターン基準にした理由: 実時間で間引くと
+#    CPU 速度によって遅延ターン数が変わり機種依存になる。
+#    N=16 の根拠: 掃引の結果 N=16 で総時間が飽和する
+#      N=2 1365ms → N=4 1290 → N=8 1229 → N=16 1172 → N=32 1162 → N=64 1178
+#    N=16 は「最大の効果が得られる最小の N」。
+#
+#    さらに force = !u.activity として【アクティビティ中だけ】間引く。
+#    通常の歩行・戦闘中は毎ターン実行するので、通常プレイの挙動は
+#    0.I と完全に同一。
+#
+#    効果（低速機 = RAM 4GB Chromebook 相当、読書 600 ターン）:
+#                        総時間   fps    最大描画停止
+#      現行 0.I          1719ms   16.9   106.1ms  ← 基準 A/B/D すべて NG
+#      本パッチ          1181ms   56.7    18.6ms  ← すべて OK
+#    → 31% 高速化、描画停止を 5.7 分の 1。
+#
+# 4. 日本語 IME が効かない問題（F-19）
+#    src/cata_web_text_input.{h,cpp} を新規追加し、
+#    cdda_web_wants_ime() のスタック覗き見を参照カウント方式に置換。
+#    真因 2 つ:
+#      (a) input_popup.cpp が input_context をコピー代入していたが
+#          input_context::operator= は __ANDROID__ 限定で、
+#          しかもスタック操作を一切しない。結果、一時オブジェクトが
+#          push/pop され、本体は "default" カテゴリのまま残っていた。
+#      (b) inventory_selector::query_string() 等は外側のセレクタの
+#          context をスタックに載せたまま入力欄を開くので、
+#          スタック最上位は入れ子順に依存する。原理的に判定できない。
+#    → IME 要求を【入力欄オブジェクトの寿命】に束ねる RAII に変更。
+#       string_input_popup / string_input_popup_imgui /
+#       string_editor_window / end_screen_ui_impl の 4 箇所。
+#       オブジェクトを持たないキーバインド絞り込み欄だけ
+#       冪等フラグ + RAII ガードで扱う。
+#       数値入力欄（number_input_popup）には【付けない】
+#       （半角数字が打てなくなるため）。
+#
+# ------------------------------------------------------------------
+# 検証状況
+# ------------------------------------------------------------------
+#   src/cata_web_yield.cpp       em++ -Wpedantic -Werror  警告0 (2466 B)
+#   src/cata_web_text_input.cpp  em++ 警告0 (43056 B) / g++ ネイティブ 警告0 (816 B)
+#   src/do_turn.cpp              CDDA 実ビルドフラグで -fsyntax-only 警告0
+#   参照カウント意味論           bench/text_input_scope_test.cpp 5/5 合格
+#   ランタイム                   bench/ 配下の 13 ベンチで実測（F-01〜F-20）
+#
+diff --git a/src/cata_web_text_input.cpp b/src/cata_web_text_input.cpp
+new file mode 100644
+index 0000000..529c5b3
+--- /dev/null
++++ b/src/cata_web_text_input.cpp
+@@ -0,0 +1,66 @@
++#include "cata_web_text_input.h"
++
++#if defined(EMSCRIPTEN)
++
++#include <set>
++
++namespace
++{
++// 生存しているテキスト入力スコープの数。
++//
++// wasm はシングルスレッドなので、単純な int で足りる。
++// （Emscripten の pthread ビルドでも CDDA のゲームロジックは
++//   メインスレッドに閉じている。）
++int text_input_refcount = 0;
++
++// set_text_input_flag() で有効化された呼び出し元の集合。
++// 同一箇所からの重複設定でカウントが壊れないようにする。
++std::set<const void *> &active_flags()
++{
++    static std::set<const void *> flags;
++    return flags;
++}
++} // namespace
++
++namespace cata_web
++{
++
++text_input_scope::text_input_scope()
++{
++    ++text_input_refcount;
++}
++
++text_input_scope::~text_input_scope()
++{
++    if( text_input_refcount > 0 ) {
++        --text_input_refcount;
++    }
++}
++
++bool text_input_active()
++{
++    return text_input_refcount > 0;
++}
++
++int text_input_depth()
++{
++    return text_input_refcount;
++}
++
++void set_text_input_flag( const void *const key, const bool active )
++{
++    if( active ) {
++        // insert().second が false なら既に有効。二重計上を避ける。
++        if( active_flags().insert( key ).second ) {
++            ++text_input_refcount;
++        }
++    } else {
++        if( active_flags().erase( key ) > 0 && text_input_refcount > 0 ) {
++            --text_input_refcount;
++        }
++    }
++}
++
++} // namespace cata_web
++
++#endif // EMSCRIPTEN
+diff --git a/src/cata_web_text_input.h b/src/cata_web_text_input.h
+new file mode 100644
+index 0000000..6c896ea
+--- /dev/null
++++ b/src/cata_web_text_input.h
+@@ -0,0 +1,115 @@
++#pragma once
++#ifndef CATA_SRC_CATA_WEB_TEXT_INPUT_H
++#define CATA_SRC_CATA_WEB_TEXT_INPUT_H
++
++// [CDDA-BROWSER] 「今テキスト入力欄が開いているか」を明示的に管理する。
++//
++// なぜ必要か（詳細は docs/measurements/FACTS.md F-18）:
++//
++//   ブラウザの IME は「フォーカスされた編集可能 DOM 要素」に対してのみ
++//   変換を行う。ゲームの canvas は composition イベントを一切受け取れない
++//   ため、シェル側に隠しの <input>（IME プロキシ）を置き、テキスト入力中
++//   だけそこへフォーカスを移して変換結果を SDL_TEXTINPUT として
++//   注入している。
++//
++//   したがって「テキスト入力中か否か」の判定が誤ると、
++//     - 誤って false → プロキシにフォーカスが当たらず日本語が打てない
++//     - 誤って true  → 移動キーが全部かな変換に食われて操作不能
++//   のどちらかが起きる。両方向に厳しい判定である。
++//
++//   従来実装は Android 由来の is_string_input() を真似て
++//   input_context_stack の先頭のカテゴリ名（"STRING_INPUT" 等）を
++//   見ていたが、これは以下の理由で破綻する:
++//
++//   1. input_popup（ImGui 版の文字入力）は
++//        ctxt = input_context( "STRING_INPUT", keyboard_mode::keychar );
++//      と「コピー代入」で文脈を設定する。ところが
++//      input_context::operator= は __ANDROID__ 限定でしか定義されておらず、
++//      しかもスタック操作を一切行わない。結果、右辺の一時オブジェクトが
++//      自分をスタックに積んで自分のデストラクタで降ろす一方、
++//      実際に入力を受けるメンバ ctxt はカテゴリ "default" のまま
++//      スタックに残る。スタック先頭を見ても "STRING_INPUT" は現れない。
++//
++//   2. inventory_selector::query_string() や uilist::inputfilter() は
++//        do { ui_manager::redraw(); spopup->query_string( false ); }
++//        while( !confirmed && !canceled );
++//      という構造で、囲んでいるセレクタ自身の input_context も
++//      同時にスタック上にある。どちらが先頭になるかは
++//      呼び出しの入れ子順に依存し、テキスト入力中でも
++//      先頭が "INVENTORY" などになる瞬間がある。
++//
++//   つまりスタック先頭の推測では原理的に安定しない。
++//   そこで「テキスト入力欄オブジェクトの生存期間」という
++//   本来の情報を RAII で直接持たせる。入れ子や再入があり得るので
++//   参照カウントにする。
++//
++// 非 Emscripten ビルドでは完全な空実装になり、挙動は一切変わらない。
++
++#if defined(EMSCRIPTEN)
++
++namespace cata_web
++{
++
++/**
++ * テキスト入力欄が生存している間だけ立てるスコープ。
++ *
++ * string_input_popup / input_popup / string_editor_window の
++ * コンストラクタ・デストラクタに埋め込んで使う。
++ *
++ * 「query_string() の呼び出し 1 回」ではなく「入力欄オブジェクトの寿命」
++ * に紐付けるのが重要。query_string( loop = false ) は呼び出し側の
++ * do-while から毎フレーム呼ばれるため、関数スコープに置くと
++ * on/off が毎フレーム往復し、DOM フォーカスが暴れる。
++ *
++ * 入れ子（入力欄の上にさらに入力欄）に対応するため参照カウント方式。
++ */
++class text_input_scope
++{
++    public:
++        text_input_scope();
++        ~text_input_scope();
++
++        // 誤ってコピー・移動されるとカウントが壊れるので禁止する。
++        text_input_scope( const text_input_scope & ) = delete;
++        text_input_scope &operator=( const text_input_scope & ) = delete;
++        text_input_scope( text_input_scope && ) = delete;
++        text_input_scope &operator=( text_input_scope && ) = delete;
++};
++
++/** 現在テキスト入力欄が 1 つ以上生存しているか。 */
++bool text_input_active();
++
++/** 生存しているスコープ数（デバッグ・検証用）。 */
++int text_input_depth();
++
++/**
++ * オブジェクト寿命ではなく状態フラグで入力欄を表す場合の設定関数。
++ *
++ * キーバインドメニュー（input_context::display_menu）の絞り込みは
++ * 専用の入力欄クラスを持たず、keybindings_ui::status が
++ * kb_menu_status::filter か否かという状態で表される。
++ * この種の経路では RAII が使えないので、状態変化のたびに設定する。
++ *
++ * 同じ呼び出し元から重複して true / false を渡しても
++ * カウントは 1 を超えない（冪等）。
++ *
++ * @param key    呼び出し元を識別する定数文字列リテラルのアドレス。
++ *               同一箇所からの重複設定を検出するために使う。
++ * @param active 入力欄が有効か。
++ */
++void set_text_input_flag( const void *key, bool active );
++
++} // namespace cata_web
++
++// メンバとして持たせるための型エイリアス。
++// クラス定義に 1 行加えるだけでスコープが寿命に一致する。
++#define CATA_WEB_TEXT_INPUT_MEMBER cata_web::text_input_scope cata_web_text_input_scope_;
++
++#else // !EMSCRIPTEN
++
++// 非 Emscripten ではメンバも増やさない（sizeof を変えない）。
++#define CATA_WEB_TEXT_INPUT_MEMBER
++
++#endif // EMSCRIPTEN
++
++#endif // CATA_SRC_CATA_WEB_TEXT_INPUT_H
+diff --git a/src/cata_web_yield.cpp b/src/cata_web_yield.cpp
+new file mode 100644
+index 0000000..d479465
+--- /dev/null
++++ b/src/cata_web_yield.cpp
+@@ -0,0 +1,107 @@
++#include "cata_web_yield.h"
++
++#if defined(EMSCRIPTEN)
++
++#include <emscripten.h>
++
++namespace
++{
++
++// MessageChannel ベースの yield 本体。
++//
++// EM_ASYNC_JS は本体内の await を Asyncify の一時停止点に変換する。
++// ポートは 1 度だけ作って Module に載せ、以降は再利用する
++// （MessageChannel の生成自体は安くないため）。
++//
++// port1.onmessage は「1 タスクでキュー全体を捌く」形にしている。
++// 1 マクロタスクにつき 1 コールバックしか呼ばない実装にすると、
++// 同一フレーム内で複数の yield が積まれた場合に不要な往復が増える。
++EM_ASYNC_JS( void, cata_web_yield_impl, (), {
++    if( !Module._cataWebYieldChannel )
++    {
++        var ch = new MessageChannel();
++        var pending = [];
++        ch.port1.onmessage = function() {
++            var queue = pending;
++            pending = [];
++            for( var i = 0; i < queue.length; ++i ) {
++                queue[i]();
++            }
++        };
++        Module._cataWebYieldChannel = {
++            channel: ch,
++            push: function( resolve ) {
++                pending.push( resolve );
++                ch.port2.postMessage( 0 );
++            }
++        };
++    }
++    await new Promise( function( resolve ) {
++        Module._cataWebYieldChannel.push( resolve );
++    } );
++} );
++
++// requestAnimationFrame 待ち。描画を 1 枚確実に挟みたい場所専用。
++EM_ASYNC_JS( void, cata_web_yield_paint_impl, (), {
++    await new Promise( function( resolve ) {
++        requestAnimationFrame( function() {
++            resolve();
++        } );
++    } );
++} );
++
++// Asyncify の巻き戻しは入れ子にできないため、再入を弾く。
++// 例えば pump_events() の中から redraw が走り、その先でまた
++// yield 判定に到達する経路が存在する。
++bool yield_in_progress = false;
++
++} // namespace
++
++namespace cata_web
++{
++
++double now_ms()
++{
++    return emscripten_get_now();
++}
++
++void yield_now()
++{
++    if( yield_in_progress ) {
++        return;
++    }
++    yield_in_progress = true;
++    cata_web_yield_impl();
++    yield_in_progress = false;
++}
++
++void yield_paint()
++{
++    if( yield_in_progress ) {
++        return;
++    }
++    yield_in_progress = true;
++    cata_web_yield_paint_impl();
++    yield_in_progress = false;
++}
++
++bool yield_if_due( double &last_yield_ms, const double budget_ms )
++{
++    if( yield_in_progress ) {
++        return false;
++    }
++    const double now = emscripten_get_now();
++    if( now - last_yield_ms < budget_ms ) {
++        return false;
++    }
++    yield_now();
++    // yield 後の時刻で更新する。yield 自体の所要時間を予算から
++    // 差し引かないと、重い描画が挟まったときに次の yield が
++    // 即座に来てしまう。
++    last_yield_ms = emscripten_get_now();
++    return true;
++}
++
++} // namespace cata_web
++
++#endif // EMSCRIPTEN
+diff --git a/src/cata_web_yield.h b/src/cata_web_yield.h
+new file mode 100644
+index 0000000..2da1415
+--- /dev/null
++++ b/src/cata_web_yield.h
+@@ -0,0 +1,110 @@
++#pragma once
++#ifndef CATA_SRC_CATA_WEB_YIELD_H
++#define CATA_SRC_CATA_WEB_YIELD_H
++
++// [CDDA-BROSER] ブラウザに制御を返すための共有プリミティブ。
++//
++// なぜ専用の仕組みが必要か（詳細は docs/measurements/FACTS.md F-01）:
++//
++//   emscripten_sleep( 0 ) は setTimeout(0) に落ちる。HTML Standard の
++//   timer initialization steps は、ネストレベル 5 以上のタイマーを
++//   最低 4ms にクランプすると規定している。ターン処理や JSON ロードの
++//   ように「1 ループごとに yield したい」経路ではこのネストが常に
++//   成立するため、yield 1 回あたり実測 4.25ms の純粋な待ち時間が乗る。
++//   Asyncify のスタック巻き戻しは原因ではない（スタック深度 0 でも
++//   1024 でも 4.25ms から動かないことを実測で確認済み）。
++//
++//   MessageChannel の postMessage はマクロタスクだがクランプ対象外で、
++//   実測 0.075ms（57 倍速い）。しかも requestAnimationFrame は
++//   その隙間で通常どおり 60fps 前後で発火し続けるので、描画も止まらない。
++//
++// 実測での効果:
++//   - 400 ターン処理: 2202ms → 411ms（5.4 倍）
++//   - 同時に最大描画停止: 258.8ms → 27.0ms（約 10 分の1）
++//   - JSON ロード 60142 オブジェクト: 描画停止 259.4ms → 32.6ms
++//
++// 非 Emscripten ビルドでは全て空実装になり、挙動は一切変わらない。
++
++#if defined(EMSCRIPTEN)
++
++namespace cata_web
++{
++
++/**
++ * 既定の時間予算（ミリ秒）。
++ *
++ * 16ms = 60fps の 1 フレーム。実測（FACTS.md F-15）では 8ms まで
++ * 詰めても描画フレーム数は増えず（表示側が 60fps 上限）、yield 回数だけが
++ * 倍になるため 16ms が最適点である。
++ */
++constexpr double default_budget_ms = 16.0;
++
++/**
++ * 現在時刻（ミリ秒、単調増加）。emscripten_get_now() の薄いラッパ。
++ *
++ * ヘッダに <emscripten.h> を持ち込まずに時間予算判定を書けるようにするため。
++ */
++double now_ms();
++
++/**
++ * ブラウザに制御を返す。MessageChannel 経由なので setTimeout の
++ * 4ms クランプを受けない。
++ *
++ * 再入は内部で抑止される（Asyncify の入れ子巻き戻しは不正なため）。
++ * 再入時は何もせず即座に戻る。
++ */
++void yield_now();
++
++/**
++ * 描画フレームを 1 枚確実に挟んでから戻る（requestAnimationFrame 待ち）。
++ *
++ * 実測ではディスプレイ同期のため 1 回 15.9ms かかる。ロード画面の
++ * 進捗表示のように「確実に 1 枚描かせたい」場所だけで使う。
++ * ターン処理のようなホットパスでは yield_now() を使うこと。
++ */
++void yield_paint();
++
++/**
++ * 時間予算付き yield。
++ *
++ * @param last_yield_ms 前回 yield した時刻。yield したら更新される。
++ *                      呼び出し側が static などで保持する。
++ * @param budget_ms     この時間以上経過していたら yield する。
++ * @return              実際に yield したら true。
++ *
++ * 判定自体のコストは無視できる（FACTS.md F-15: 60142 回の判定で
++ * yield なしとの差は誤差）。判定の間引きは不要。
++ */
++bool yield_if_due( double &last_yield_ms, double budget_ms = default_budget_ms );
++
++} // namespace cata_web
++
++// 呼び出し側を短く書くためのマクロ。
++// 各呼び出し位置ごとに独立した static を持つので、
++// 別々のループが互いの予算を食い合わない。
++#define CATA_WEB_YIELD_THROTTLED( budget_ms )                        \
++    do {                                                             \
++        static double cata_web_last_yield__ = 0.0;                   \
++        cata_web::yield_if_due( cata_web_last_yield__, ( budget_ms ) ); \
++    } while( false )
++
++#define CATA_WEB_YIELD() CATA_WEB_YIELD_THROTTLED( cata_web::default_budget_ms )
++
++// 無条件に 1 回 yield する。呼び出し頻度が低い箇所（オーバーマップ生成の
++// 入口など）で使う。時間予算判定を挟まないので確実に制御が返る。
++#define CATA_WEB_YIELD_NOW() cata_web::yield_now()
++
++// 描画フレームを 1 枚確実に挟む。ロード開始直前など「画面を更新させたい」
++// 箇所のみ。1 回 15.9ms かかるのでホットパスでは使わない。
++#define CATA_WEB_YIELD_PAINT() cata_web::yield_paint()
++
++#else // !EMSCRIPTEN
++
++#define CATA_WEB_YIELD_THROTTLED( budget_ms ) do {} while( false )
++#define CATA_WEB_YIELD() do {} while( false )
++#define CATA_WEB_YIELD_NOW() do {} while( false )
++#define CATA_WEB_YIELD_PAINT() do {} while( false )
++
++#endif // EMSCRIPTEN
++
++#endif // CATA_SRC_CATA_WEB_YIELD_H
+diff --git a/src/do_turn.cpp b/src/do_turn.cpp
+index a7011f8..5016704 100644
+--- a/src/do_turn.cpp
++++ b/src/do_turn.cpp
+@@ -24,6 +24,7 @@
+ #include "cached_options.h"
+ #include "calendar.h"
+ #include "cata_variant.h"
++#include "cata_web_yield.h"
+ #include "clzones.h"
+ #include "coordinates.h"
+ #include "debug.h"
+@@ -236,7 +237,46 @@ void handle_key_blocking_activity()
+             u.activity.id()->based_on() == based_on_type::NEITHER
+             || u.activity.moves_left > 0 );
+     if( has_unfinished_activity || u.has_destination() ) {
++        // [CDDA-BROWSER] input_context を関数 static にして再利用する。
++        //
++        // get_default_mode_input_context() は 146 個の register_action を
++        // 実行する（game.cpp:2672-2828）。register_action は毎回
++        // std::find による線形探索を行うため（input_context.cpp:199）、
++        // 146 個の登録で 146*145/2 = 10585 回の文字列比較になる。
++        // さらに std::vector<std::string> への push_back で 146 回の
++        // ヒープ確保、うち 10 個は std::map への translation 挿入も伴う。
++        //
++        // 実測（docs/measurements/FACTS.md F-18）では 1 回 0.0521ms で、
++        // 製作 1 ターンの実処理（0.0401ms）より重い。
++        // この関数は製作・移動・分解などアクティビティ中に繰り返し
++        // 呼ばれるため、毎回作り直すのは無駄である。
++        //
++        // 同関数は引数を取らず毎回同一内容を返す純粋関数なので、
++        // キャッシュしても挙動は変わらない。
++        // キーバインドを変更した場合も、実際の入力解決は
++        // inp_mngr.get_input_for_action() が category 名で都度参照するため
++        // （input_context.cpp:214）、登録済みアクション一覧が同じであれば
++        // 新しいキーバインドが正しく反映される。
++        //
++        // 【重要】static 化は EMSCRIPTEN 限定にする。
++        // input_context は __ANDROID__ / EMSCRIPTEN で自身を
++        // input_context_stack に登録する（input_context.h:55-57）。
++        // Android はこのスタックをクイックショートカット表示に使うため、
++        // DEFAULTMODE の文脈が永続的に載り続けると表示が変わる恐れがある。
++        // web 版は F-18 の IME 修正でスタック先頭に依存しなくなったので
++        // 安全である。
++        //
++        // 実行時分岐について: get_default_mode_input_context() 本体
++        // （game.cpp:2672-2828）には get_option 等の実行時条件が
++        // 1 つも無く、#if による静的分岐のみである。よって
++        // 返る内容は常に同一であり、キャッシュしても差は生じない。
++        // キーバインド変更も input_to_action() が category 名で
++        // inp_mngr を都度参照するため（input_context.cpp:144）反映される。
++#if defined(EMSCRIPTEN)
++        static input_context ctxt = get_default_mode_input_context();
++#else
+         input_context ctxt = get_default_mode_input_context();
++#endif
+         const std::string action = ctxt.handle_input( 0 );
+         bool refresh = true;
+         if( action == "pause" ) {
+@@ -255,6 +295,11 @@ void handle_key_blocking_activity()
+         if( refresh ) {
+             ui_manager::redraw();
+             refresh_display();
++            // [CDDA-BROWSER] 画面を更新した直後にブラウザへ制御を返す。
++            // 描いた内容を実際に画面へ反映させるにはイベントループを
++            // 1 回まわす必要があるため、ここで譲渡しないと
++            // 「描いたが表示されないまま次のターンへ進む」ことになる。
++            CATA_WEB_YIELD();
+         }
+     } else {
+         refresh_display();
+@@ -264,6 +309,112 @@ void handle_key_blocking_activity()
+ 
+ namespace
+ {
++
++// [CDDA-BROWSER] mon_info_update() のレート制限
++// ---------------------------------------------------------------------
++// 【真因】
++// 「読書がゲームにならないほど遅い」という報告の原因はこれ。
++// 読書アクティビティ自体（read_activity_actor::do_turn）は
++// 実測 0.0040ms で無視できる軽さである。遅いのは、技能書 1 冊が
++// ゲーム内 30 分 =【1800 ターン】であり、その 1800 ターンぶん
++// do_turn() の全パイプラインが回るためである。
++//
++// そのパイプラインの内訳を実測すると（1 回あたり ms）:
++//     mon_info_update()      0.6170   ← 単独で最重量
++//     monmove()              0.4185
++//     ui_manager::redraw()   0.3650
++//     u.process_turn()       0.2565
++//     build_map_cache()      0.2333
++//     process_items()        0.2155
++//     build_floor_caches()   0.1350
++//     process_fields()       0.0545
++//     読書本体               0.0040
++//     ---------------------------------
++//     1 ターン合計           0.8600
++// mon_info_update() だけで 1 ターンの【72%】を占める。
++//
++// 重い理由は Character::get_visible_creatures( MAPSIZE_X )
++// （character.cpp:10624）で、可視クリーチャ全件について
++// rl_dist() に加えて sees( here, critter ) の完全な LOS 判定を
++// 行うためである。MAPSIZE_X = 132 なのでバブル全域が対象になる。
++//
++// さらにこれは do_turn.cpp の【3 箇所】（下記の呼び出し点）で
++// 呼ばれており、いずれも元来レート制限が一切ない。
++//
++// 【単純に飛ばしてはいけない理由】
++// mon_info_update() は表示更新だけの関数ではなく safemode を
++// 駆動している（game.cpp:4856-4875）:
++//     set_safe_mode( SAFE_MODE_STOP )   新規発見時に移動を止める
++//     cancel_activity_or_ignore_query   アクティビティ中断の問い合わせ
++//     turnssincelastmon / AUTOSAFEMODE  自動 safemode 復帰
++//     previous_turn / mostseen          差分検出の基準値
++// よって「呼ばない」ことはできない。できるのは
++// 【ゲームターン数で上限を切って間引く】ことだけである。
++//
++// 【なぜ実時間ではなくゲームターン基準か】
++// 実時間（例: 16ms ごと）で間引くと、CPU が速い環境では
++// 1 回の間隔に入るターン数が増えてしまい、safemode の反応が
++// 何ターン遅れるかが機種依存になる。モンスターの接近はゲーム
++// ターンで進むので、遅延の上限もゲームターンで押さえる必要がある。
++// ターン数で切れば、どんな機種でも遅れは最大 N ターンで一定。
++//
++// 【N=16 の根拠（実測の掃引結果・低速機想定 600 ターン）】
++//     N=1  1592ms   N=2  1365ms   N=4  1290ms
++//     N=8  1229ms   N=16 1172ms   N=32 1162ms   N=64 1178ms
++// N=16 で総時間が飽和し、それ以上大きくしても速くならない。
++// つまり N=16 は「最大の効果が得られる最小の N」であり、
++// safemode の遅延を不必要に伸ばさずに済む値である。
++// CDDA の 1 ターンは 1 ゲーム秒なので 16 ターン = 16 ゲーム秒。
++//
++// 【効果（低速機・CPU 3 倍遅い想定、読書 600 ターン）】
++//                      総時間   fps    最大描画停止
++//     現行 0.I         1719ms   16.9   106.1ms   ← 基準 A/B/D すべて NG
++//     本 PR の他の修正 1623ms   54.8    23.7ms
++//     本修正（N=16）   1181ms   56.7    18.6ms
++// 0.I 比で 31% 高速化し、かつ描画停止を 106ms → 19ms に縮める。
++//
++// なお「描画のタイミングでだけ呼ぶ」案も試したが、低速機で
++// 最大描画停止が 44.3ms まで悪化した（mon_info のコストが描画
++// ウィンドウの内側に入るため）。ターン数で切る本方式を採用する。
++//
++// 【適用範囲を「アクティビティ中」だけに絞る】
++// 間引きを常時かけると、通常の歩行・戦闘中も safemode の反応が
++// 最大 16 ターン遅れうる。そこは元々 1 ターンに数回しか回らないので
++// 間引いても速くならないうえ、危険度が高い場面である。
++// そこで force フラグを用意し、u.activity が空（=プレイヤーが自分で
++// 操作している場面）では毎ターン必ず実行する。間引くのは
++// 読書・製作・分解・粉砕など「1800 ターン一気に進む」場面に限る。
++// これにより通常プレイの挙動は 0.I と完全に同一のまま、
++// 長時間アクティビティだけが速くなる。
++//
++// ネイティブ版は元の毎ターン呼び出しを維持する（間引く必要がない）。
++#if defined(EMSCRIPTEN)
++constexpr int mon_info_update_interval_turns = 16;
++
++// 間引いた mon_info_update()。
++// 「前回実行したゲームターン」を覚えておき、N ターン経過するまでは
++// 実行しない。強制実行が必要な場面では force=true を渡す。
++void mon_info_update_throttled( const bool force = false )
++{
++    static time_point last_update = calendar::turn_zero;
++    static bool has_run = false;
++
++    if( !force && has_run &&
++        calendar::turn - last_update < time_duration::from_turns(
++            mon_info_update_interval_turns ) ) {
++        return;
++    }
++    last_update = calendar::turn;
++    has_run = true;
++    g->mon_info_update();
++}
++#else
++void mon_info_update_throttled( const bool /*force*/ = false )
++{
++    g->mon_info_update();
++}
++#endif
++
+ void monmove()
+ {
+     g->cleanup_dead();
+@@ -565,7 +716,10 @@ bool do_turn()
+             while( u.get_moves() > 0 || g->uquit == QUIT_WATCH ) {
+                 m.process_falling();
+                 g->cleanup_dead();
+-                g->mon_info_update();
++                // [CDDA-BROWSER] ここはプレイヤーに行動力が残っている
++                // ループ内なので、アクティビティが無ければ強制実行する。
++                // 詳細は上の mon_info_update_throttled() のコメント参照。
++                mon_info_update_throttled( !u.activity );
+                 // Process any new sounds the player caused during their turn.
+                 for( npc &guy : g->all_npcs() ) {
+                     if( rl_dist( guy.pos_bub(), u.pos_bub() ) < MAX_VIEW_DISTANCE ) {
+@@ -606,16 +760,53 @@ bool do_turn()
+             sounds::reset_markers();
+         } else {
+             // Rate limit key polling to 10 times a second.
++            //
++            // [CDDA-BROWSER] ブラウザではこの間隔が「描画間隔」を決める。
++            //
++            // 上の if 節（同 :579-583）の redraw() は
++            //     if( !u.activity && ... )
++            // という条件なので、製作・分解・読書などアクティビティ中は
++            // 実行されない。したがってアクティビティ中に画面が更新される
++            // のは handle_key_blocking_activity() の中だけであり、
++            // この間隔がそのまま体感の滑らかさになる。
++            //
++            // ネイティブでは 100ms でも問題ない（OS のイベントループは
++            // 別に回っており、ウィンドウが固まらない）。しかしブラウザでは
++            // wasm がメインスレッドを占有するため、100ms 間隔は
++            // 「100ms 完全に固まってから 1 フレーム描く」を意味する。
++            //
++            // 実測（docs/measurements/FACTS.md F-18）:
++            //   製作 4000 ターンで
++            //     100ms: 描画 1 フレーム / 最大描画停止 101.3ms
++            //      16ms: 描画 9 フレーム / 最大描画停止  17.3ms
++            //   総処理時間は 160.0ms → 160.3ms でほぼ変わらない。
++            //   つまり滑らかさ 6 倍の代償がほぼゼロである。
++            //
++            // 上の input_context を static 化したことで
++            // 1 回あたりのコストも 0.0521ms 下がっており、
++            // 呼び出し頻度を 6 倍にしても総コストは増えない。
++            //
++            // ネイティブ側は元の意図（キーポーリング節約）を尊重して
++            // 100ms のまま維持する。
++#if defined(EMSCRIPTEN)
++            constexpr int activity_poll_interval_ms = 16;
++#else
++            constexpr int activity_poll_interval_ms = 100;
++#endif
+             static auto start = std::chrono::time_point_cast<std::chrono::milliseconds>(
+                                     std::chrono::steady_clock::now() );
+             const auto now = std::chrono::time_point_cast<std::chrono::milliseconds>(
+                                  std::chrono::steady_clock::now() );
+-            if( ( now - start ).count() > 100 ) {
++            if( ( now - start ).count() > activity_poll_interval_ms ) {
+                 handle_key_blocking_activity();
+                 start = now;
+             }
+ 
+-            g->mon_info_update();
++            // [CDDA-BROWSER] この else 節はアクティビティ中・睡眠中など
++            // 「行動力を使い切っている」場面。ここが間引きの主目的。
++            // 下の distraction 判定は mon_info_update() が更新した
++            // new_seen_mon を読むため、実行した回だけ有効に働く。
++            mon_info_update_throttled( !u.activity );
+ 
+             // If player is performing a task, a monster is dangerously close,
+             // and monster can reach to the player or it has some sort of a ranged attack,
+@@ -681,7 +872,9 @@ bool do_turn()
+             }
+         }
+     }
+-    g->mon_info_update();
++    // [CDDA-BROWSER] 毎ターン末尾の呼び出し。アクティビティが無ければ
++    // 従来どおり毎ターン実行する。
++    mon_info_update_throttled( !u.activity );
+     u.process_turn();
+     if( u.get_moves() < 0 && get_option<bool>( "FORCE_REDRAW" ) ) {
+         ui_manager::redraw();
+diff --git a/src/game.cpp b/src/game.cpp
+index a2f772b..41cd822 100644
+--- a/src/game.cpp
++++ b/src/game.cpp
+@@ -59,6 +59,9 @@
+ #include "cata_scope_helpers.h"
+ #include "cata_utility.h"
+ #include "cata_variant.h"
++// [CDDA-BROWSER] 死亡画面の遺言入力欄で日本語 IME を有効にするため。
++#include "cata_web_text_input.h"
++#include "cata_web_yield.h"
+ #include "catacharset.h"
+ #include "character.h"
+ #include "character_attire.h"
+@@ -895,12 +898,15 @@ void game::legacy_migrate_npctalk_var_prefix( global_variables::impl_t &map_of_v
+ // Set up all default values for a new game
+ bool game::start_game()
+ {
+-#if defined(EMSCRIPTEN)
+-    // [CDDA-BROSER] give the browser a paint frame and let the Asyncify
+-    // shadow stack unwind before load_map -> overmapbuffer::get ->
+-    // overmap::generate (the deepest Asyncify recursion in the game).
+-    emscripten_sleep( 16 );
+-#endif
++    // [CDDA-BROWSER] load_map -> overmapbuffer::get -> overmap::generate
++    // （ゲーム中で最も深い Asyncify 再帰）に入る前に、ブラウザへ
++    // 描画フレームを 1 回渡してシャドウスタックを巻き戻す。
++    //
++    // ここは「確実に 1 フレーム描画させたい」箇所なので、
++    // MessageChannel ではなく requestAnimationFrame を使う
++    // CATA_WEB_YIELD_PAINT() を用いる（F-03 で rAF は表示同期＝
++    // 15.9ms、MessageChannel は描画を保証しないことを確認済み）。
++    CATA_WEB_YIELD_PAINT();
+ 
+     if( !gamemode ) {
+         gamemode = std::make_unique<special_game>();
+@@ -3035,6 +3041,12 @@ class end_screen_ui_impl : public cataimgui::window
+         }
+     protected:
+         void draw_controls() override;
++    private:
++        // [CDDA-BROWSER] 死亡画面の「最後の言葉」欄は string_input_popup を
++        // 経由せず ImGui::InputText を直接呼ぶ（下の draw_controls 参照）ため、
++        // 他の入力欄と同じ経路では IME が有効にならない。
++        // この画面が生きている間だけブラウザ側の日本語入力を許可する。
++        CATA_WEB_TEXT_INPUT_MEMBER
+ };
+ 
+ void end_screen_data::draw_end_screen_ui()
+diff --git a/src/init.cpp b/src/init.cpp
+index 8a12c37..a220659 100644
+--- a/src/init.cpp
++++ b/src/init.cpp
+@@ -10,10 +10,6 @@
+ #include <string_view>
+ #include <vector>
+ 
+-#if defined(EMSCRIPTEN)
+-#include <emscripten.h>
+-#endif
+-
+ #include "achievement.h"
+ #include "activity_type.h"
+ #include "addiction.h"
+@@ -28,6 +24,7 @@
+ #include "butchery_requirements.h"
+ #include "cata_assert.h"
+ #include "cata_scope_helpers.h"
++#include "cata_web_yield.h"
+ #include "character_modifier.h"
+ #include "city.h"
+ #include "climbing.h"
+@@ -498,7 +495,7 @@ void DynamicDataLoader::load_data_from_path( const cata_path &path, const std::s
+     // Emscripten Asyncify resumes at this point without changing the native
+     // loader's ordering or behavior on non-web targets.
+ #if defined(EMSCRIPTEN)
+-    double last_browser_yield = emscripten_get_now();
++    double last_browser_yield = cata_web::now_ms();
+ #endif
+     // iterate over each file
+     for( const cata_path &file : files ) {
+@@ -510,10 +507,7 @@ void DynamicDataLoader::load_data_from_path( const cata_path &path, const std::s
+             throw std::runtime_error( err.what() );
+         }
+ #if defined(EMSCRIPTEN)
+-        if( emscripten_get_now() - last_browser_yield >= 50.0 ) {
+-            emscripten_sleep( 0 );
+-            last_browser_yield = emscripten_get_now();
+-        }
++        cata_web::yield_if_due( last_browser_yield );
+ #endif
+     }
+ }
+@@ -543,7 +537,7 @@ void DynamicDataLoader::load_mod_data_from_path( const cata_path &path, const st
+     // Emscripten Asyncify resumes at this point without changing the native
+     // loader's ordering or behavior on non-web targets.
+ #if defined(EMSCRIPTEN)
+-    double last_browser_yield = emscripten_get_now();
++    double last_browser_yield = cata_web::now_ms();
+ #endif
+     // iterate over each file
+     for( const cata_path &file : files ) {
+@@ -555,10 +549,7 @@ void DynamicDataLoader::load_mod_data_from_path( const cata_path &path, const st
+             throw std::runtime_error( err.what() );
+         }
+ #if defined(EMSCRIPTEN)
+-        if( emscripten_get_now() - last_browser_yield >= 50.0 ) {
+-            emscripten_sleep( 0 );
+-            last_browser_yield = emscripten_get_now();
+-        }
++        cata_web::yield_if_due( last_browser_yield );
+ #endif
+     }
+ }
+@@ -574,7 +565,7 @@ void DynamicDataLoader::load_mod_interaction_files_from_path( const cata_path &p
+ #if defined(EMSCRIPTEN)
+     // World mod interactions were not covered by the ordinary mod-loader
+     // budget.  Keep their directory scan and JSON dispatch cooperative.
+-    double last_browser_yield = emscripten_get_now();
++    double last_browser_yield = cata_web::now_ms();
+ #endif
+ 
+     if( dir_exist( path.get_unrelative_path() ) ) {
+@@ -594,10 +585,7 @@ void DynamicDataLoader::load_mod_interaction_files_from_path( const cata_path &p
+                 }
+             }
+ #if defined(EMSCRIPTEN)
+-            if( emscripten_get_now() - last_browser_yield >= 50.0 ) {
+-                emscripten_sleep( 0 );
+-                last_browser_yield = emscripten_get_now();
+-            }
++            cata_web::yield_if_due( last_browser_yield );
+ #endif
+         }
+     }
+@@ -611,10 +599,7 @@ void DynamicDataLoader::load_mod_interaction_files_from_path( const cata_path &p
+             throw std::runtime_error( err.what() );
+         }
+ #if defined(EMSCRIPTEN)
+-        if( emscripten_get_now() - last_browser_yield >= 50.0 ) {
+-            emscripten_sleep( 0 );
+-            last_browser_yield = emscripten_get_now();
+-        }
++        cata_web::yield_if_due( last_browser_yield );
+ #endif
+     }
+ }
+@@ -625,17 +610,14 @@ void DynamicDataLoader::load_all_from_json( const JsonValue &jsin, const std::st
+ #if defined(EMSCRIPTEN)
+     // A single JSON array can contain many objects, so per-file yielding is
+     // insufficient for large mod interaction definitions.
+-    double last_browser_yield = emscripten_get_now();
++    double last_browser_yield = cata_web::now_ms();
+ #endif
+     if( jsin.test_object() ) {
+         // find type and dispatch single object
+         JsonObject jo = jsin.get_object();
+         load_object( jo, src, base_path, full_path );
+ #if defined(EMSCRIPTEN)
+-        if( emscripten_get_now() - last_browser_yield >= 50.0 ) {
+-            emscripten_sleep( 0 );
+-            last_browser_yield = emscripten_get_now();
+-        }
++        cata_web::yield_if_due( last_browser_yield );
+ #endif
+     } else if( jsin.test_array() ) {
+         JsonArray ja = jsin.get_array();
+@@ -643,10 +625,7 @@ void DynamicDataLoader::load_all_from_json( const JsonValue &jsin, const std::st
+         for( JsonObject jo : ja ) {
+             load_object( jo, src, base_path, full_path );
+ #if defined(EMSCRIPTEN)
+-            if( emscripten_get_now() - last_browser_yield >= 50.0 ) {
+-                emscripten_sleep( 0 );
+-                last_browser_yield = emscripten_get_now();
+-            }
++            cata_web::yield_if_due( last_browser_yield );
+ #endif
+         }
+     } else {
+@@ -876,16 +855,13 @@ void DynamicDataLoader::finalize_loaded_data()
+ #if defined(EMSCRIPTEN)
+     // Finalization has many independent registries and can otherwise occupy
+     // one browser turn after world-specific mod data is parsed.
+-    double last_browser_yield = emscripten_get_now();
++    double last_browser_yield = cata_web::now_ms();
+ #endif
+     for( const named_entry &e : entries ) {
+         loading_ui::show( _( "Finalizing" ), e.first );
+         e.second();
+ #if defined(EMSCRIPTEN)
+-        if( emscripten_get_now() - last_browser_yield >= 50.0 ) {
+-            emscripten_sleep( 0 );
+-            last_browser_yield = emscripten_get_now();
+-        }
++        cata_web::yield_if_due( last_browser_yield );
+ #endif
+     }
+ 
+@@ -987,16 +963,13 @@ void DynamicDataLoader::check_consistency()
+ 
+ #if defined(EMSCRIPTEN)
+     // Verification is also a sequence of independent full-data passes.
+-    double last_browser_yield = emscripten_get_now();
++    double last_browser_yield = cata_web::now_ms();
+ #endif
+     for( const named_entry &e : entries ) {
+         loading_ui::show( _( "Verifying" ), e.first );
+         e.second();
+ #if defined(EMSCRIPTEN)
+-        if( emscripten_get_now() - last_browser_yield >= 50.0 ) {
+-            emscripten_sleep( 0 );
+-            last_browser_yield = emscripten_get_now();
+-        }
++        cata_web::yield_if_due( last_browser_yield );
+ #endif
+     }
+ }
+diff --git a/src/input_context.cpp b/src/input_context.cpp
+index d8fbe43..86e8342 100644
+--- a/src/input_context.cpp
++++ b/src/input_context.cpp
+@@ -16,6 +16,8 @@
+ #include "action.h"
+ #include "cata_imgui.h"
+ #include "cata_utility.h"
++// [CDDA-BROWSER] キーバインドメニューの絞り込み欄で日本語 IME を有効にするため。
++#include "cata_web_text_input.h"
+ #include "catacharset.h"
+ #include "color.h"
+ #include "coordinates.h"
+@@ -996,8 +998,35 @@ action_id input_context::display_menu( bool permit_execute_action )
+     //};
+     //ui.on_redraw( redraw );
+ 
++#if defined(EMSCRIPTEN)
++    // [CDDA-BROWSER] 絞り込み欄フラグの識別キーと、その自動解除。
++    //
++    // 下のループは break / return / 例外で抜ける経路が複数あるので、
++    // フラグの解除は RAII に任せる。これがないと絞り込み中に
++    // キーバインドメニューを閉じた場合にフラグが立ったまま残り、
++    // マップ移動中に IME が有効になって操作不能になる。
++    static const char kb_filter_key = 0;
++    struct kb_filter_guard_t {
++        ~kb_filter_guard_t() {
++            cata_web::set_text_input_flag( &kb_filter_key, false );
++        }
++    } kb_filter_guard;
++#endif
++
+     while( true ) {
+         kb_menu.highlight_row_index = -1;
++        // [CDDA-BROWSER] キーバインドメニューの絞り込み欄は専用の
++        // 入力欄クラスを持たず、kb_menu.status という状態で表される。
++        // オブジェクト寿命に紐付けられないので、状態を毎周期反映させる。
++        // set_text_input_flag() は冪等なので毎回呼んで問題ない。
++        // これがないと絞り込み欄に日本語を打てない（F-19）。
++        //
++        // なお下の kb_filter_guard がループ脱出時（break / return / 例外）
++        // に必ず解除するので、フラグが立ったまま残ることはない。
++#if defined(EMSCRIPTEN)
++        cata_web::set_text_input_flag( &kb_filter_key,
++                                       kb_menu.status == kb_menu_status::filter );
++#endif
+         ui_manager::redraw();
+         if( kb_menu.has_button_action() ) {
+             action = kb_menu.get_button_action();
+diff --git a/src/input_popup.cpp b/src/input_popup.cpp
+index 2c71873..7d6a992 100644
+--- a/src/input_popup.cpp
++++ b/src/input_popup.cpp
+@@ -15,10 +15,19 @@ input_popup::input_popup( int width, const std::string &title, const point &pos,
+                           ImGuiWindowFlags flags ) :
+     cataimgui::window( title, ImGuiWindowFlags_NoNavInputs | flags | ( title.empty() ?
+                        ImGuiWindowFlags_NoTitleBar : 0 ) | ImGuiWindowFlags_AlwaysAutoResize ),
++    // [CDDA-BROWSER] ここは元々コンストラクタ本体で
++    //     ctxt = input_context( "STRING_INPUT", keyboard_mode::keychar );
++    // というコピー代入だった。input_context は
++    // __ANDROID__ / EMSCRIPTEN で自身を input_context_stack に登録する
++    // 設計だが、operator= は __ANDROID__ 限定でしか定義されておらず
++    // スタック操作も行わないため、右辺の一時オブジェクトが積んで降ろす
++    // 一方でメンバ ctxt はカテゴリ "default" のままスタックに残っていた。
++    // 初期化子リストへ移して一時オブジェクトの生成自体をなくす。
++    // 挙動は全プラットフォームで同一（むしろコピー 1 回分速い）。
++    ctxt( "STRING_INPUT", keyboard_mode::keychar ),
+     pos( pos ),
+     width( width )
+ {
+-    ctxt = input_context( "STRING_INPUT", keyboard_mode::keychar );
+     ctxt.register_action( "TEXT.CONFIRM" );
+     ctxt.register_action( "TEXT.QUIT" );
+     ctxt.register_action( "TEXT.CLEAR" );
+diff --git a/src/input_popup.h b/src/input_popup.h
+index 6828cfd..d195a00 100644
+--- a/src/input_popup.h
++++ b/src/input_popup.h
+@@ -11,6 +11,7 @@
+ #include <vector>
+ 
+ #include "cata_imgui.h"
++#include "cata_web_text_input.h"
+ #include "color.h"
+ #include "imgui/imgui.h"
+ #include "input_context.h"
+@@ -103,6 +104,13 @@ class string_input_popup_imgui : public input_popup
+         bool is_uilist_history = true;
+         uint64_t max_history_size = 100;
+         int history_index = 0;
++
++        // [CDDA-BROWSER] この ImGui 文字入力欄が生きている間だけ IME を許可する。
++        //
++        // 基底の input_popup でなくここに置くのは、
++        // number_input_popup（数値入力）も同じ基底を使うため。
++        // 数値欄で日本語 IME が立つと半角数字が直接入力できなくなる。
++        CATA_WEB_TEXT_INPUT_MEMBER
+ };
+ 
+ // todo: make generic for any numeric type?
+diff --git a/src/mapgen.cpp b/src/mapgen.cpp
+index 37348ca..2cf1829 100644
+--- a/src/mapgen.cpp
++++ b/src/mapgen.cpp
+@@ -20,15 +20,12 @@
+ #include <typeinfo>
+ #include <unordered_map>
+ 
+-#if defined(EMSCRIPTEN)
+-#include <emscripten.h>
+-#endif
+-
+ #include "all_enum_values.h"
+ #include "avatar.h"
+ #include "calendar.h"
+ #include "cata_assert.h"
+ #include "cata_utility.h"
++#include "cata_web_yield.h"
+ #include "catacharset.h"
+ #include "character_id.h"
+ #include "city.h"
+@@ -5991,17 +5988,18 @@ static ret_val<void> apply_mapgen_in_phases(
+     const jmapgen_objects &objects, const tripoint_rel_ms &offset, const std::string &context,
+     bool verify = false )
+ {
+-#if defined(EMSCRIPTEN)
+-    // [CDDA-BROSER] deeply nested overmap specials (refugee_center, mall_a_1)
+-    // push hundreds of frames onto the Asyncify shadow stack.  Time-throttled
+-    // yield (50ms, matching Chrome's long-task threshold) lets it unwind.
+-    static double cdda_last_mapgen_yield = 0.0;
+-    const double now_ms = emscripten_get_now();
+-    if( now_ms - cdda_last_mapgen_yield >= 50.0 ) {
+-        cdda_last_mapgen_yield = now_ms;
+-        emscripten_sleep( 0 );
+-    }
+-#endif
++    // [CDDA-BROWSER] 入れ子の深いオーバーマップ特殊地形（refugee_center,
++    // mall_a_1 等）は Asyncify のシャドウスタックに数百フレームを積む。
++    // 一定時間ごとにブラウザへ制御を返してスタックを巻き戻す。
++    //
++    // 旧実装は 50ms 間隔で emscripten_sleep( 0 ) を呼んでいたが、
++    // docs/measurements/FACTS.md の F-01/F-02 で判明したとおり
++    // emscripten_sleep( 0 ) は setTimeout に落ちるため HTML 標準の
++    // 4ms クランプを受け、1 回あたり 4.25ms を消費していた。
++    // CATA_WEB_YIELD() は MessageChannel（0.075ms・クランプ無し）を使い、
++    // かつ F-15 の計測で最適と確認した 16ms（1 フレーム）間隔で譲渡する。
++    // 間隔を 50ms から 16ms へ詰めても総コストは下がる。
++    CATA_WEB_YIELD();
+     const ret_val<void> has_vehicle_collision = objects.has_vehicle_collision( md, offset );
+     if( verify &&  !has_vehicle_collision.success() ) {
+ 
+diff --git a/src/overmap.cpp b/src/overmap.cpp
+index 72df7e0..1a23742 100644
+--- a/src/overmap.cpp
++++ b/src/overmap.cpp
+@@ -17,10 +17,6 @@
+ #include <unordered_set>
+ #include <vector>
+ 
+-#if defined(EMSCRIPTEN)
+-#include <emscripten.h>
+-#endif
+-
+ #include "all_enum_values.h"
+ #include "assign.h"
+ #include "auto_note.h"
+@@ -30,6 +26,7 @@
+ #include "cata_path.h"
+ #include "cata_utility.h"
+ #include "cata_views.h"
++#include "cata_web_yield.h"
+ #include "catacharset.h"
+ #include "character_id.h"
+ #include "coordinates.h"
+@@ -3672,11 +3669,11 @@ void overmap::set_scent( const tripoint_abs_omt &loc, const scent_trace &new_sce
+ void overmap::generate( const std::vector<const overmap *> &neighbor_overmaps,
+                         overmap_special_batch &enabled_specials )
+ {
+-#if defined(EMSCRIPTEN)
+-    // [CDDA-BROSER] yield so ChromeOS Chrome does not mark the tab
+-    // unresponsive during initial map generation.
+-    emscripten_sleep( 0 );
+-#endif
++    // [CDDA-BROWSER] ChromeOS の Chrome がタブを「応答なし」と判定しないよう、
++    // 初回マップ生成の入口で一度ブラウザへ制御を返す。
++    // ここは頻度が低い（オーバーマップ 1 枚につき 1 回）ため無条件譲渡でよい。
++    // プリミティブは MessageChannel なので 4ms クランプの影響を受けない。
++    CATA_WEB_YIELD_NOW();
+     dbg( D_INFO ) << "overmap::generate start…";
+     const oter_id omt_outside_defined_omap = static_cast<oter_id>
+             ( get_option<std::string>( "OUTSIDE_DEFINED_OMAP_OMT" ) );
+@@ -7454,12 +7451,10 @@ void overmap::place_specials( overmap_special_batch &enabled_specials )
+     }
+     om_special_sectors sectors = get_sectors( OMSPEC_FREQ );
+ 
+-#if defined(EMSCRIPTEN)
+-    // [CDDA-BROSER] yield before recursing into place_specials_pass ->
+-    // create_custom_overmap -> overmap::populate (re-enters place_specials on
+-    // the neighbor overmap), bounding the Asyncify shadow-stack peak.
+-    emscripten_sleep( 0 );
+-#endif
++    // [CDDA-BROWSER] place_specials_pass -> create_custom_overmap ->
++    // overmap::populate（隣接オーバーマップで place_specials に再入する）
++    // へ再帰する直前に譲渡し、Asyncify シャドウスタックのピークを抑える。
++    CATA_WEB_YIELD_NOW();
+ 
+     // First, place the mandatory specials to ensure that all minimum instance
+     // counts are met.
+diff --git a/src/sdltiles.cpp b/src/sdltiles.cpp
+index a377ff9..309f805 100644
+--- a/src/sdltiles.cpp
++++ b/src/sdltiles.cpp
+@@ -39,6 +39,8 @@
+ #include "cata_scope_helpers.h"
+ #include "cata_tiles.h"
+ #include "cata_utility.h"
++#include "cata_web_text_input.h"
++#include "cata_web_yield.h"
+ #include "catacharset.h"
+ #include "color.h"
+ #include "color_loader.h"
+@@ -2629,29 +2631,37 @@ static bool text_input_active_when_regaining_focus = false;
+ #endif
+ 
+ #if defined(EMSCRIPTEN)
+-// The browser IME proxy must engage only while a real text field is
+-// active.  get_input_event() calls StartTextInput() on every poll in
+-// keychar mode (the default), i.e. also during ordinary map movement --
+-// and once the hidden proxy is focused, an active Japanese IME turns
+-// every movement key into a kana composition and swallows it.  Android
+-// answers the same "is a text field active?" question with its
+-// is_string_input() check on the top of the input context stack; mirror
+-// exactly that classification here (STRING_INPUT covers
+-// string_input_popup and the ImGui input_popup, STRING_EDITOR the
+-// multi-line editor, HELP_KEYBINDINGS its live keybinding filter).
++// [CDDA-BROWSER] ブラウザの IME プロキシは「本物のテキスト入力欄が
++// 開いている間だけ」有効にしなければならない。
++//
++// get_input_event() は keychar モード（既定）の毎ポーリングで
++// StartTextInput() を呼ぶ。つまり通常のマップ移動中にも呼ばれる。
++// 隠しプロキシにフォーカスが当たった状態で日本語 IME が有効だと、
++// 移動キーが全部かな変換に食われて操作不能になる。
++// 逆に判定が false のままだと IME が変換する対象要素が無く、
++// 日本語をまったく入力できない。両方向に厳しい判定である。
++//
++// 旧実装は Android の is_string_input() を真似て
++// input_context_stack の先頭のカテゴリ名を見ていたが、
++// これは原理的に破綻していた（詳細は
++// docs/measurements/FACTS.md F-19 と cata_web_text_input.h）:
++//
++//   1. input_popup（ImGui 版の文字入力）は文脈をコピー代入で
++//      設定していたが input_context::operator= は __ANDROID__ 限定
++//      かつスタック操作をしないため、実際に入力を受けるメンバは
++//      カテゴリ "default" のままスタックに残っていた。
++//   2. inventory_selector::query_string() や uilist::inputfilter() は
++//      囲んでいるセレクタの文脈も同時にスタック上に持つため、
++//      どちらが先頭かは呼び出しの入れ子順に依存する。
++//
++// そこで「テキスト入力欄オブジェクトの生存期間」という本来の情報を
++// RAII（cata_web::text_input_scope）で直接持たせ、その参照カウントを
++// 見る方式に変えた。string_input_popup / string_input_popup_imgui /
++// string_editor_window のメンバとして埋め込んであるので、
++// 入力欄が生きている間だけ確実に true になる。
+ static bool cdda_web_wants_ime()
+ {
+-    if( input_context::input_context_stack.empty() ) {
+-        return false;
+-    }
+-    input_context *top = input_context::input_context_stack.back();
+-    if( top == nullptr ) {
+-        return false;
+-    }
+-    const std::string &category = top->get_category();
+-    return category == "STRING_INPUT"
+-           || category == "STRING_EDITOR"
+-           || category == "HELP_KEYBINDINGS";
++    return cata_web::text_input_active();
+ }
+ 
+ // EM_ASM interpolates its C++ arguments as $0 inside the JS body; that is
+@@ -4089,29 +4099,27 @@ void input_manager::pump_events()
+         return;
+     }
+ 
+-#if defined(EMSCRIPTEN)
+-    // [CDDA-BROSER] Upstream marks every heavy loop (map/overmap saving,
+-    // JSON verification, world serialization, ...) with pump_events(), but
+-    // on the web this never yielded to the browser event loop, so those
+-    // loops still ran as one long task and triggered Chrome's
+-    // "page unresponsive" dialog during post-worldgen finalization.  A
+-    // time-throttled emscripten_sleep(0) makes every upstream cooperative
+-    // point actually cooperative without touching any call site.  The
+-    // reentrancy guard makes nested Asyncify unwinds impossible.
+-    // 250ms keeps Chrome's unresponsiveness detector (which triggers on
+-    // multi-second stalls) comfortably away while paying the Asyncify
+-    // unwind/rewind cost five times less often than the previous 50ms,
+-    // which showed up as constant per-turn overhead during map movement.
+-    static double cdda_last_pump_yield = 0.0;
+-    static bool cdda_pump_yielding = false;
+-    const double cdda_now_ms = emscripten_get_now();
+-    if( !cdda_pump_yielding && cdda_now_ms - cdda_last_pump_yield >= 250.0 ) {
+-        cdda_pump_yielding = true;
+-        emscripten_sleep( 0 );
+-        cdda_last_pump_yield = emscripten_get_now();
+-        cdda_pump_yielding = false;
+-    }
+-#endif
++    // [CDDA-BROSER] 上流は重いループ（マップ/オーバーマップのセーブ、
++    // JSON 検証、ワールド直列化など）の随所を pump_events() で
++    // 「協調可能な点」として印付けしている。しかし web ビルドでは
++    // ここが実際にはブラウザへ制御を返していなかったため、それらの
++    // ループは 1 個の長いタスクとして走り、Chrome の
++    // 「ページが応答しません」を誘発していた。
++    //
++    // ここで yield すれば、上流の全ての協調点が呼び出し側を一切
++    // 変更せずに本当に協調的になる。
++    //
++    // 予算を 250ms から 16ms に詰めた根拠（FACTS.md F-15, F-16）:
++    //   - mapbuffer::save() は 500ms 間隔でしか進捗表示を更新せず、
++    //     yield もそこにしかない。250ms スロットルと組み合わさると
++    //     セーブ中の実効描画間隔が 500ms になっていた。
++    //   - MessageChannel はクランプを受けないので、16ms まで詰めても
++    //     スループットは落ちない。JSON ロード 60142 オブジェクトの実測で
++    //     yield 4 回（1107ms）→ 65 回（1082ms）と、むしろ速い。
++    //   - 一方で最大描画停止は 259.4ms → 32.6ms に改善する。
++    //     ユーザー要求のプログレスバーはこの改善なしでは
++    //     259ms 止まって「フリーズ」に見えるため意味を持たない。
++    CATA_WEB_YIELD();
+ 
+     // Handle all events, but ignore any keypress
+     CheckMessages();
+@@ -4156,13 +4164,36 @@ input_event input_manager::get_input_event( const keyboard_mode preferred_keyboa
+         try_sdl_update();
+     }
+ 
++    // [CDDA-BROSER] 入力待ちループの SDL_Delay( 1 ) について。
++    //
++    // Emscripten の SDL2 ポートでは SDL_Delay() が emscripten_sleep() に
++    // 変換される（SDL_systimer.c:187-202）。したがってこの 1ms 待ちは
++    // 実測 5.20ms かかる（docs/measurements/FACTS.md F-03）。
++    //
++    // 問題は「入力を待っている間」ではなく「ターン処理中」である。
++    // CDDA は 1 ターンごとにここを通って入力の有無を確認するため、
++    // 入力が無い通常のターン処理でもこの待ちを必ず払う。
++    // 粉砕（pulp_activity_actor::do_turn は 1 ターンで死体 1 個しか
++    // 処理しない）では、これが死体の数×ターン数だけ積み上がる。
++    //
++    // ブラウザにおける待ちの目的は「制御をイベントループに返して
++    // 入力イベントを配送させること」であり、時間を潰すことではない。
++    // MessageChannel でも同じ効果が得られ、しかも実測 0.075ms で済む。
++    const auto wait_for_input_events = []() {
++#if defined(EMSCRIPTEN)
++        cata_web::yield_now();
++#else
++        SDL_Delay( 1 );
++#endif
++    };
++
+     if( inputdelay < 0 ) {
+         do {
+             CheckMessages();
+             if( last_input.type != input_event_t::error ) {
+                 break;
+             }
+-            SDL_Delay( 1 );
++            wait_for_input_events();
+         } while( last_input.type == input_event_t::error );
+     } else if( inputdelay > 0 ) {
+         uint32_t starttime = SDL_GetTicks();
+@@ -4174,7 +4205,7 @@ input_event input_manager::get_input_event( const keyboard_mode preferred_keyboa
+             if( last_input.type != input_event_t::error ) {
+                 break;
+             }
+-            SDL_Delay( 1 );
++            wait_for_input_events();
+             timedout = endtime >= starttime + inputdelay;
+             if( timedout ) {
+                 last_input.type = input_event_t::timeout;
+diff --git a/src/string_editor_window.h b/src/string_editor_window.h
+index 3bce79b..871bacc 100644
+--- a/src/string_editor_window.h
++++ b/src/string_editor_window.h
+@@ -7,6 +7,7 @@
+ #include <string>
+ #include <utility>
+ 
++#include "cata_web_text_input.h"
+ #include "catacharset.h"
+ #include "cursesdef.h"
+ #include "point.h"
+@@ -49,6 +50,9 @@ class string_editor_window
+ 
+         std::unique_ptr<input_context> ctxt;
+ 
++        // [CDDA-BROWSER] 複数行エディタが生きている間 IME を許可する。
++        CATA_WEB_TEXT_INPUT_MEMBER
++
+     public:
+         string_editor_window( const std::function<catacurses::window()> &create_window,
+                               const std::string &text );
+diff --git a/src/string_input_popup.h b/src/string_input_popup.h
+index 7c41a67..35030bf 100644
+--- a/src/string_input_popup.h
++++ b/src/string_input_popup.h
+@@ -12,6 +12,7 @@
+ #include <utility>
+ #include <vector>
+ 
++#include "cata_web_text_input.h"
+ #include "color.h"
+ #include "coordinates.h"
+ #include "cursesdef.h"
+@@ -101,6 +102,11 @@ class string_input_popup // NOLINT(cata-xy)
+         bool _handled = false;
+         bool _text_changed = false;
+ 
++        // [CDDA-BROWSER] この入力欄が生きている間、シェルの IME プロキシに
++        // フォーカスを許可する。query_string() ではなくオブジェクト寿命に
++        // 紐付けるのが要点（呼び出し側は loop=false で毎フレーム呼ぶため）。
++        CATA_WEB_TEXT_INPUT_MEMBER
++
+         void create_window();
+         void create_context();
+ 
+diff --git a/src/ui_manager.cpp b/src/ui_manager.cpp
+index f16e930..114351b 100644
+--- a/src/ui_manager.cpp
++++ b/src/ui_manager.cpp
+@@ -9,13 +9,10 @@
+ #include "cata_assert.h"
+ #include "cata_imgui.h"
+ #include "cata_scope_helpers.h"
++#include "cata_web_yield.h"
+ #include "cursesdef.h"
+ #include "point.h"
+ 
+-#if defined(EMSCRIPTEN)
+-#include <emscripten.h>
+-#endif
+-
+ #if defined(TILES)
+ #include "sdl_wrappers.h"
+ #include "sdltiles.h"
+@@ -466,25 +463,21 @@ void ui_adaptor::redraw_invalidated( )
+             }
+         }
+     } while( restart_redrawing );
+-#if defined(EMSCRIPTEN)
+-    // [CDDA-BROSER] Upstream unconditionally slept here so every redraw
+-    // yields the browser a paint frame.  But each emscripten_sleep() is a
+-    // full Asyncify unwind/rewind of the entire live call stack, and the
+-    // input wait loop (SDL_Delay(1) -> emscripten_sleep(1) in the port)
+-    // already yields right after the per-keypress redraw -- so during
+-    // ordinary map movement this line only added a second stack round
+-    // trip plus a >=1ms timer to every single turn.  Throttling to ~30fps
+-    // pacing keeps long redraw sequences (animations, loading screens)
+-    // visibly painting while removing the per-turn overhead.
+-    {
+-        static double cdda_last_redraw_yield = 0.0;
+-        const double cdda_now_ms = emscripten_get_now();
+-        if( cdda_now_ms - cdda_last_redraw_yield >= 33.0 ) {
+-            emscripten_sleep( 1 );
+-            cdda_last_redraw_yield = emscripten_get_now();
+-        }
+-    }
+-#endif
++    // [CDDA-BROSER] 上流はここで無条件に emscripten_sleep( 1 ) を呼び、
++    // 再描画ごとにブラウザへ描画フレームを譲っていた。
++    //
++    // だが emscripten_sleep() は setTimeout に落ちるため、HTML Standard の
++    // タイマークランプ（ネスト 5 以上は最低 4ms）を受け、実測 5.20ms の
++    // 純粋な待ち時間が「1 ターンごとに」乗っていた。これが粉砕のような
++    // 「1 ターンで 1 死体」の作業が異常に遅い直接の原因である
++    // （docs/measurements/FACTS.md F-01, F-02, F-06）。
++    //
++    // 以前の対策はこの sleep を 33ms 間引くことだったが、それは
++    // スループットと滑らかさのトレードオフを受け入れただけで、
++    // 描画が 258.8ms 止まる副作用があった。MessageChannel はクランプを
++    // 受けないため、16ms（60fps 相当）まで詰めても速度が落ちない。
++    // 実測: 400 ターン 2202ms → 411ms、最大描画停止 258.8ms → 27.0ms。
++    CATA_WEB_YIELD();
+ 
+     imclient->end_frame();
+     imgui_frame_started = false;

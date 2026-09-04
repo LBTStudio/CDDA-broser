@@ -1,0 +1,8 @@
+out/
+*.o
+*.wasm
+*.js.map
+cata_web_yield.h
+cata_web_yield.cpp
+cata_web_text_input.h
+cata_web_text_input.cpp

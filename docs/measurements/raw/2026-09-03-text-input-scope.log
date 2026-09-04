@@ -1,0 +1,108 @@
+=== 日本語 IME スコープ（cata_web_text_input）検証ログ ===
+日付: 2026-09-03
+環境: Emscripten 3.1.51 / g++ (native) / Linux sandbox
+
+------------------------------------------------------------
+[1] Emscripten 側コンパイル検証（CDDA と同じ厳格警告）
+------------------------------------------------------------
+$ em++ -std=c++17 -c cata_web_text_input.cpp -o /tmp/cata_web_text_input.o \
+    -Wall -Wextra -Wpedantic -Werror -DEMSCRIPTEN
+EXIT=0
+-rw-r--r-- 1 user user 43056 Sep  3 18:19 /tmp/cata_web_text_input.o
+
+警告ゼロ。CDDA 本体は -Wpedantic -Werror でビルドするため、これは必須条件。
+
+------------------------------------------------------------
+[2] 非 Emscripten 側コンパイル検証（実質空 TU になること）
+------------------------------------------------------------
+$ g++ -std=c++17 -c cata_web_text_input.cpp -o /tmp/native.o \
+    -Wall -Wextra -Wpedantic -Werror
+NATIVE_EXIT=0
+-rw-r--r-- 1 user user 816 Sep  3 18:19 /tmp/native.o
+
+816 バイト = ELF ヘッダのみ。中身は #if defined(EMSCRIPTEN) で
+全部落ちており、ネイティブビルドに一切影響しないことを確認。
+
+------------------------------------------------------------
+[3] 参照カウント意味論のネイティブ単体テスト
+------------------------------------------------------------
+$ g++ -std=c++17 -DEMSCRIPTEN -Wall -Wextra -Wpedantic \
+    t.cpp cata_web_text_input.cpp -o t && ./t
+[1] RAII nest OK
+[2] flag idempotent OK
+[3] independent keys OK
+[4] mixed RAII+flag OK
+[5] no underflow OK
+DONE all checks passed
+EXIT=0
+
+（ソースは bench/text_input_scope_test.cpp として同梱）
+
+各検証の意味:
+  [1] text_input_scope の入れ子。depth 0→1→2→1→0 と遷移し、
+      depth>0 の間だけ text_input_active() が真であること。
+      入力欄が入れ子になる UI（inventory_selector 内の絞り込み欄など）で
+      外側が消えるまで IME が切れないことを保証する。
+  [2] 同一キーで set_text_input_flag(true) を 5 回呼んでも depth は 1。
+      キーバインドメニューは毎フレーム呼ぶので冪等性が必須。
+  [3] 異なるキーは独立にカウントされる。片方を下ろしても
+      もう片方が立っていれば active() は真のまま。
+  [4] RAII とフラグを混ぜても破綻しない。
+  [5] 立っていないフラグを下ろしても depth が負にならない。
+      RAII ガードが「既に下ろされたフラグ」を再度下ろす経路があるため。
+
+------------------------------------------------------------
+[4] 網羅性の静的確認
+------------------------------------------------------------
+$ grep -rn "ImGui::InputText" --include=*.cpp --include=*.h . | grep -v third-party
+cata_imgui.cpp:1032:    ImGui::InputText( "##FILTERBOX", &filter_impl->text );
+game.cpp:3117:        ImGui::InputText( "##LAST_WORD_BOX", &text );
+input_popup.cpp:206:    ImGui::InputText( input_label.c_str(), &text, flags, input_callback, this );
+
+→ 3 箇所すべてを個別に処理済み:
+   cata_imgui.cpp:1032  = draw_filter()。呼び出し元は
+                          input_context.cpp:687 の 1 箇所のみ
+                          （grep -rn "draw_filter\b" で確認）。
+                          set_text_input_flag + RAII ガードで対応。
+   game.cpp:3117        = 死亡画面の遺言欄。end_screen_ui_impl に
+                          CATA_WEB_TEXT_INPUT_MEMBER を追加。
+   input_popup.cpp:206  = string_input_popup_imgui::draw_input_control()。
+                          同クラスに CATA_WEB_TEXT_INPUT_MEMBER を追加。
+
+$ grep -rn "\.context(" --include=*.cpp . | grep -v third-party
+（string_input_popup::context( input_context & ) の呼び出し元はゼロ）
+
+→ 外部 input_context を注入する API は誰も使っていない。
+   仮に使われても、本方式はオブジェクト寿命に束ねているので影響しない。
+
+$ grep -rn "CATA_WEB_TEXT_INPUT_MEMBER" --include=*.h --include=*.cpp .
+./game.cpp:3049
+./input_popup.h:113
+./string_editor_window.h:54
+./string_input_popup.h:108
+
+→ 設置 4 箇所。基底 input_popup には意図的に入れていない
+   （number_input_popup<T> が数値欄で IME を掴んでしまうため）。
+
+------------------------------------------------------------
+[5] 読み取り
+------------------------------------------------------------
+1. 旧方式（input_context_stack.back()->get_category()）が動かなかったのは
+   Emscripten 特有のバグではなく、input_context の設計そのものに起因する。
+   operator= が __ANDROID__ 限定でスタック操作をしないため、
+   input_popup.cpp のコピー代入でカテゴリ情報が失われていた。
+
+2. 「一番上を見る」方式は入れ子 UI で原理的に成立しない。
+   inventory_ui.cpp:2698-2731 は外側のコンテキストを載せたまま
+   内側に入力欄を作るので、構築/破棄順という実装詳細に依存してしまう。
+
+3. スコープは「呼び出し」ではなく「オブジェクト寿命」に束ねるのが正しい。
+   呼び出し側は query_string( loop=false ) を毎フレーム呼ぶため、
+   関数スコープにすると毎フレーム IME が ON/OFF し未確定文字列が壊れる。
+
+4. 数値入力欄に IME を付けてはいけない。半角数字が変換対象に取られる。
+   基底クラスに置かず派生クラスに置いた唯一の理由がこれ。
+
+5. 状態変数でしか入力中を表せない箇所（キーバインド絞り込み）は
+   冪等フラグで扱うが、解除は必ず RAII に任せる。
+   break / return / 例外の全経路を人力で追うのは保守できない。

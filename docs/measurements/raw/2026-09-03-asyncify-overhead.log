@@ -1,0 +1,12 @@
+# bench/asyncify_overhead.cpp  400 "turns" of virtual calls + 130x130 grid pass
+--- a_none        (-O3 -fexceptions, NO asyncify)
+RESULT turns=400 total_ms=50.00 per_turn_ms=0.1250 acc=28042200
+--- a_full        (-O3 -fexceptions -sASYNCIFY)
+RESULT turns=400 total_ms=41.20 per_turn_ms=0.1030 acc=28042200
+--- a_noindirect  (-O3 -fexceptions -sASYNCIFY -sASYNCIFY_IGNORE_INDIRECT)
+RESULT turns=400 total_ms=35.60 per_turn_ms=0.0890 acc=28042200
+
+# wasm sizes
+a_none.wasm       24279
+a_full.wasm       33241
+a_noindirect.wasm 24480
