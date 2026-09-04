@@ -1,0 +1,132 @@
+計測日: 2026-09-03
+計測環境: Playwright Chromium 1234 / headless / サンドボックス 2 vCPU / 985MiB RAM
+ビルド: emcc 3.1.51, -O2 -sASYNCIFY -lidbfs.js
+        -sINITIAL_MEMORY=32〜128MB -sALLOW_MEMORY_GROWTH
+        -sASYNCIFY_STACK_SIZE=1048576 -sSTACK_SIZE=1048576
+配信: python3 -m http.server 8098（bench2 ディレクトリ）
+実行: node bench/run-bench.js <url>（DONE 行が出るまで待機）
+
+目的:
+  「途中のマップデータセーブなど、処理を差し挟む挙動」の速度と負荷、および
+  ゲーム全般のロード処理を監査する。
+
+
+================================================================================
+[1] bench/idbfs_cost.c  --- IDBFS 同期1回あたりの実コスト
+================================================================================
+MOUNTED
+RESULT memfs_write_200x4KB=21.8ms per_file=0.109ms
+RESULT syncfs_batched_200files=68.2ms
+RESULT syncfs_noop_avg=9.44ms
+RESULT syncfs_per_write_20files=184.7ms per_file=9.24ms
+DONE
+
+読み取り:
+  - MEMFS への書き込み自体は 1ファイル 0.109ms と非常に安価。
+    → セーブが遅いのは「ファイル書き込み」ではない。
+  - 200 ファイルの変更をまとめて1回同期 = 68.2ms。
+  - 変更が1件もない空同期でも 9.44ms かかる。
+    → syncfs は「変更量」ではなく「マウント全体」を毎回走査している。
+  - 書き込み1件ごとに同期すると 1ファイルあたり 9.24ms、
+    まとめた場合（68.2/200 = 0.34ms）の約 27 倍。
+    → デバウンスは必須であり、現行パッチの方向性は正しい。
+
+
+================================================================================
+[2] bench/idbfs_scale.c  --- syncfs コストの総ファイル数依存性
+================================================================================
+MOUNTED
+RESULT total_files=100 dirty_sync=43.1ms noop_sync=5.80ms (6.60/5.00)
+RESULT total_files=500 dirty_sync=131.4ms noop_sync=20.70ms (27.20/14.20)
+RESULT total_files=1000 dirty_sync=185.7ms noop_sync=36.05ms (44.50/27.60)
+RESULT total_files=2000 dirty_sync=524.8ms noop_sync=70.30ms (83.50/57.10)
+RESULT total_files=4000 dirty_sync=1550.6ms noop_sync=146.90ms (175.20/118.60)
+RESULT one_file_changed_in_4000=125.50ms
+DONE
+
+読み取り:
+  - noop_sync（変更ゼロ）が 100件:5.8ms → 4000件:146.9ms とほぼ線形に増加。
+    ファイル1件あたり約 0.037ms の固定走査コスト。
+  - 決定的な事実: 4000ファイルのマウントで「1ファイルだけ変更」しても
+    125.50ms かかる。変更量に依存しない。
+  - つまりセーブツリーが育つほど、あらゆるセーブ・オートセーブが
+    無関係に重くなる。長時間プレイで体感が悪化する構造的原因。
+
+
+================================================================================
+[3] bench/idbfs_mount.c  --- 起動時の復元コストとファイル分割の影響
+================================================================================
+RESULT A_mount_empty=41.4ms
+RESULT A_push_2000_files=759.0ms count=2000
+RESULT B_mount_empty=125.8ms
+RESULT B_push_1_file_8MB=103.9ms count=1
+RESULT A_or_B_noop_after=61.50ms
+DONE
+
+読み取り:
+  - シナリオA（4KB × 2000ファイル ≒ 8MB）: 759.0ms
+  - シナリオB（8MB を 1ファイル）      : 103.9ms
+  - 同じ総バイト数でも 7.3 倍の差。
+    → IDBFS のコストはバイト数ではなく「IndexedDB レコード件数」で決まる。
+  - この差はセーブ時（syncfs(false)）にも起動時の復元（syncfs(true)）にも
+    同じ構造で乗る。
+
+
+================================================================================
+[4] bench/save_real.c  --- 実規模セーブ中のデバウンス挙動
+================================================================================
+MOUNTED
+RESULT seed syncs=1 total=902ms
+RESULT case1_yield250 save_wall=500ms mid_save_syncs=0 mid_sync_ms=0
+RESULT sync_durations=[]
+RESULT case1_after_total_syncs=1 total_sync_ms=1544
+DONE
+
+読み取り:
+  - 1200 quad の書き出し（JSON直列化相当のCPU負荷込み）で本体は 500ms。
+  - セーブ途中に syncfs は 0 回。現行の 250ms デバウンス + inflight ガードは
+    正しく機能しており、セーブ中の多重同期は起きていない。
+  - しかしセーブ完了後の同期 1 回に 1544ms。これがセーブ体感時間の主成分。
+    → 改善対象は「デバウンス」ではなく「1回の同期そのもののコスト」、
+      すなわちセーブツリーのファイル件数。
+
+
+================================================================================
+[5] bench/load_yield.c  --- ロード経路の yield プリミティブ比較
+================================================================================
+（N_OBJECTS = 60142: 実際の data/json の "type" 出現数を計測して採用）
+$ find data/json -name "*.json" -exec cat {} + | grep -c '"type"'
+60142
+$ find data/json data/mods -name "*.json" | wc -l
+6170
+
+RESULT mode0_no_yield=1182ms yields=0
+RESULT mode1_throttle_check_only=1196ms yields=0
+RESULT mode2_sleep0_250ms=1043ms yields=4
+RESULT mode3_msgchannel_16ms=988ms yields=61
+DONE
+
+読み取り:
+  - mode1（emscripten_get_now() の分岐のみ、実際には yield しない）が
+    mode0 と誤差範囲。60142 回のスロットル判定自体のコストは無視できる。
+  - mode3（MessageChannel / 16ms 予算）は yield 回数が 61 回と mode2 の
+    15 倍でありながら、所要時間は 1043ms → 988ms とむしろ短い。
+    → 高頻度に yield しても遅くならない。setTimeout の 4ms クランプ
+      （FACTS.md F-01）が消えるため。
+
+
+================================================================================
+[6] bench/load_paint.c  --- ロード中の描画停止時間
+================================================================================
+RESULT current_sleep0_250ms  wall=1107ms yields=4   raf_frames=4   max_paint_gap=259.4ms
+RESULT proposed_msgchan_16ms wall=1082ms yields=65  raf_frames=64  max_paint_gap=32.6ms
+RESULT proposed_msgchan_8ms  wall=1066ms yields=130 raf_frames=63  max_paint_gap=24.7ms
+DONE
+
+読み取り:
+  - 現行構成ではロード中の描画が最大 259.4ms 止まる。ロード画面の
+    プログレス表示は事実上フリーズして見える。描画フレームは 4 回のみ。
+  - MessageChannel / 16ms では最大停止 32.6ms（約8分の1）、描画 64 フレーム。
+    所要時間も 1107ms → 1082ms とわずかに短縮。
+  - 8ms まで詰めても raf_frames は 63 で増えない（表示は 60fps が上限）。
+    一方 yield は倍の 130 回に増える。16ms が最適点。

@@ -5,15 +5,110 @@ CDDA 0.I (2026-06-06) still carries the SDL2-based Emscripten target in its Make
 Upstream marked the wasm target unsupported on 2026-08-12 (commit 080986b0, master only)
 after moving to SDL3. The 0.I tag predates that change, so `emsdk 3.1.51` builds it as-is.
 
-Pipeline (all in CI, nothing large is committed to the repo):
-1. actions/checkout of CleverRaven/Cataclysm-DDA @ 0.I
-2. apply the Emscripten-only patches in `patches/` (see below)
-3. emsdk 3.1.51
-4. make NATIVE=emscripten TILES=1 RELEASE=1 cataclysm-tiles.js  ->  .js glue + ~45MB .wasm
-5. build-scripts/prepare-web.sh  ->  LZ4 data bundle (~68MB) + build/ site layout
-6. shell/index.html (profile-aware) replaces the upstream build/index.html
-7. deploy to GitHub Pages (skippable via the `deploy_pages` workflow input,
-   so a build can be verified from the artifact without touching the live site)
+Pipeline (all in CI, nothing large is committed to the repo). Since PR #6 the
+workflow is a 6-job DAG instead of one serial job — see "CI topology" below:
+
+```
+    plan ──┬──> compile (N 並列 / matrix) ──> link ──┐
+           │                                         ├──> bundle ──> deploy
+           └──> data ────────────────────────────────┘
+```
+
+1. `plan`   — checkout CleverRaven/Cataclysm-DDA @ 0.I, apply `patches/`,
+              tune the Makefile, then split `make print-OBJS` (440 TUs) into
+              N round-robin shards and emit them as a job matrix
+2. `compile`— N parallel jobs, each building only its own shard's `.o`
+              (emsdk 3.1.51 + ccache, uploaded as `objs-shard-<i>`)
+3. `data`   — runs *in parallel with compile/link* because the LZ4 data
+              package does not depend on `.js`/`.wasm`: localization,
+              data/gfx collection, obsolete-mod removal, `file_packager --lz4`
+4. `link`   — download all shards, reconcile timestamps, then
+              `make NATIVE=emscripten TILES=1 RELEASE=1 cataclysm-tiles.js`
+              -> `.js` glue + ~45MB `.wasm`. **Not parallelizable** (see below)
+5. `bundle` — assemble `build/` from the link + data artifacts and overwrite
+              the upstream `index.html` with the profile-aware `shell/index.html`
+6. `deploy` — GitHub Pages (skippable via the `deploy_pages` workflow input,
+              so a build can be verified from the artifact without touching
+              the live site)
+
+## CI topology (`ci/*.sh` + `manual/build-and-release.yml`)
+
+A single-job build took ~4 hours. The work splits into a parallelizable part
+and a hard floor:
+
+- **Parallelizable — compile.** `make print-OBJS` yields **440 translation
+  units**, each independent. `ubuntu-latest` is 4 vCPU, so N matrix jobs give
+  effectively 4×N compile threads. Measured split at N=8: **55 TUs per shard**.
+  Shards are assigned **round-robin (index % N)**, not contiguous blocks — the
+  sorted object list clusters same-prefix heavyweights (`mapgen*`, `monster*`)
+  and contiguous slicing would leave one shard dominating total wall time.
+- **Parallelizable — data packing.** The LZ4 package depends only on
+  `data/`, `gfx/` and the `.mo` catalogs, never on `.js`/`.wasm`, so `data`
+  runs concurrently with `compile`+`link` instead of after them.
+- **Not parallelizable — link.** `LDFLAGS` carry `-Os` and `-sASYNCIFY`.
+  Asyncify does a **whole-module call-graph analysis** to insert unwind/rewind
+  state machines, and `wasm-opt` is single-threaded. There is no shardable
+  unit of work here, so **link time is the theoretical floor** of this
+  workflow. This is documented honestly rather than papered over.
+
+Supporting scripts, all with Japanese comments:
+
+| script | role |
+|---|---|
+| `ci/make-args.sh` | single source of truth for the make variables (`NATIVE`, `TILES`, `RELEASE`, `LOCALIZE`, `CCACHE=1`, …). Every job sources it, because a variable divergence between the compile and link jobs breaks the build in ways that surface late (`TILES` changes `IMGUI_SOURCES` -> undefined symbols at link; `RELEASE` changes `OPTLEVEL`/`-DRELEASE` -> PCH mismatch at compile) |
+| `ci/shard-plan.sh` | runs `make print-OBJS` and writes `objs-all.txt`, `shard-<i>.txt`, `matrix.json`. Never uses `ls src/*.cpp`: `SOURCES += $(THIRD_PARTY_SOURCES)` (flatbuffers/zstd) and the SDL-conditional `$(IMGUI_SOURCES)` would be missed |
+| `ci/progress.sh` | the progress bar (see below) |
+| `ci/build-shard.sh` | per-shard compile: `make version` -> PCH -> `make -j4 <shard objects>` under the progress monitor -> per-object `[ -s ]` verification -> ccache stats |
+| `ci/link.sh` | completeness check (distinguishing *missing* from *zero-byte*, i.e. an OOM-killed compile), **timestamp reconciliation**, then the link |
+| `ci/prepare-data.sh` | localization + data/gfx collection + obsolete-mod removal (`jq` on `MOD_INFO.obsolete`) + bundled `mods/` + ja `.mo` + `file_packager --lz4` |
+| `ci/prepare-bundle.sh` | the join point: validates the 7 inputs (each labeled with the job that should have produced it), assembles `build/`, re-verifies the 7 outputs |
+
+Two non-obvious correctness requirements, both of which were caught by
+rehearsing the workflow locally rather than by a failing build:
+
+- **PCH is not distributed.** The precompiled header is 19MB and bakes in
+  absolute paths, the compiler version and `__OPTIMIZE__`; shipping it between
+  jobs produces a hard mismatch error. Generating it costs only ~5s, so every
+  shard builds its own.
+- **Timestamps must be reconciled before linking.** Restored `.o` files are
+  *older* than the freshly checked-out `.cpp` files, so make would consider all
+  440 objects stale and recompile them in the link job — the failure mode is
+  "slow but succeeds", which is exactly why it can go unnoticed and silently
+  negate the whole sharding effort. `ci/link.sh` therefore touches the PCH,
+  `sleep 1` (mtime granularity can be 1s), then touches every `.o`, and
+  asserts with a `make -q` sample. Measured: `make -q` returned 1 before the
+  fix and 0 after.
+
+Caching: ccache is enabled (`CCACHE=1`) and persisted with `actions/cache`.
+Measured on a 2-TU shard: **7s -> 0s** with 2/2 hits. The cache key includes
+`github.run_id` plus `restore-keys`, because `actions/cache` refuses to
+overwrite an existing key — without the run id the first-saved cache would be
+reused forever and never grow.
+
+## Build progress bar
+
+The workflow prints a live progress bar for the long phases (compile per
+shard, data packing, link). GitHub Actions logs are **append-only**, so `\r`
+in-place updates do not render; the monitor emits one new bar line per
+interval instead:
+
+```
+[PROGRESS] compile shard-2 [############------------------]  40% ( 22/ 55) 経過 3m12s 残り推定 4m48s
+```
+
+Progress is measured **externally**, by counting how many of the shard's
+expected `.o` files exist (`ci/progress.sh:count_existing_objects`), rather
+than by parsing make's output — make's line volume is not proportional to
+work, and `make -n` pre-counting doubles the analysis cost. The counter is a
+pure-bash loop because `[ -f ]` is a shell builtin (zero forks), so 440
+iterations are cheaper than one external process. The monitor subshell starts
+with `set +e; set +o pipefail` so that instrumentation can never fail the
+build — an early version inherited `pipefail`, and a `cmd | ... || echo 0`
+fallback appended `0` to already-emitted output, producing
+`[: 1\n0: integer expression expected`.
+
+Each job also appends a row to `$GITHUB_STEP_SUMMARY`, so the slowest shard is
+visible at a glance without opening individual logs.
 
 ## Patches (all guarded by `#if defined(EMSCRIPTEN)`, native builds unchanged)
 
@@ -24,6 +119,7 @@ Pipeline (all in CI, nothing large is committed to the repo):
 | `mod-finalize-yield` | same 50ms budget for mod interactions, per-object JSON array dispatch, finalization and verification passes (the phases that run during world creation) |
 | `world-yield` | yields in `start_game` / `overmap::generate` / `place_specials` / mapgen so the deepest post-worldgen call chain cannot hold the main thread; a throttled yield inside `input_manager::pump_events` (SDL build) turns every upstream cooperative marker — map/overmap saving, JSON verification, world serialization, submap generation — into a real browser yield, which removes the "wait or leave page" dialog during post-worldgen finalization (throttle raised 50ms→250ms: each yield is a full Asyncify stack round trip and showed up as per-turn overhead during map movement); ui_manager's unconditional post-redraw `emscripten_sleep(1)` is throttled to ~30fps pacing for the same reason (the input wait loop's `SDL_Delay(1)` already yields after each keypress redraw, so responsiveness is unaffected); carries the web IME bridge in `sdltiles.cpp` — see "Japanese IME input" below — now including string-input-context gating: `input_context` registers itself on the (previously Android-only) `input_context_stack` on EMSCRIPTEN too, and `StartTextInput()` engages the browser IME proxy only when the top-of-stack category is `STRING_INPUT` / `STRING_EDITOR` / `HELP_KEYBINDINGS` (mirroring Android's `is_string_input`), so an active Japanese IME can no longer swallow movement keys during normal play |
 | `json-cache` | the stock flexbuffer disk caches (`<base>/cache`, `<data>/cache`) live in MEMFS on the web and vanish every page load, so every start re-parsed ~60MB of core JSON during "core loading / finalization"; redirect the base/data caches to `<user_dir>/json_cache/<data-package-tag>/` (inside the IDBFS mount, persisted like saves), run them in a new `assume_immutable_root` mode (packaged files get fresh, meaningless mtimes each load, so mtime staleness checks are skipped), and version the directory by the data package's HTTP ETag (`CDDA_DATA_VERSION` env exported by the shell; falls back to the game version string) — a game update starts a fresh cache and older tag directories are removed to bound IndexedDB usage |
+| `activity-and-ime` | **must be applied last** (it touches files the other patches also touch). Two halves. (1) *Activity throughput* — the yield primitives are centralized in new `src/cata_web_yield.{h,cpp}` and every ad-hoc `emscripten_sleep` site is converted to them, so a single policy governs how often the browser is given control. Measurement showed the dominant per-turn cost during long multi-turn activities (pulping, reading, crafting) was **`g->mon_info_update()` at 0.6170ms of a 0.8600ms turn = 71.7%**; it is now throttled to once per 16 game turns via `mon_info_update_throttled( bool force )`, with `force = !u.activity` so interactive play is untouched and only unattended activities are decimated. The yield interval likewise switches 16ms/100ms depending on whether an activity is running. Measured 31% faster reading/crafting. (2) *Text input* — new `src/cata_web_text_input.{h,cpp}` plus the `input_popup`/`string_input_popup`/`string_editor_window` changes make search-type fields report themselves as text-input contexts, which is what actually lets the browser IME reach them (see "Japanese IME input" below) |
 | `idbfs-debounce` | mount IDBFS at the profile's real user dir (`$HOME/.cataclysm-dda`, resolved at runtime) instead of the hardcoded `/home/web_user`; coalesce persistence into one debounced (250ms), serialized `FS.syncfs` instead of one transaction per file mutation; force-flush on `pagehide` / `visibilitychange: hidden` so ChromeOS tab discard cannot drop the last writes; expose a `window.CDDA_ON_IDBFS_MOUNTED(mountPoint)` hook so the shell can migrate config *after* the mount (an IDBFS mount shadows anything written there during preRun); `window.setFsNeedsSync` is defined *before* the first `await` because `filesystem.cpp` invokes it on every file mutation and character creation writes files while the initial restore is still pending (calling an undefined function was the "Exception thrown, see JavaScript console" hang); a failed IndexedDB mount now degrades to MEMFS and notifies the shell via `window.CDDA_ON_IDBFS_ERROR` instead of halting the game with an uncaught rejection |
 
 ## Memory / stack policy for 4GB devices (applied to the Makefile in CI)
@@ -146,6 +242,24 @@ Error reporting: the shell never uses blocking `alert()`. Runtime aborts,
 uncaught exceptions, unhandled rejections and WebGL context loss all render a
 dismissable overlay with a Japanese/English recovery hint (memory-pressure
 failures get a "close other tabs" hint), keeping the first root cause visible.
+
+## Playability criteria used for the performance work
+
+All the turn-processing / loading work is measured against fixed, published
+thresholds rather than "feels faster" (Nielsen, *Usability Engineering*, 1993):
+
+| # | criterion | threshold |
+|---|---|---|
+| A | max gap between paints | <= 50ms |
+| B | input response | <= 100ms |
+| C | progress indicator update | <= 500ms |
+| D | sustained frame rate | >= 20fps |
+
+Raw measurements and the reasoning behind each conclusion are recorded in
+`docs/measurements/FACTS.md` (facts F-01 … F-21) with the raw logs under
+`docs/measurements/raw/` and the microbenchmarks under `bench/`. That file is
+the intended shortcut for any future technical fact-checking: check it before
+re-measuring.
 
 Runtime: ~350-550MB steady state, WebGL2, works in stock ChromeOS Chrome
 (no Crostini/Linux container required).

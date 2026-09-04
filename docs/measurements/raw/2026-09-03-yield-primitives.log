@@ -1,0 +1,18 @@
+# bench/yield_kinds.c  (emcc 3.1.51, -O3 -sASYNCIFY, Chromium headless)
+RESULT scheduler_yield_available=1
+RESULT kind=emscripten_sleep(0) depth=0 n=300 per_yield_ms=4.2503
+RESULT kind=emscripten_sleep(0) depth=256 n=300 per_yield_ms=4.2900
+RESULT kind=MessageChannel depth=0 n=300 per_yield_ms=0.0747
+RESULT kind=MessageChannel depth=256 n=300 per_yield_ms=0.1057
+RESULT kind=scheduler.yield depth=0 n=300 per_yield_ms=0.0350
+RESULT kind=scheduler.yield depth=256 n=300 per_yield_ms=0.0720
+RESULT kind=requestAnimationFrame depth=0 n=60 per_yield_ms=15.9100
+RESULT kind=requestAnimationFrame depth=256 n=60 per_yield_ms=16.6133
+DONE
+
+# bench/yield_cost.c  (stack-depth sweep of emscripten_sleep(0))
+RESULT sleep0 depth=0 n=200 total_ms=850.60 per_yield_ms=4.2530
+RESULT sleep0 depth=32 n=200 total_ms=839.00 per_yield_ms=4.1950
+RESULT sleep0 depth=256 n=200 total_ms=860.10 per_yield_ms=4.3005
+RESULT sleep0 depth=1024 n=200 total_ms=860.60 per_yield_ms=4.3030
+DONE

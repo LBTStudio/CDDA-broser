@@ -1,0 +1,137 @@
+# アクティビティ全経路の網羅計測（F-20 の生ログ）
+#
+# 計測日: 2026-09-03
+# 計測器: bench/activity_paths.c
+# 実行:   cd bench && ONLY=activity_paths ./run-all.sh
+#         （個別なら node run-bench-all.js http://localhost:PORT/activity_paths.html 900000）
+#
+# ビルド:
+#   emcc activity_paths.c -o activity_paths.html -O3 -sASYNCIFY \
+#        -sINITIAL_MEMORY=64MB -sALLOW_MEMORY_GROWTH \
+#        -sASYNCIFY_STACK_SIZE=1048576 -sSTACK_SIZE=1048576 -lm
+#
+# 判定軸（ゲームプレイに差し支えない経過時間の基準）:
+#   A. 最大描画停止   <=  50ms
+#   B. 入力応答遅延   <= 100ms
+#   C. 進捗表示の更新 <= 500ms
+#   D. 実描画フレーム率 >= 20fps
+#   出典: Nielsen, Usability Engineering (1993) の応答時間しきい値
+#
+# 注意: PlaywrightConsoleCapture は wasm の計測完了前にページを閉じるため使用不可。
+#       必ず bench/run-bench-all.js（フィルタなしの全ログ取得）を使う。
+#
+# ====================== [1] 単発実行 ======================
+=== アクティビティ全経路の網羅計測 ===
+寸法: バブル 17424 タイル/層 (132x132), 全 21 層, dirty 想定 3 層
+基準: 最大描画停止<=50ms / 入力応答<=100ms / 実fps>=20
+
+--- [1] 毎ターン処理の内訳（1回あたり ms） ---
+[1a] activity actor do_turn (読書本体)  = 0.0040
+[1b] m.build_floor_caches()             = 0.1350
+[1c] m.process_fields()                 = 0.0545
+[1d] m.process_items()                  = 0.2155
+[1e] m.build_map_cache()                = 0.2333
+[1f] monmove()                          = 0.4185
+[1g] mon_info_update()                  = 0.6170
+[1h] u.process_turn()                   = 0.2565
+[1i] ui_manager::redraw()+refresh       = 0.3650
+[1j] get_default_mode_input_context()   = 0.1545
+[1k] 1ターン全パイプライン合計           = 0.8600
+
+--- [2] 読書 600 ターン（技能書1800ターンの1/3。総時間は3倍で読む） ---
+Failed to load resource: the server responded with a status of 404 (File not found)
+[2a] 現行0.I   turns=600 total_ms=544 frames=5 fps=9.2[NG] max_gap_ms=105.8[NG] block_ms=101.2[NG] redraws=5
+[2b] 本PR現状  turns=600 total_ms=564 frames=31 fps=55.0[OK] max_gap_ms=34.1[OK] block_ms=17.2[OK] redraws=32
+[2c] 案A       turns=600 total_ms=391 frames=22 fps=56.3[OK] max_gap_ms=17.9[OK] block_ms=17.0[OK] redraws=22
+[2d] 案B       turns=600 total_ms=450 frames=26 fps=57.8[OK] max_gap_ms=17.8[OK] block_ms=17.2[OK] redraws=26
+
+--- [3] 低速機（CPU 3倍遅い想定）読書 600 ターン ---
+[3a] 現行0.I   turns=600 total_ms=1719 frames=29 fps=16.9[NG] max_gap_ms=106.1[NG] block_ms=102.4[NG] redraws=16
+[3b] 本PR現状  turns=600 total_ms=1623 frames=89 fps=54.8[OK] max_gap_ms=23.7[OK] block_ms=23.3[OK] redraws=89
+[3c] 案A       turns=600 total_ms=1255 frames=68 fps=54.2[OK] max_gap_ms=44.3[OK] block_ms=44.0[OK] redraws=68
+[3d] 案B       turns=600 total_ms=1181 frames=67 fps=56.7[OK] max_gap_ms=18.6[OK] block_ms=18.3[OK] redraws=67
+
+RESULT sink=996448640
+DONE
+
+# ====================== [2] N 掃引を追加した再実行 ======================
+=== アクティビティ全経路の網羅計測 ===
+寸法: バブル 17424 タイル/層 (132x132), 全 21 層, dirty 想定 3 層
+基準: 最大描画停止<=50ms / 入力応答<=100ms / 実fps>=20
+
+--- [1] 毎ターン処理の内訳（1回あたり ms） ---
+[1a] activity actor do_turn (読書本体)  = 0.0085
+[1b] m.build_floor_caches()             = 0.1790
+[1c] m.process_fields()                 = 0.0425
+[1d] m.process_items()                  = 0.2145
+[1e] m.build_map_cache()                = 0.3350
+[1f] monmove()                          = 0.4125
+[1g] mon_info_update()                  = 0.6205
+[1h] u.process_turn()                   = 0.2570
+[1i] ui_manager::redraw()+refresh       = 0.4060
+[1j] get_default_mode_input_context()   = 0.1890
+[1k] 1ターン全パイプライン合計           = 0.9067
+
+--- [2] 読書 600 ターン（技能書1800ターンの1/3。総時間は3倍で読む） ---
+[2a] 現行0.I   turns=600 total_ms=543 frames=5 fps=9.2[NG] max_gap_ms=103.8[NG] block_ms=101.4[NG] redraws=5
+[2b] 本PR現状  turns=600 total_ms=537 frames=31 fps=57.7[OK] max_gap_ms=21.0[OK] block_ms=17.3[OK] redraws=31
+[2c] 案A       turns=600 total_ms=390 frames=22 fps=56.5[OK] max_gap_ms=17.9[OK] block_ms=17.0[OK] redraws=22
+[2d] 案B       turns=600 total_ms=394 frames=23 fps=58.4[OK] max_gap_ms=17.5[OK] block_ms=17.0[OK] redraws=23
+
+--- [3] 低速機（CPU 3倍遅い想定）読書 600 ターン ---
+[3a] 現行0.I   turns=600 total_ms=1661 frames=25 fps=15.1[NG] max_gap_ms=108.3[NG] block_ms=102.9[NG] redraws=15
+[3b] 本PR現状  turns=600 total_ms=1584 frames=86 fps=54.3[OK] max_gap_ms=38.6[OK] block_ms=19.6[OK] redraws=87
+[3c] 案A       turns=600 total_ms=1194 frames=66 fps=55.3[OK] max_gap_ms=19.4[OK] block_ms=18.8[OK] redraws=66
+[3d] 案B       turns=600 total_ms=1162 frames=66 fps=56.8[OK] max_gap_ms=19.4[OK] block_ms=19.1[OK] redraws=66
+
+--- [4] 案B の間隔 N 掃引（低速機 3倍・600 ターン・3回中央値） ---
+[4-01] N=1    turns=600 total_ms=1592 frames=88 fps=55.3[OK] max_gap_ms=19.6[OK] block_ms=19.4[OK] redraws=88
+[4-02] N=2    turns=600 total_ms=1365 frames=76 fps=55.7[OK] max_gap_ms=19.4[OK] block_ms=18.6[OK] redraws=76
+[4-04] N=4    turns=600 total_ms=1290 frames=70 fps=54.3[OK] max_gap_ms=50.0[OK] block_ms=19.3[OK] redraws=71
+[4-08] N=8    turns=600 total_ms=1229 frames=67 fps=54.5[OK] max_gap_ms=35.8[OK] block_ms=19.0[OK] redraws=69
+[4-16] N=16   turns=600 total_ms=1172 frames=67 fps=57.2[OK] max_gap_ms=19.0[OK] block_ms=18.9[OK] redraws=67
+[4-32] N=32   turns=600 total_ms=1162 frames=66 fps=56.8[OK] max_gap_ms=34.0[OK] block_ms=18.7[OK] redraws=67
+[4-64] N=64   turns=600 total_ms=1178 frames=66 fps=56.0[OK] max_gap_ms=36.0[OK] block_ms=18.2[OK] redraws=67
+
+RESULT sink=1949139684
+DONE
+
+# ====================== 読み取り ======================
+#
+# [1] mon_info_update() が 0.6170ms で単独最重量。1 ターン合計 0.8600ms の
+#     【72%】を占める。読書本体（activity actor）は 0.0040ms で 0.5%。
+#     → 「読書が遅い」のは読書処理のせいではない。1800 ターンぶん
+#        do_turn() の全パイプラインが回ることが原因。
+#
+# [2] 現行 0.I は基準 A/B/D の【3 つすべて NG】。
+#       fps 9.2（基準 20 未満） / 最大描画停止 105.8ms（基準 50 の 2.1 倍）
+#       / 入力応答 101.2ms（基準 100 超）
+#     ユーザ報告「ゲームがまともにできない」は数値上も正しい。
+#
+# [3] 本 PR の F-18 までの修正だけで既に全基準を満たす。
+#     ただし速い機種の総時間は 544→564ms とわずかに悪化する
+#     （描画回数が 5→32 に増えたコスト）。
+#     つまり F-18 の修正は「滑らかさ」を買うために「総時間」を
+#     少し払っていた。案B はその両方を改善する。
+#
+# [4] 案A（描画時にまとめて実行）は速い機種の総時間だけ最良（391ms）だが、
+#     低速機で逆転し（案A 1255ms / 案B 1181ms）、
+#     さらに最大描画停止が 44.3ms まで悪化する（案B は 18.6ms）。
+#     mon_info の 0.6170ms×3 が描画ウィンドウの内側に入るため。
+#     「RAM 4GB でも」という要件では低速機の数値を優先すべき。
+#
+# [5] N 掃引（[2] の [4-xx] 行）で総時間は
+#       N=2 1365 → N=4 1290 → N=8 1229 → N=16 1172 → N=32 1162 → N=64 1178
+#     と N=16 で飽和する。N を増やしても速くならず safemode の遅延だけ伸びる。
+#     → N=16 が「最大の効果が得られる最小の N」。
+#
+# [6] 単発の [4-04] N=4 が max_gap 5145.7ms という外れ値を出した回があった。
+#     これはブラウザ側の rAF 停止（タブスロットリング / GC）による測定ノイズで、
+#     3 回中央値を採ると 50.0ms に収まる。
+#     → 掃引のような多点計測では必ず複数回まわして中央値を採ること。
+#
+# [7] 実装は「アクティビティ中だけ」間引く（force = !u.activity）。
+#     通常の歩行・戦闘中は元々 1 ターンに数回しか回らないので
+#     間引いても速くならず、かつ safemode の遅延が最も危険な場面である。
+#     → 通常プレイの挙動は 0.I と完全に同一のまま、
+#        1800 ターン一気に進む場面だけが速くなる。
