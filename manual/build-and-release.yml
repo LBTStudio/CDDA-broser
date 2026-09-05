@@ -456,6 +456,29 @@ jobs:
           source "$EMSDK/emsdk_env.sh"
           CDDA_LINK_OPT="${{ inputs.link_opt }}" bash ../ci/link.sh ../shard-plan/objs-all.txt
 
+      # ------------------------------------------------------------
+      # 生成物の検証【配信事故の再発防止】
+      # ------------------------------------------------------------
+      # 以前ここは test -s（サイズが 0 でない）だけを見ていた。
+      # その結果 run 33985475507（#75）は全ジョブ緑で配信まで通り、
+      # ブラウザで開くと起動しないという事故になった:
+      #
+      #   CompileError: WebAssembly.instantiateStreaming():
+      #   size 7657177 > maximum function size 7654321 @+249007
+      #
+      # V8 には「1 関数あたり 7,654,321 バイト」の実装上限があり、
+      # これを超えると instantiate できない。しかし em++ /
+      # wasm-opt の終了コードは【0】なので CI では分からない。
+      #
+      # 動いていた #71 と比較すると、最大関数は
+      #   #71: 7,459,141 B = 上限の 97.45%（余裕 195KB のみ）
+      #   #75: 7,657,177 B = 上限の 100.04%（超過 2,856B）
+      # であり、巨大関数は【元から存在して崖っぷちだった】。
+      #
+      # よって「今回の設定を直す」だけでは不十分で、
+      # 生成物を毎回測って上限未満であることを確認する必要がある。
+      # ci/verify-wasm.sh が code section を解析して最大関数を測り、
+      # 上限超過なら失敗、95% 超なら警告を出す。
       - name: Verify linked binary
         working-directory: cdda
         run: |
@@ -464,6 +487,10 @@ jobs:
           test -s cataclysm-tiles.wasm
           echo "リンク結果を確認しました:"
           ls -lh cataclysm-tiles.js cataclysm-tiles.wasm
+
+          # V8 の 1 関数上限を超えていないか検証する。
+          # ここで落とすのが目的（ユーザーのブラウザで発覚させない）。
+          bash ../ci/verify-wasm.sh cataclysm-tiles.wasm
 
       - name: Upload linked binary
         uses: actions/upload-artifact@v4
