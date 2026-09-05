@@ -172,7 +172,19 @@ Actions タブ →「Build CDDA 0.I WebAssembly」→ Run workflow。
 
 ## 技術詳細
 docs/ARCHITECTURE.md を参照。ローカルビルド: `bash scripts/build-local.sh`（8GB RAM 以上の Linux/mac）。
-実測データと技術的な事実確認の記録は `docs/measurements/FACTS.md`（F-01〜F-26）にまとめています。
+実測データと技術的な事実確認の記録は `docs/measurements/FACTS.md`（F-01〜F-27）にまとめています。
+
+- **F-27**: 配信された wasm がブラウザで起動しない事故
+  （`size 7657177 > maximum function size 7654321`）の原因を特定しました。
+  V8 には「1 関数あたり 7,654,321 バイト」の上限があり、
+  1 つの関数が 7.6MB に膨らんで超過していました。
+  動いていた過去のビルドと比較すると **上限の 97.45%（余裕 195KB）**
+  という崖っぷちで、**元から壊れる寸前だった**ことが判明しました。
+  原因は Binaryen の `-ocimfs`（既定 -1 = 無制限）で、
+  制限を入れると最大関数が **−87%** になり動作は変わりません。
+  併せて `ci/verify-wasm.sh` を追加し、
+  **同種の事故は CI で止まる**ようにしました
+  （em++ の終了コードは壊れていても 0 のため、生成物を直接測る必要があります）。
 
 - **F-26**: リンク時間の 71% を占める `inlining-optimizing` パスは、
   emsdk 3.1.51 同梱の Binaryen 116 より後の上流 PR（#6966 / #6967）で
