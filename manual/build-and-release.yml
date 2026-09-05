@@ -101,13 +101,13 @@ jobs:
 
       - name: Apply Emscripten web runtime patches
         working-directory: cdda
-        run: ../ci/apply-patches.sh ../patches
+        run: bash ../ci/apply-patches.sh ../patches
 
       - name: Tune web memory for 4GB devices
         working-directory: cdda
         run: |
           set -euo pipefail
-          CDDA_LINK_OPT="${{ inputs.link_opt }}" ../ci/tune-makefile.sh
+          CDDA_LINK_OPT="${{ inputs.link_opt }}" bash ../ci/tune-makefile.sh
 
       - name: Setup emsdk (for wasm-opt --version)
         uses: mymindstorm/setup-emsdk@v14
@@ -120,7 +120,7 @@ jobs:
         run: |
           set -euo pipefail
           source "$EMSDK/emsdk_env.sh"
-          ./ci/setup-binaryen.sh
+          bash ./ci/setup-binaryen.sh
 
       - name: Build shard plan
         id: plan
@@ -128,7 +128,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          ../ci/shard-plan.sh "${{ inputs.shards }}" ../shard-plan
+          bash ../ci/shard-plan.sh "${{ inputs.shards }}" ../shard-plan
 
           echo "matrix=$( cat ../shard-plan/matrix.json )" >> "$GITHUB_OUTPUT"
 
@@ -139,7 +139,7 @@ jobs:
 
           # 【重要】リンク結果のキャッシュキーを計算
           # 入力（.o + リンク引数）が同じなら、wasm を再生成せず過去のものを再利用する
-          link_fingerprint="$( ../ci/link-fingerprint.sh ../shard-plan/objs-all.txt )"
+          link_fingerprint="$( bash ../ci/link-fingerprint.sh ../shard-plan/objs-all.txt )"
           echo "link_cache_key=${link_fingerprint}" >> "$GITHUB_OUTPUT"
           echo "リンク結果キャッシュ: ${link_fingerprint}"
 
@@ -202,13 +202,13 @@ jobs:
 
       - name: Apply Emscripten web runtime patches
         working-directory: cdda
-        run: ../ci/apply-patches.sh ../patches
+        run: bash ../ci/apply-patches.sh ../patches
 
       - name: Tune web memory for 4GB devices
         working-directory: cdda
         run: |
           set -euo pipefail
-          CDDA_LINK_OPT="${{ inputs.link_opt }}" ../ci/tune-makefile.sh
+          CDDA_LINK_OPT="${{ inputs.link_opt }}" bash ../ci/tune-makefile.sh
 
       - name: Download shard plan
         uses: actions/download-artifact@v4
@@ -260,7 +260,7 @@ jobs:
         run: |
           set -euo pipefail
           source "$EMSDK/emsdk_env.sh"
-          ../ci/build-shard.sh \
+          bash ../ci/build-shard.sh \
             "${{ matrix.shard }}" \
             "../shard-plan/shard-${{ matrix.shard }}.txt"
 
@@ -296,7 +296,7 @@ jobs:
 
       - name: Apply Emscripten web runtime patches
         working-directory: cdda
-        run: ../ci/apply-patches.sh ../patches
+        run: bash ../ci/apply-patches.sh ../patches
 
       - name: Install dependencies
         run: |
@@ -314,7 +314,7 @@ jobs:
         run: |
           set -euo pipefail
           source "$EMSDK/emsdk_env.sh"
-          ../ci/prepare-data.sh ..
+          bash ../ci/prepare-data.sh ..
 
       - name: Upload packed data
         uses: actions/upload-artifact@v4
@@ -351,13 +351,13 @@ jobs:
 
       - name: Apply Emscripten web runtime patches
         working-directory: cdda
-        run: ../ci/apply-patches.sh ../patches
+        run: bash ../ci/apply-patches.sh ../patches
 
       - name: Tune web memory for 4GB devices
         working-directory: cdda
         run: |
           set -euo pipefail
-          CDDA_LINK_OPT="${{ inputs.link_opt }}" ../ci/tune-makefile.sh
+          CDDA_LINK_OPT="${{ inputs.link_opt }}" bash ../ci/tune-makefile.sh
 
       - name: Download shard plan
         uses: actions/download-artifact@v4
@@ -420,7 +420,7 @@ jobs:
         run: |
           set -euo pipefail
           source "$EMSDK/emsdk_env.sh"
-          ./ci/setup-binaryen.sh
+          bash ./ci/setup-binaryen.sh
 
       - name: Restore ccache
         uses: actions/cache@v4
@@ -454,7 +454,7 @@ jobs:
         run: |
           set -euo pipefail
           source "$EMSDK/emsdk_env.sh"
-          CDDA_LINK_OPT="${{ inputs.link_opt }}" ../ci/link.sh ../shard-plan/objs-all.txt
+          CDDA_LINK_OPT="${{ inputs.link_opt }}" bash ../ci/link.sh ../shard-plan/objs-all.txt
 
       - name: Verify linked binary
         working-directory: cdda
@@ -510,7 +510,7 @@ jobs:
 
       - name: Assemble distribution bundle
         working-directory: cdda
-        run: ../ci/prepare-bundle.sh
+        run: bash ../ci/prepare-bundle.sh
 
       - name: Copy custom index
         run: |

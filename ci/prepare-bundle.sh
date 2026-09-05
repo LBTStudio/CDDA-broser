@@ -143,4 +143,6 @@ echo "[BUNDLE] .data ${data_mib} MiB + .wasm ${wasm_mib} MiB = ${total_mib} MiB"
 echo "[BUNDLE] （この合計がブラウザのメモリ消費の下限の目安です）"
 echo "=================================================================="
 
-step_summary "| bundle | 7 ファイル | - | 合計 $( du -sh build | cut -f1 ) / メモリ下限目安 ${total_mib} MiB |"
+# ヘッダは自分で書く（ジョブ間で共有されないため。F-22-4）
+step_summary_table "配布物のまとめ" \
+    "| bundle | 7 ファイル | - | 合計 $( du -sh build | cut -f1 ) / メモリ下限目安 ${total_mib} MiB |"
