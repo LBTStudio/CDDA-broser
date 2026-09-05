@@ -133,7 +133,23 @@
 #
 # 使い方:
 #   source "$EMSDK/emsdk_env.sh"
-#   ../ci/setup-binaryen.sh
+#   bash ../ci/setup-binaryen.sh
+#
+# 【必ず bash 経由で呼ぶこと】
+# run 33982035545（#74）はこのスクリプトを ./ci/setup-binaryen.sh と
+# 直接実行して次のように落ちた:
+#
+#   ./ci/setup-binaryen.sh: Permission denied
+#   ##[error]Process completed with exit code 126
+#
+# git は実行権限（100755/100644）を記録するが、
+# 新規ファイルの追加時に取りこぼしやすい。実際 main では
+# ci/setup-binaryen.sh と ci/link-fingerprint.sh が 100644 のまま
+# 取り込まれ、plan ジョブが即座に失敗した。
+#
+# 権限ビットに依存する呼び方は「1 ファイル漏れるだけでビルド全体が
+# 止まる」ので、ワークフロー側は全て `bash <script>` の形に統一した。
+# こうすればモードが 644 でも動く（構造的に事故らない）。
 set -uo pipefail
 # 【set -e を使わない】
 # このスクリプトは「失敗しても続行」が仕様である。
