@@ -211,4 +211,6 @@ echo "[DATA] 同梱前:       $bundle_size"
 echo "[DATA] .data:        $data_size (${data_mib} MiB)"
 echo "=================================================================="
 
-step_summary "| data pack | $bundle_size 分 | $( format_hms "$pack_elapsed" ) | .data ${data_mib} MiB |"
+# ヘッダは自分で書く（ジョブ間で共有されないため。F-22-4）
+step_summary_table "データ同梱" \
+    "| data pack | $bundle_size 分 | $( format_hms "$pack_elapsed" ) | .data ${data_mib} MiB |"

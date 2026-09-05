@@ -1,0 +1,318 @@
+================================================================
+wasm-opt / Binaryen 版差し替えによるリンク高速化 生ログ
+2026-09-04
+対応する要約: docs/measurements/FACTS.md F-26
+================================================================
+
+(0) 測定環境と、その限界
+----------------------------------------------------------------
+$ nproc
+2
+  ※ 本番の ubuntu-latest は 4 コア。したがって「4 コアでどうなるか」は
+    直接測れていない。BINARYEN_CORES=1 と 2 の比から Amdahl で外挿した。
+
+$ df -h /tmp
+tmpfs           493M  493M     0 100% /tmp     ← 作業中に使い切った
+tmpfs           493M     0  493M   0% /tmp     ← 消えた（作業物を失った）
+  ※ 以降、計測物は /home/user/bench/ と /home/user/bn/ に置いた。
+
+$ ldd /home/user/bn/binaryen-version_132/bin/wasm-opt
+        statically linked
+  ※ これが「バイナリ 1 個の差し替えで済む」根拠。
+
+本番で実際に使われている wasm-opt コマンド行
+（run 33730439512 のログ 5095 行目より採取。以降の計測は全てこれを使用）:
+
+wasm-opt --strip-target-features --post-emscripten
+         -Os --low-memory-unused
+         --asyncify
+         --pass-arg=asyncify-imports@env.invoke_*,env.__asyncjs__*,
+            *.fd_sync,*.emscripten_promise_await,*.emscripten_idb_*,
+            *.emscripten_sleep,*.emscripten_wget_data,
+            *.emscripten_scan_registers,*.emscripten_lazy_load_code,
+            *._load_secondary_module,*.emscripten_fiber_swap,*._emval_await
+         --zero-filled-memory
+         --pass-arg=directize-initial-contents-immutable
+         cataclysm-tiles.wasm -o cataclysm-tiles.wasm
+         --mvp-features --enable-threads --enable-bulk-memory
+         --enable-mutable-globals --enable-sign-ext
+
+
+(1) 「全コアを使う」記述 vs 実測 1.05 コア の矛盾解決
+----------------------------------------------------------------
+web.dev の Binaryen 解説（原文）:
+
+  "Binaryen's internal IR uses compact data structures and is designed
+   for completely parallel code generation and optimization, using all
+   available CPU cores."
+
+本番実測（ps サンプル 2218 件):
+  CPU%  平均 105 / 最大 112 / 最小 103   → 4 コア中 1.05 コア
+  RSS   最大 6.46GB / 16GB
+  起動回数 1
+
+版 116 のソースを読んで解決:
+  src/passes/Inlining.cpp
+    isFunctionParallel() { return true; }     ← 候補「探索」は並列
+    ...
+    1105:  // perform inlinings TODO: parallelize   ← 「適用」が逐次
+
+⇒ 矛盾ではなく、ドキュメントが設計思想（将来形）を述べていた。
+  PR #6966 がこの TODO を解消した。
+
+並列化率の測定（BINARYEN_CORES を 1 と 2 に固定、N=4000、-Os）:
+  版 116 : 1コア 7.13s / 2コア 5.82s → 1.23x → p ≈ 37%（4コア上限 1.38x）
+  版 132 : 1コア 5.54s / 2コア 4.95s → 1.12x → p ≈ 21%
+⇒ 「コアを増やす」策は原理的に死んだ。
+
+
+(2) 上流 PR の探索（方針転換が決定的だった）
+----------------------------------------------------------------
+「フラグを調整する」→「ホットパス Inlining.cpp のコミット履歴を追う」
+に切り替えたところ、我々の版（116 / 2023年12月）より後に
+まさにこのパスを高速化する PR 群が見つかった。
+
+#6966 2024-09-24 Parallelize the actual inlining part of the Inlining pass
+  "the actual inlining - copying the code into the target function -
+   was done sequentially. It turns out that a lot of work happens there:
+   this PR makes the pass over 2x faster."
+
+#6967 2024-09-24 Avoid repeated ReFinalize etc. when inlining
+  "This turns out to be very important, a 5x speedup on a large
+   real-world wasm file I am looking at. ... in one case we inline
+   over 1,000 times into a function!"
+
+#6969 2024-09-26 Stop creating unneeded blocks around calls when inlining
+#7669 2025-06-30 Always inline trivial calls that always shrink
+#7670 2025-07-07 Generalize "trivial call" flag to other simple instructions
+#7820 2025-08-18 Inlining: Make MaxCombinedBinarySize configurable
+
+$ curl -s api.github.com/repos/WebAssembly/binaryen/releases | grep tag_name
+  version_132  ← 最新（採用候補）
+  version_131 ... version_116
+
+
+(3) 実測: 116 / 120 / 132
+----------------------------------------------------------------
+【版 120 は 116 より遅い】(重要な反例)
+  116 :  9.216s / 9.090s
+  120 : 13.113s / 12.772s   ← 明確に遅い
+⇒ 「新しい=速い」ではない。120 だけを見て打ち切れば
+  「更新は無意味」と誤結論していた。
+
+【本番同一引数 / N=4000 = 8579 関数 / 入力 1.89MB / 3 回反復】
+$ vs $W116 "116_Os  r1" work/m4000.wasm -Os
+116_Os        r1         wall=  6.163s out=   771797 rc=0
+132_O2        r1         wall=  3.742s out=   772860 rc=0
+132_O2_oc20   r1         wall=  3.188s out=   775875 rc=0
+116_Os        r2         wall=  5.712s out=   771797 rc=0
+132_O2        r2         wall=  3.771s out=   772860 rc=0
+132_O2_oc20   r2         wall=  3.494s out=   775875 rc=0
+116_Os        r3         wall=  5.739s out=   771797 rc=0
+132_O2        r3         wall=  3.436s out=   772860 rc=0
+132_O2_oc20   r3         wall=  3.589s out=   775875 rc=0
+
+平均: 116_Os 5.871s / 132_O2 3.650s / 132_O2_oc20 3.424s
+⇒ 116 -Os → 132 -O2 で -37.8%、出力サイズ +0.14%
+
+【規模依存性】(-Os 同条件で 116→132)
+  N=1000  2.163s → 2.213s  (+2%)
+  N=2000  3.211s → 2.930s  (-9%)
+  N=4000  5.845s → 4.394s  (-25%)
+⇒ 大きいほど効く。本番はさらに大きいので -37.8% は下限。
+
+【inlining-optimizing 単独】(BINARYEN_PASS_DEBUG=1)
+  rawin_O2    1.055 → 0.772
+  scraw1000   1.922 → 1.511
+  scraw2000   3.849 → 2.990    (-21〜-27%)
+
+【132 の出力は 116 より小さい場合もある】
+  N=4000 / -Os : 771,797 → 754,871 B (-2.2%)
+
+
+(4) 【致命的】132 は -Os / -O3 / -Oz で壊れる
+----------------------------------------------------------------
+$ em++ -Os $LDFLAGS t.o -o b132_Os.js     # 成功する（rc=0）
+$ node b132_Os.js
+failed to asynchronously prepare wasm: LinkError:
+WebAssembly.instantiate(): Import #0 "a" "a":
+function import requires a callable
+Aborted(LinkError: WebAssembly.instantiate(): Import #0 "a" "a":
+function import requires a callable)
+
+切り分け:
+  (a) 116 に戻して同一フラグ           → 動く  ⇒ 132 起因で確定
+  (b) -sASYNCIFY を外す                 → 無関係
+      -sWASM_BIGINT / -lembind /
+      -sLZ4 / -sFORCE_FILESYSTEM を外す → いずれも無関係
+  ⇒ 最適化レベルだけが要因
+
+正当性テスト（Asyncify + 仮想呼び出し + インライン候補、期待 SUM=10650）:
+$ 116 -Os  : rc=0 out=SUM=10650|
+$ 116 -O2  : rc=0 out=SUM=10650|
+$ 116 -O1  : rc=0 out=SUM=10650|
+$ wasm-opt version 132 (version_132)
+$ 132 -Os  : rc=0 out=failed to asynchronously prepare wasm: LinkError: ...
+$ 132 -O2  : rc=0 out=SUM=10650|
+$ 132 -O1  : rc=0 out=SUM=10650|
+
+⇒ -O2 と -O1 は安全。-Os は使用禁止。
+⇒ 注意: 破損している -Os でも rc=0 である。
+  終了コードでは守れないので tune-makefile.sh の入口で拒否する。
+
+$ em++ ... （差し替え後の唯一の副作用）
+em++: warning: unexpected binaryen version: 132 (expected 115) [-Wversion-check]
+
+
+(5) -ocimfs（one-caller-inline-max-function-size）
+----------------------------------------------------------------
+既定値は -1（無制限）。CLI 可変。
+  -O0 コンパイル入力     : 2.34 → 1.31s (-44%, サイズ +9%)
+  -O2/-O3 入力（本番相当）: 1.65 → 1.03s (-38%, サイズ +1.0%)
+  132 / N=4000           : 3.650 → 3.424s (-6%)  ← レンジが重なる
+
+$ gzip -9 比較
+O2     raw=  772860 gz=  62063
+oc20   raw=  775875 gz=  61886
+⇒ -6% は誤差と区別できず、raw サイズは増える。既定にはしない。
+
+【emcc は -ocimfs を受け付けない（静かに無視される罠）】
+$ em++ -O2 -ocimfs 20 ...
+em++: error: 20: No such file or directory ("20" was expected to be an
+input file, based on the commandline arguments provided)
+  ...しかしビルドは素の -O2 として【成功する】。
+  tools/link.py の get_binaryen_passes にフックが無い。
+
+正しい経路:
+  -sBINARYEN_EXTRA_PASSES=--one-caller-inline-max-function-size=20
+  （EMCC_DEBUG=1 のログ 110 行目で -O2 の後に追加されるのを確認）
+  settings.js L1393: "appended at the end of the list of passes"
+
+
+(6) 却下した案（すべて実測のうえで）
+----------------------------------------------------------------
+(A) コア増強              : p≈37%、4コア上限 1.38x。実測 1.05 コア → 無効
+(B) メモリ増強            : RSS 6.46GB / 16GB。余っている → 無効
+(C) wasm-opt の多重起動   : 起動回数 1。分割の余地なし → 無効
+(D) 入力を小さくする      : 既に適用済み（Makefile L425-426 OPTLEVEL=-O3）
+(E) Asyncify 除去(JSPI)   : -Os 5.81→5.40s (7%) / -O2 4.70→4.40s (6%) → 小さい
+(F) asyncify-ignore-indirect : 正当性が壊れる（下記）→ 却下
+(G) Binaryen 120          : 116 より遅い → 却下
+(H) 配信を -O1 にする     : gzip 62,063 → 62,870 B → 却下
+
+(F) の詳細。数字だけは魅力的だった:
+  -Os 2.77 → 2.54s / 177,893 → 166,808 B / asyncify IR 23,166 → 10,210
+しかし node 実行で:
+  通常 ASYNCIFY            => before=0 / after=42        正しい
+  ASYNCIFY_IGNORE_INDIRECT => before=0 / after=0
+                              before=0 / after=42        【誤り】
+  戻り値が壊れ、main が 2 回実行された。
+  CDDA は yield を含む仮想呼び出しを多用するので使用不可。
+  ⇒ 時間とサイズだけで採用していたら、静かに壊れた成果物を配布していた。
+
+
+(7) 本番への外挿と、その信頼度
+----------------------------------------------------------------
+基準: wasm-opt 242 分（4h02m、リンク段の 93%）
+
+  116 -O2         ≈ 196 分
+  132 -O2（採用） ≈ 148 分（2h28m）
+  132 -O2 + oc20  ≈ 143 分
+
+【留保】PR #6967 が直した O(n²) 的最悪ケース（1 関数に 1000 回インライン）
+は合成ベンチで再現できなかった。genq.py で K 個の関数を M 個の巨大関数に
+インラインさせようとしたが、-O3 ではコンパイラが自明な関数を畳んでしまい、
+-O0 で作り直しても O(n²) 的な挙動は観測できなかった。
+本番でそれが起きていれば短縮幅はさらに大きい。
+⇒ -37.8% は【下限】である。
+
+
+(8) 採用した構成
+----------------------------------------------------------------
+  wasm-opt      : 版 132（ci/setup-binaryen.sh が差し替え）
+  最適化レベル  : -O2 固定（-Os / -O3 / -Oz は禁止、-O1 は検証用）
+  -ocimfs       : 既定では使わない
+  見込み        : 242 分 → 約 148 分
+  gzip          : 62,141 → 62,126 B（4GB 機の基準を満たす）
+
+差し替え資産:
+  https://github.com/WebAssembly/binaryen/releases/download/
+    version_132/binaryen-version_132-x86_64-linux.tar.gz
+  sha256 = 195ddc94f9bc89f45abdabb0b9eea86023d727ba90eac8b35b80f2544fc30572
+
+実装の動作確認（ci/setup-binaryen.sh）:
+$ ./ci/setup-binaryen.sh
+[BINARYEN] 現在の wasm-opt: wasm-opt version 116 (version_116-184-g9e636855b)
+[BINARYEN] 取得: https://github.com/.../binaryen-version_132-x86_64-linux.tar.gz
+[BINARYEN] sha256 一致を確認
+[BINARYEN] 取得した wasm-opt: wasm-opt version 132 (version_132)
+[BINARYEN] 元の wasm-opt を .../wasm-opt.orig に保存
+[BINARYEN] OK: wasm-opt を差し替えました → wasm-opt version 132 (version_132)
+rc=0
+
+$ ./ci/setup-binaryen.sh          # 2 回目（冪等性）
+[BINARYEN] 現在の wasm-opt: wasm-opt version 132 (version_132)
+[BINARYEN] すでに版 132 です（何もしません）
+rc=0
+$ wasm-opt.orig --version
+wasm-opt version 116 (...)        ← バックアップが 132 で潰れていない
+
+失敗経路（すべて rc=0 で 116 のまま続行することを確認）:
+  A: sha256 不一致       rc=0 ver=116
+  B: 存在しない版(404)   rc=0 ver=116
+  C: CDDA_BINARYEN=0     rc=0
+  D: EMSDK 未設定        rc=0
+  E: 一時領域が作れない  rc=0 ver=116
+
+  ※ /tmp が 84MB しか空いていない状態で実際に踏んだ失敗:
+    curl: (23) Failure writing output to destination, passed 16375 returned 11429
+    → 対策として (1) CDDA_TMPDIR で置き場所を変更可能にし、
+      (2) tarball から wasm-opt 1 個だけを取り出す実装にした
+      （全展開すると bin/ だけで 260MB 超になる）。
+
+最適化レベルの入口拒否（ci/tune-makefile.sh）:
+$ CDDA_LINK_OPT=Os ../ci/tune-makefile.sh
+Os  rc=1 : ERROR: CDDA_LINK_OPT=Os は使用できません。
+O3  rc=1 : ERROR: CDDA_LINK_OPT=O3 は使用できません。
+Oz  rc=1 : ERROR: CDDA_LINK_OPT=Oz は使用できません。
+O9  rc=1 : ERROR: CDDA_LINK_OPT は O2 か O1 を指定してください（現在: O9）
+O2  rc=0 : [TUNE] リンク最適化を -Os から -O2 に変更
+O1  rc=0 : [TUNE] リンク最適化を -Os から -O1 に変更
+
+指紋が wasm-opt の版を区別することの確認（ci/link-fingerprint.sh）:
+  116 -> d830d4fecce27202
+  132 -> 0e3e9dcdb4509710
+
+
+(9) 一般化できる教訓
+----------------------------------------------------------------
+1. ドキュメントの「並列」を信じる前に実測し、合わなければソースを読む。
+   web.dev の記述と 1.05 コアの矛盾は Inlining.cpp の
+   `TODO: parallelize` 1 行を読むまで解けなかった。
+
+2. ホットスポットが特定できたら、上流のそのファイルのコミット履歴を追う。
+   フラグ調整では -6%（誤差）だったが、上流 PR を取り込むだけで -37.8%。
+
+3. 1 つの新版だけで「更新は無意味」と結論してはいけない。
+   120 は 116 より遅かった。132 まで試して初めて勝ちが見えた。
+
+4. 時間とサイズだけで採用を決めてはいけない。
+   asyncify-ignore-indirect は両方良かったが正当性が壊れていた。
+
+5. 終了コード 0 は「正しい成果物」を意味しない。
+   132 -Os はビルド成功・実行時破損。守れないものは入口で禁止する。
+
+6. フラグが静かに無視されることがある。
+   em++ -O2 -ocimfs 20 はエラーを出しながら素の -O2 として成功していた。
+   実際のコマンド行（EMCC_DEBUG=1）で確認する。
+
+【自分が踏んだ測定バグの記録】(同じ失敗を繰り返さないため)
+  ・-sASYNCIFY 済みの入力を再度 --asyncify にかけて
+    Fatal: Module::addExport: asyncify_start_unwind already exists (rc=1)
+    にも関わらず time は「もっともらしい秒数」を出していた。
+  ・awk の引数順を間違えて out= と rc= の列が入れ替わっていた。
+  ・bash の `cmd_a || cmd_b` で fallback を書いたが、関数が常に 0 を返すため
+    fallback が発火せず、存在しないファイルを測って古い出力サイズを読んでいた。
+  ・pathological ケースを -O3 で作ったらコンパイラに畳まれて消えた。
+  ⇒ いずれも「rc と出力値を必ず確認する」ことで検出できた。
+    時間だけを見ていたら全部見逃していた。

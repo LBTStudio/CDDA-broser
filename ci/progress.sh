@@ -245,6 +245,179 @@ progress_monitor_stop() {
     return 0
 }
 
+# ==================================================================
+# リンク専用の進捗監視
+# ==================================================================
+# 【なぜ専用の仕組みが必要なのか】
+#
+# リンク段に汎用の progress_monitor_start を使うと、分母が
+# 「.js と .wasm」の 2 個しか取れず、実際のログはこうなった:
+#
+#   [PROGRESS] link (単一スレッド) [------] 0% (0/2) 経過 19m01s
+#   [PROGRESS] link (単一スレッド) [###---] 50% (1/2) 経過 19m31s
+#      … 以降 40 分以上ずっと 50% のまま …
+#   [PROGRESS] link (単一スレッド) [###---] 50% (1/2) 経過 41m31s
+#
+# 40 分のうち 22 分が「1 つの目盛り」に押し込まれており、
+# 進んでいるのか固まっているのか区別できない。
+# 利用者から「進捗が分かり難い」と指摘された直接の原因である。
+#
+# 【解決の方針】
+# emcc は Python プロセスで、内部の各ツールを【順番に子プロセスとして】
+# 起動する。したがって子孫プロセスの名前を見れば
+# 「いま何をしているか」が分かる（F-22-3 で実測確認）。
+#
+#   wasm-ld → wasm-emscripten-finalize → wasm-opt
+#   → acorn-optimizer.mjs ×3 → wasm-opt → acorn-optimizer.mjs
+#
+# 工程名を出せば、分子が動かなくても
+# 「wasm-opt を 20 分やっている」と分かる。これは
+# 「50% のまま 20 分」とは情報量が決定的に違う。
+#
+# 【重要な注意】プロセスを名前で探すのに pgrep -f を使ってはいけない。
+# 監視スクリプト自身のコマンドラインがパターンに一致し、
+# 「全工程を同時に検出」という不可能な結果が出る（実際に踏んだ）。
+# 必ず /proc/PID/comm（実行ファイル名そのもの）を読む。
+# ------------------------------------------------------------------
+
+# ------------------------------------------------------------------
+# progress_descendant_pids <PID>
+# 指定 PID とその全子孫の PID を改行区切りで返す。
+#
+# /proc/<pid>/task/<pid>/children は「直接の子」しか返さないので、
+# 再帰的に辿る必要がある。
+# ------------------------------------------------------------------
+progress_descendant_pids() {
+    local p="$1" kids k
+    printf '%s\n' "$p"
+    # children が読めない（既に終了した等）場合は静かに諦める。
+    kids="$( cat "/proc/$p/task/$p/children" 2>/dev/null )" || return 0
+    for k in $kids; do
+        progress_descendant_pids "$k"
+    done
+    return 0
+}
+
+# ------------------------------------------------------------------
+# progress_link_phase <PID>
+# emcc の子孫から「いま動いている工程名」を人間向けの日本語で返す。
+# 該当が無ければ空文字を返す。
+# ------------------------------------------------------------------
+progress_link_phase() {
+    local root="$1" p comm
+    for p in $( progress_descendant_pids "$root" ); do
+        comm="$( cat "/proc/$p/comm" 2>/dev/null )" || continue
+        case "$comm" in
+            wasm-ld)
+                echo "wasm-ld（オブジェクト結合）"; return 0 ;;
+            wasm-emscripten-final*)
+                # comm は 15 文字で切られることがあるので前方一致で見る。
+                echo "finalize（メタデータ確定）"; return 0 ;;
+            wasm-opt)
+                echo "wasm-opt（Asyncify 変換＋最適化）"; return 0 ;;
+            wasm-metadce)
+                echo "metadce（未使用コード除去）"; return 0 ;;
+            node)
+                echo "acorn-optimizer（JS 側の最適化）"; return 0 ;;
+            clang|clang-*|cc1plus)
+                echo "clang（再コンパイルが発生しています）"; return 0 ;;
+        esac
+    done
+    echo ""
+    return 0
+}
+
+# ------------------------------------------------------------------
+# progress_link_monitor_start <監視対象PID> <ラベル> [間隔秒] [想定秒]
+#
+# リンク中の emcc プロセスを監視し、工程名つきで進捗を出す。
+#
+# 出力例:
+#   [LINK 進捗] 経過 21m30s / 想定 45m00s (47%) [##############----------------]
+#   [LINK 進捗]   いま実行中: wasm-opt（Asyncify 変換＋最適化）
+#   [LINK 進捗]   メモリ 使用7333MiB / 全体15989MiB 空き8655MiB
+#   [LINK 進捗]   工程履歴: wasm-ld → finalize → wasm-opt
+#
+# 【パーセンテージの根拠を正直に書く】
+# リンクの内部進捗は「あと何割」を厳密には取れない。
+# そこで【想定所要時間に対する経過割合】を出す。
+# これは推定であって実測ではないので、ラベルに「想定」と明記する。
+# 想定を超えたら 99% で止め、「想定超過」と表示する
+# （100% と出したまま終わらないのが最も不安を与えるため）。
+# ------------------------------------------------------------------
+progress_link_monitor_start() {
+    local watch_pid="$1" label="$2" interval="${3:-30}" expect="${4:-2700}"
+    local started_at
+    started_at="$( date +%s )"
+
+    (
+        # 監視はビルドを妨げてはならない。何が起きても回り続ける。
+        set +e
+        set +o pipefail
+
+        local history='' last_phase=''
+        while true; do
+            local now elapsed pct phase mem
+            now="$( date +%s )"
+            elapsed=$(( now - started_at ))
+
+            # 想定に対する割合。想定超過時は 99% で張り付かせる。
+            if [ "$expect" -gt 0 ]; then
+                pct=$(( elapsed * 100 / expect ))
+                [ "$pct" -gt 99 ] && pct=99
+            else
+                pct=0
+            fi
+
+            phase="$( progress_link_phase "$watch_pid" )"
+            [ -z "$phase" ] && phase="（工程の切り替え中）"
+
+            # 工程が変わった瞬間を履歴に積む。
+            # これがあると「どこで時間を食ったか」が後から分かる。
+            if [ "$phase" != "$last_phase" ] && [ "$phase" != "（工程の切り替え中）" ]; then
+                local short="${phase%%（*}"
+                if [ -z "$history" ]; then
+                    history="$short"
+                else
+                    history="$history → $short"
+                fi
+                last_phase="$phase"
+                # 工程が変わったことは重要な情報なので単独行で強調する。
+                echo "[LINK 工程] $( format_hms "$elapsed" ) 時点で「$phase」に入りました"
+            fi
+
+            if [ "$elapsed" -gt "$expect" ]; then
+                echo "[LINK 進捗] 経過 $( format_hms "$elapsed" ) / 想定 $( format_hms "$expect" ) を超過 $( progress_bar "$pct" 100 30 )"
+            else
+                echo "[LINK 進捗] 経過 $( format_hms "$elapsed" ) / 想定 $( format_hms "$expect" ) (${pct}%) $( progress_bar "$pct" 100 30 )"
+            fi
+            echo "[LINK 進捗]   いま実行中: $phase"
+
+            # メモリは必ず出す。リンクは 7GB 超を使うので、
+            # OOM 目前なのか正常なのかを常に見えるようにしておく。
+            mem="$( free -m 2>/dev/null | sed -n '2p' | awk '{ printf "使用%sMiB / 全体%sMiB 空き%sMiB", $3, $2, $7 }' )"
+            [ -n "$mem" ] && echo "[LINK 進捗]   メモリ $mem"
+
+            [ -n "$history" ] && echo "[LINK 進捗]   工程履歴: $history"
+
+            sleep "$interval"
+        done
+    ) &
+    PROGRESS_LINK_MONITOR_PID="$!"
+}
+
+# ------------------------------------------------------------------
+# progress_link_monitor_stop
+# ------------------------------------------------------------------
+progress_link_monitor_stop() {
+    if [ -n "${PROGRESS_LINK_MONITOR_PID:-}" ]; then
+        kill "$PROGRESS_LINK_MONITOR_PID" 2>/dev/null || true
+        wait "$PROGRESS_LINK_MONITOR_PID" 2>/dev/null || true
+        PROGRESS_LINK_MONITOR_PID=''
+    fi
+    return 0
+}
+
 # ------------------------------------------------------------------
 # step_summary <行...>
 # GitHub Actions の実行結果ページ（Summary）に Markdown を追記する。
@@ -258,4 +431,33 @@ step_summary() {
     else
         printf '%s\n' "$@"
     fi
+}
+
+# ------------------------------------------------------------------
+# step_summary_table <見出し> <行...>
+#
+# 【なぜ専用の関数が必要なのか】
+# $GITHUB_STEP_SUMMARY は【ジョブごとに独立】である（公式仕様）。
+#   「GITHUB_STEP_SUMMARY is unique for each step in a job」
+#   「If multiple jobs generate summaries, the job summaries are
+#     ordered by job completion time」
+#
+# 従来は plan ジョブで表ヘッダを書き、compile/link/data/bundle が
+# 行だけを追記していたが、ジョブを越えて共有されないため
+# 【ヘッダの無い行が完了時刻順（＝不定順）に並ぶ】結果になり、
+# 表として描画されていなかった。これが「進捗が分かり難い」
+# 第 2 の原因である（F-22-4）。
+#
+# そこで各ジョブが【自分でヘッダを含む完結したブロック】を書く。
+# こうすればジョブの完了順に関係なく、必ず表として読める。
+# ------------------------------------------------------------------
+step_summary_table() {
+    local heading="$1"; shift
+    step_summary \
+        "### ${heading}" \
+        "" \
+        "| 工程 | 対象 | 所要 | 成果物 |" \
+        "|---|---|---|---|" \
+        "$@" \
+        ""
 }

@@ -217,4 +217,10 @@ fi
 # ログは何千行にもなるので、1 行の要約を Summary に出す。
 # N シャードが並ぶので、どのシャードが遅いか一目で分かり、
 # 次回のシャード数の見直しに使える。
-step_summary "| compile shard-$SHARD_ID | $TOTAL 個 | $( format_hms "$compile_elapsed" ) | $obj_bytes |"
+# 【重要】ヘッダを自分で書く。
+# $GITHUB_STEP_SUMMARY はジョブごとに独立で、ジョブを越えて
+# 共有されない（公式仕様。F-22-4 参照）。以前は plan ジョブが
+# 書いたヘッダを共有できる前提だったが、それは成り立たず、
+# ヘッダの無い行が完了時刻順に並ぶだけだった。
+step_summary_table "コンパイル shard-$SHARD_ID" \
+    "| compile shard-$SHARD_ID | $TOTAL 個 | $( format_hms "$compile_elapsed" ) | $obj_bytes |"

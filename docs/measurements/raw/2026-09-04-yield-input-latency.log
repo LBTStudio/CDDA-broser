@@ -1,0 +1,61 @@
+# 行動処理中の「入力応答遅延」実測（判断基準 B: 100ms 以内）
+# 測定日: 2026-09-04
+# 環境: Chromium (playwright chromium-1234), Linux sandbox
+# ビルド: emcc 3.1.51 -O2 -sASYNCIFY -sASYNCIFY_STACK_SIZE=1MB
+# 測定コード: bench/yield_input_latency.c
+#
+# 測り方:
+#   scheduler.postTask(priority:'user-blocking') を「入力相当」として積み、
+#   yield を挟むループの最中に、それが何 ms 後に実行されるかを測る。
+#   user-blocking は Chrome のスケジューリング仕様で
+#   「ユーザーがブロックされている＝入力応答」の最上位優先度。
+
+RESULT scheduler_api_available=1
+RESULT kind=setTimeout(0)    rep=0 input_latency_ms=0.600
+RESULT kind=setTimeout(0)    rep=1 input_latency_ms=0.200
+RESULT kind=setTimeout(0)    rep=2 input_latency_ms=0.300
+RESULT kind=MessageChannel   rep=0 input_latency_ms=0.200
+RESULT kind=MessageChannel   rep=1 input_latency_ms=0.300
+RESULT kind=MessageChannel   rep=2 input_latency_ms=0.200
+RESULT kind=scheduler.yield  rep=0 input_latency_ms=0.100
+RESULT kind=scheduler.yield  rep=1 input_latency_ms=0.100
+RESULT kind=scheduler.yield  rep=2 input_latency_ms=0.100
+RESULT sink=37798147798
+DONE
+
+# 集計
+#   setTimeout(0)    平均 0.367ms  （ばらつき 0.200-0.600）
+#   MessageChannel   平均 0.233ms  （ばらつき 0.200-0.300）← 現行実装
+#   scheduler.yield  平均 0.100ms  （ばらつき なし）
+#
+# ==================================================================
+# 【結論】scheduler.yield への変更は「見送る」
+# ==================================================================
+# scheduler.yield は現行の MessageChannel より 2.3 倍速く、
+# しかもばらつきが完全にゼロ（3 回すべて 0.100ms）である。
+# 数字としては明確に優れている。
+#
+# しかし【3 方式すべてが基準 B（100ms）を 270 倍以上の余裕で
+# 満たしている】。0.233ms と 0.100ms の差は 0.133ms であり、
+# 判断基準に対して意味を持たない。
+#
+# 一方で変更に伴う不利益は実在する:
+#   ・scheduler.yield は Chrome 129+ / Edge のみ。
+#     Firefox・Safari は未実装（2026-09 時点）。
+#     フォールバックの二重実装が必要になり、
+#     「どちらの経路で動いているか」で挙動が変わる面が増える。
+#   ・cata_web_yield.cpp を変えると
+#     patches/cdda-0I-emscripten-activity-and-ime.patch の
+#     再生成が必要になる（1483 行のパッチ）。
+#   ・Asyncify の巻き戻しが絡む箇所なので、
+#     不具合が出たときの切り分けコストが高い。
+#
+# 【判断】測定可能な利得が判断基準に届かない一方、
+# 複雑さとリスクは確実に増える。よって採用しない。
+# これは「速い方を選ばない」判断であり、
+# 数字だけを見れば逆の結論になる。だからこそ記録に残す。
+#
+# 再検討すべき条件:
+#   ・基準 B を 1ms 未満に厳しくする要求が出た場合
+#   ・Firefox / Safari が scheduler.yield を実装し、
+#     フォールバックが不要になった場合

@@ -45,11 +45,65 @@ and a hard floor:
 - **Parallelizable — data packing.** The LZ4 package depends only on
   `data/`, `gfx/` and the `.mo` catalogs, never on `.js`/`.wasm`, so `data`
   runs concurrently with `compile`+`link` instead of after them.
-- **Not parallelizable — link.** `LDFLAGS` carry `-Os` and `-sASYNCIFY`.
-  Asyncify does a **whole-module call-graph analysis** to insert unwind/rewind
-  state machines, and `wasm-opt` is single-threaded. There is no shardable
-  unit of work here, so **link time is the theoretical floor** of this
-  workflow. This is documented honestly rather than papered over.
+- **Not parallelizable, but not fixed either — link.** Measured from 2218 `ps`
+  samples of the 4h23m run 33730439512: **`wasm-opt` alone is 4h02m = 93%** of
+  the whole build, running at **1.05 of the 4 available cores** with a 6.46 GB
+  peak RSS out of 16 GB. Upsizing the runner or adding RAM therefore cannot
+  help, and `wasm-opt` is invoked exactly once so there is nothing to shard.
+  **Correction of an earlier claim in this document:** the bottleneck is *not*
+  Asyncify's whole-module analysis. `BINARYEN_PASS_DEBUG=1` at realistic scale
+  gives `inlining-optimizing` **71%**, `asyncify` **16%**, 31 other passes 13%.
+  Because inlining dominates, lowering the link optimization level really does
+  shrink this stage — measured with the production argument list:
+  `-O2` is **−20%** wall time at +2.7% size, `-O1` is **−78%** at +2.6% size.
+  The workflow exposes this as the `link_opt` input (`O2` = release default,
+  ~3h14m; `O1` = verification, ~53min), consumed by `ci/tune-makefile.sh` via
+  `CDDA_LINK_OPT`. Raw data:
+  `docs/measurements/raw/2026-09-04-link-breakdown-real.log` and
+  `docs/measurements/raw/2026-09-04-wasm-opt-scaling.log`.
+- **The single biggest win — upgrading Binaryen (F-26).** The apparent
+  contradiction between web.dev's claim that Binaryen uses "all available CPU
+  cores" and our measured 1.05 cores was resolved by reading the source:
+  v116 `src/passes/Inlining.cpp:1105` says `// perform inlinings TODO:
+  parallelize`. Candidate *scanning* was parallel; the *application* was not.
+  Upstream PRs **#6966** ("makes the pass over 2x faster") and **#6967**
+  ("a 5x speedup on a large real-world wasm file") landed in **Sept 2024** —
+  i.e. after the Binaryen 116 bundled with emsdk 3.1.51 (Dec 2023), and they
+  target precisely our 71% hot pass. Swapping in **version 132** measures
+  **−37.8%** (5.871s → 3.650s, 3 repeats, production arguments, N=4000) for
+  **+0.14%** output size, and the advantage *grows* with module size (+2% at
+  N=1000, −9% at N=2000, −25% at N=4000), so −37.8% is a **lower bound**.
+  Projected link stage: **242min → ~148min**. `ci/setup-binaryen.sh` performs
+  the swap (sha256-pinned, idempotent, and **falling back to 116 on every
+  failure path with exit 0** so a network outage can never fail a 4-hour
+  build). Only `wasm-opt` is replaced, not the whole emsdk: the binary is
+  statically linked, so the sole side effect is a harmless
+  `unexpected binaryen version` warning.
+  **Pitfall that must not be re-introduced:** version 132 with `-Os`/`-O3`/
+  `-Oz` produces a build that **succeeds with exit code 0 but fails at
+  runtime** with `LinkError: Import #0 "a" "a": function import requires a
+  callable` (import-name minification disagreeing with the emscripten 3.1.51
+  JS glue). Since the exit code cannot protect us, `ci/tune-makefile.sh`
+  **rejects those levels at the entry point**; `-O2` and `-O1` are both
+  verified correct. Raw data:
+  `docs/measurements/raw/2026-09-04-wasm-opt-binaryen-version.log`.
+- **Skippable — link.** `wasm-opt` is a deterministic transform of
+  (440 `.o` files + link arguments), so identical inputs give a bit-identical
+  `.js`/`.wasm`. `ci/link-fingerprint.sh` hashes the `.o` **contents** (not
+  names or mtimes — restored artifacts always have fresh mtimes, so an
+  mtime-sensitive key would never hit), plus `CDDA_MAKE_ARGS`, `CDDA_LINK_OPT`,
+  the `Makefile`, `ci/*.sh`, `emcc --version` **and `wasm-opt --version`**.
+  The last one is separate on purpose: `ci/setup-binaryen.sh` replaces
+  `wasm-opt` independently of emcc, so without it a run that fell back to 116
+  would happily reuse a cache entry produced by 132 (or vice versa) and ship a
+  binary that was not built with the intended optimizer. The link job
+  restores/saves
+  `linkout-<fp>` around the link step, so a run that changes only `data/`,
+  `gfx/`, mods, the HTML wrapper or workflow settings skips the whole 4-hour
+  stage and finishes in ~15 minutes. `restore-keys` is deliberately omitted:
+  a prefix match could serve a `.wasm` built from different inputs, which
+  would silently publish a stale build. Any missing `.o` invalidates the
+  fingerprint, and the artifacts are re-checked with `-s` even on a cache hit.
 
 Supporting scripts, all with Japanese comments:
 
@@ -58,8 +112,10 @@ Supporting scripts, all with Japanese comments:
 | `ci/make-args.sh` | single source of truth for the make variables (`NATIVE`, `TILES`, `RELEASE`, `LOCALIZE`, `CCACHE=1`, …). Every job sources it, because a variable divergence between the compile and link jobs breaks the build in ways that surface late (`TILES` changes `IMGUI_SOURCES` -> undefined symbols at link; `RELEASE` changes `OPTLEVEL`/`-DRELEASE` -> PCH mismatch at compile) |
 | `ci/shard-plan.sh` | runs `make print-OBJS` and writes `objs-all.txt`, `shard-<i>.txt`, `matrix.json`. Never uses `ls src/*.cpp`: `SOURCES += $(THIRD_PARTY_SOURCES)` (flatbuffers/zstd) and the SDL-conditional `$(IMGUI_SOURCES)` would be missed |
 | `ci/progress.sh` | the progress bar (see below) |
+| `ci/setup-binaryen.sh` | replaces `$EMSDK/upstream/bin/wasm-opt` with Binaryen **132** (sha256-pinned) before the fingerprint is computed — the single largest speedup at **−37.8%** (F-26). Extracts only the one 17MB binary from the tarball, because unpacking everything exceeds 260MB and overflowed a 493MB `/tmp` in practice (`curl: (23) Failure writing output to destination`); `CDDA_TMPDIR` redirects the scratch area. **Every failure path keeps 116 and exits 0** — this is an optimization, so it must never fail a 4-hour build. Idempotent, keeps `wasm-opt.orig`, verifies the new binary *before* overwriting and rolls back if the post-swap check fails |
 | `ci/build-shard.sh` | per-shard compile: `make version` -> PCH -> `make -j4 <shard objects>` under the progress monitor -> per-object `[ -s ]` verification -> ccache stats |
-| `ci/link.sh` | completeness check (distinguishing *missing* from *zero-byte*, i.e. an OOM-killed compile), **timestamp reconciliation**, then the link |
+| `ci/link-fingerprint.sh` | content hash of the link inputs, used as the `linkout-<fp>` cache key so an unchanged link can be skipped entirely. `sort`s the object list (find order is filesystem-dependent) and hashes contents, never mtimes. Emits `incomplete-<epoch>` — a deliberately never-matching key — if any `.o` is absent |
+| `ci/link.sh` | completeness check (distinguishing *missing* from *zero-byte*, i.e. an OOM-killed compile), **`.d` deletion** (F-25 — without it 406/440 objects are recompiled), **timestamp reconciliation**, then the link. Its expected-duration display is derived from `CDDA_LINK_OPT` (O1 53min / O2 148min with Binaryen 132 / Os 242min) instead of the old 45min constant, which was off by 5× against the measured 4h02m |
 | `ci/prepare-data.sh` | localization + data/gfx collection + obsolete-mod removal (`jq` on `MOD_INFO.obsolete`) + bundled `mods/` + ja `.mo` + `file_packager --lz4` |
 | `ci/prepare-bundle.sh` | the join point: validates the 7 inputs (each labeled with the job that should have produced it), assembles `build/`, re-verifies the 7 outputs |
 
@@ -78,6 +134,22 @@ rehearsing the workflow locally rather than by a failing build:
   `sleep 1` (mtime granularity can be 1s), then touches every `.o`, and
   asserts with a `make -q` sample. Measured: `make -q` returned 1 before the
   fix and 0 after.
+- **Timestamps alone are not enough — the `.d` files must be deleted.**
+  Touching mtimes did *not* stop the recompilation: run 33888888789 still
+  rebuilt **406 of 440** objects in the link job, wasting 19 minutes. Cause:
+  `-include ${OBJS:.o=.d}` pulls in dependency files whose paths are
+  **absolute**, and `mymindstorm/setup-emsdk` unpacks emsdk into a
+  **different random UUID directory in every job** (all 9 jobs of that run
+  differed). From the link job those headers do not exist, and make treats a
+  target with a *missing prerequisite* as always out of date — no amount of
+  touching can override that. Two independently-reproduced mechanisms apply:
+  (A) the PCH's `.d` is stale, so the PCH is regenerated and every
+  PCH-dependent `src/*.o` follows; (B) each object's own `.d` is stale.
+  Mechanism A alone exactly explains the 406-vs-34 split, because the
+  `third-party` pattern rule does not depend on the PCH. `ci/link.sh` now
+  deletes all `.d` files before linking — they describe "which object to
+  rebuild when a source changes", which is information the link stage never
+  needs. Verified: recompilation dropped to zero. See FACTS.md F-25.
 
 Caching: ccache is enabled (`CCACHE=1`) and persisted with `actions/cache`.
 Measured on a 2-TU shard: **7s -> 0s** with 2/2 hits. The cache key includes
@@ -138,11 +210,20 @@ visible at a glance without opening individual logs.
   peak; 16MB is 0.8% of the 2GB cap and puts the limit far above it).
 - `STACK_SIZE 256KB -> 4MB`: wasm stack exhaustion during mapgen recursion is
   the other SIGILL-style trap; 4MB of one-time heap removes it with margin.
-- Link at upstream's `-Os`: an `-O0` link was used previously to skip the
-  long Binaryen stage, but it leaves the Asyncify instrumentation
-  unoptimized — measurably sluggish gameplay on 4GB devices — and roughly
-  doubles the wasm download. `-Os` matches upstream's shipped web builds;
-  the CI heartbeat keeps the long link stage observable.
+- Link optimization, now selectable (`CDDA_LINK_OPT`, default `O2`): an `-O0`
+  link was used long ago to skip the Binaryen stage, but it leaves the Asyncify
+  instrumentation unoptimized — measurably sluggish gameplay on 4GB devices —
+  and roughly doubles the wasm download, so `-O0` stays rejected. The default
+  moved from upstream's `-Os` to `-O2` after measuring **−20% link time for
+  +2.7% size** with the production argument list. `-O1` is offered as a
+  verification-only level (**−78%**, +2.6% size): with it a full build finishes
+  in roughly an hour instead of four, which is what makes an
+  edit → build → play iteration loop practical. `-O1` still runs Binaryen's
+  optimizer over the Asyncify output, so it is not the `-O0` failure mode.
+  A previous entry here claimed `-O2` was 41% faster and that `-O1` inflated
+  the module ~18×; both figures were wrong, measured on a 246 KB toy module
+  instead of the real one. See
+  `docs/measurements/raw/2026-09-04-wasm-opt-scaling.log`.
 - Compile at `-O3` (upstream web default was `-Os`): map movement runs the
   mapgen/event/AI hot loops through this code and `-O3`'s vectorization and
   inlining reduce per-turn CPU. The size cost is bounded because the `-Os`
