@@ -1,0 +1,399 @@
+CDDA 0.I ブラウザ版: 入力の取りこぼしを直し、操作を実時間追従にする
+
+============================================================
+このパッチが直す問題
+============================================================
+報告:
+  「マップを移動している感じ、反応というか追従性がやはり悪い。
+    短時間に何度も移動すると追いつかなくなる」
+
+【真因】押したキーが実際に捨てられていた。yield のコストではない。
+
+`CheckMessages()`（src/sdltiles.cpp）は 1 回の呼び出しで
+    while( SDL_PollEvent( &ev ) ) { ... last_input = ...; }
+と SDL キューを最後まで飲み干す。波括弧対応で厳密に確認したところ、
+このループは 577 行（3166-3742 行）あるが、ループ本体レベルの
+break は SDL_TEXTINPUT 用の 1 個だけで、移動キーが通る
+keycode モード（game.cpp:2676 `input_context( "DEFAULTMODE",
+keyboard_mode::keycode )`）では発火しない。
+
+受け皿は `last_input` という単一変数なので、飲んだイベントは
+1 つ残らず上書きされ、呼び出し側に渡るのは最後の 1 個だけになる。
+
+ブラウザではこれが致命的に効く。wasm がメインスレッドを占有して
+いる間、ブラウザは keydown を DOM 側に溜め込み、yield した瞬間に
+溜まった分をまとめて配送する。したがって
+    ターン処理中に 5 回押した
+      → yield で 5 個まとめて届く
+      → CheckMessages が 5 個飲む
+      → 4 個消滅
+となる。
+
+さらに `pump_events()`（同 :4096）は
+    CheckMessages();
+    last_input = input_event();   ← 飲んだ結果を明示的に破棄
+という構造で、これが src 内 35 箇所から呼ばれる。移動 1 回の
+ターン処理でも do_turn.cpp:306 を通るため、
+「ターン処理中に押したキーは全部消える」ことになる。
+
+------------------------------------------------------------
+実測（bench/input_queue_drop.c / bench/input_queue_fix.c）
+------------------------------------------------------------
+A) ターン処理中に pump_events() を挟む場合
+
+  | 押した回数 | 修正前に処理された | 修正後 |
+  |---|---|---|
+  |  1 | 0 |  1 |
+  |  2 | 0 |  2 |
+  |  3 | 0 |  3 |
+  |  5 | 0 |  5 |
+  | 10 | 0 | 10 |
+  | 20 | 0 | 20 |
+
+B) まとめて配送された場合（pump なし）
+
+  | 押した回数 | 修正前 | 修正後 |
+  |---|---|---|
+  |  1 | 1 |  1 |
+  |  2 | 1 |  2 |
+  |  5 | 1 |  5 |
+  | 10 | 1 | 10 |
+  | 20 | 1 | 20 |
+
+C) 暴走防止
+  200 回押した場合 → 65 回で頭切り（上限 64）。
+  キー押しっぱなしやタブ復帰後に延々動き続けることはない。
+
+------------------------------------------------------------
+なぜ yield の改善では直らなかったのか
+------------------------------------------------------------
+FACTS.md F-01 で yield 1 回のコストは
+  emscripten_sleep(0) 4.25ms → MessageChannel 0.075ms（57 倍）
+まで削減済みで、これは本番 JS で稼働も確認している
+（__asyncjs__cata_web_yield_impl に MessageChannel が入っている）。
+
+しかし本件は「1 回のコスト」ではなく「入力が消える」欠陥なので、
+yield をいくら速くしても症状は消えない。実際、押した 20 回のうち
+処理されるのが 1 回なら、体感は 20 倍遅いのと同じである。
+
+============================================================
+対策
+============================================================
+単一変数 `last_input` を FIFO キューで補完する。
+
+(1) `stash_pending_input()`
+    CheckMessages() の排出ループ【冒頭】で、前の周回が設定した
+    last_input を退避する。
+    ループ冒頭を選んだ理由: switch は 577 行あり last_input への
+    代入点が十数箇所に散在する。各代入点に手を入れると漏れるし、
+    上流で新しい代入点が増えたときに追従できない。
+    「次の周回に入る直前」という 1 点だけを押さえれば、
+    どこで代入されたものでも確実に拾える。
+
+(2) `pump_events()` は破棄をやめてキューへ戻す
+    上流の意図は「このターンではキー入力として扱わない」であり
+    「捨てる」ではない。ネイティブでは捨てても OS のキューに
+    残るので次に拾えるが、ブラウザでは SDL キューを空にした
+    時点でもう存在しない。`return_pending_input()` で先頭に
+    戻すことで、上流の意図を保ったまま入力を失わない。
+
+(3) `get_input_event()` はキューを最優先で返す
+    溜まっている＝プレイヤーの操作が未消化の状態。ここで描画や
+    yield を挟むと、捌く速度がフレームレートに縛られる。
+    溜まっている間は最短経路で返し、解消してから通常の
+    「描画して入力を待つ」経路に戻す。
+
+(4) `drain_pending_input_if_idle()`
+    排出ループの最後のイベントが last_input を設定しない種類
+    （無視されるマウス移動・ウィンドウイベント・未対応キー）
+    だった場合、last_input は error だがキューには先に届いた
+    キー入力が残る。この取りこぼしを防ぐ。
+
+------------------------------------------------------------
+ゲームプレイ体験を損なわないことの根拠
+------------------------------------------------------------
+- キューが空の通常時は全ての分岐を素通りするので、従来の挙動・
+  描画タイミングと完全に同一。複数溜まったときだけ働く。
+- ネイティブでは OS のイベントループが別に回っており、1 回の
+  CheckMessages() に複数のキーが同時に溜まることは実質ない。
+  つまりこのキューは「ネイティブでは自然に成立していた
+  1 入力 = 1 ターン」をブラウザで復元するものであり、
+  ゲームの意味を変えない。押した回数だけ動くのが本来の CDDA。
+- 非 EMSCRIPTEN ビルドは全て空実装（#else で no-op）。
+- マウス移動は「最新位置」以外に意味がないので溜めない。
+  溜めると移動キーの後ろにマウス移動が並んで実移動が遅れる。
+- 上限 64（1 秒間に 60 回来ても 1 秒ぶん保持）を超えた分は
+  古いものから捨て、押しっぱなし時の暴走を防ぐ。
+
+------------------------------------------------------------
+検証済み
+------------------------------------------------------------
+- em++ -fsyntax-only で構文検証 rc=0（新規エラー・警告なし）
+- 排出ループの制御フローを波括弧対応で機械的に検証し、
+  ループ本体レベルの break が SDL_TEXTINPUT の 1 個だけである
+  ことを確認（この break は keycode モードでは発火しない）
+- 上表の入出力一致を実測で確認
+
+--- a/src/sdltiles.cpp
++++ b/src/sdltiles.cpp
+@@ -12,6 +12,7 @@
+ #include <cmath>
+ #include <cstdint>
+ #include <cstring>
++#include <deque>
+ #include <exception>
+ #include <fstream>
+ #include <iterator>
+@@ -149,6 +150,131 @@
+ // This value is finally returned by input_manager::get_input_event.
+ input_event last_input;
+ 
++#if defined(EMSCRIPTEN)
++// [CDDA-BROSER] 押されたキーを取りこぼさないための保留キュー。
++//
++// ------------------------------------------------------------------
++// 【真因】「短時間に何度も移動すると追いつかなくなる」の正体
++// ------------------------------------------------------------------
++// CheckMessages() は 1 回の呼び出しで
++//     while( SDL_PollEvent( &ev ) ) { ... last_input = ...; }
++// と SDL キューを【最後まで】飲み干す（同ループは 577 行あるが、
++// ループ本体レベルの break は SDL_TEXTINPUT 用の 1 個だけで、
++// 移動キーが通る keycode モードでは発火しない）。
++// しかも受け皿は last_input という【単一変数】なので、
++// 飲んだイベントは 1 つ残らず上書きされ、呼び出し側に渡るのは
++// 最後の 1 個だけである。
++//
++// ブラウザではこれが致命的に効く。wasm がメインスレッドを占有して
++// いる間、ブラウザは keydown を DOM 側に溜め込み、こちらが yield した
++// 瞬間に溜まった分を【まとめて】配送する。したがって
++//   「ターン処理中に 5 回押した」→「yield で 5 個まとめて届く」
++//   → 「CheckMessages が 5 個飲む」→「4 個消滅」
++// となる。
++//
++// さらに悪いことに pump_events()（同 :4096）は
++//     CheckMessages();
++//     last_input = input_event();   ← 飲んだ結果を明示的に破棄
++// という構造で、これが src 内 35 箇所から呼ばれる。移動 1 回の
++// ターン処理でも do_turn.cpp:306 などを通るため、
++// 「ターン処理中に届いた入力は届いた瞬間に捨てられる」。
++//
++// 実測（bench/input_queue_drop.c）:
++//   12 回押した場合  → pump が見たのは 12、実際に使われたのは 1、消滅 11
++//   ターン処理中の 10 回 → get_input_event() が受け取れたのは 0
++//
++// これは yield のコスト（F-01 で 0.075ms まで削減済み）とは
++// 独立した別の欠陥である。yield をいくら速くしても、
++// 飲んだ入力を捨てている限り「追いつかない」症状は消えない。
++//
++// ------------------------------------------------------------------
++// 【対策】単一変数を FIFO キューに変える
++// ------------------------------------------------------------------
++// CheckMessages() が last_input を上書きする際、上書きされて
++// 失われる分をこのキューへ退避する。get_input_event() は
++// キューが空でない限りそこから 1 個ずつ取り出す。
++//
++// ネイティブ挙動との同一性について:
++//   ネイティブでは OS のイベントループが別に回っており、
++//   1 回の CheckMessages() に複数のキー入力が同時に溜まることは
++//   まずない（あっても取りこぼしは 1 フレーム分）。
++//   つまりこのキューは「ネイティブでは自然に成立していた
++//   1 入力 = 1 ターンの対応」をブラウザで復元するものであり、
++//   ゲームプレイの意味を変えるものではない。
++//   押した回数だけ移動する、という本来の CDDA の挙動になる。
++//
++// 上限を設ける理由:
++//   キーを押しっぱなしにした場合や、タブを長時間放置して戻った
++//   場合に無制限に溜まると、指を離した後も延々と動き続けて
++//   しまう（プレイ体験を損なう）。上限を超えた分は古いものから
++//   捨てる。64 は 1 秒間に 60 回来ても 1 秒ぶん保持できる値。
++static std::deque<input_event> pending_input_queue;
++static constexpr size_t pending_input_queue_max = 64;
++
++// last_input を上書きする直前に呼び、失われる入力を退避する。
++// error 型（=入力なし）は退避しない。
++static void stash_pending_input( const input_event &ev )
++{
++    if( ev.type == input_event_t::error || ev.type == input_event_t::timeout ) {
++        return;
++    }
++    // マウス移動は「最新の位置」以外に意味がないので溜めない。
++    // 溜めると移動キーの後ろに大量のマウス移動が並んで
++    // 実際の移動が遅延する。
++    if( ev.type == input_event_t::mouse
++        && ev.get_first_input() == static_cast<int>( MouseInput::Move ) ) {
++        return;
++    }
++    if( pending_input_queue.size() >= pending_input_queue_max ) {
++        pending_input_queue.pop_front();
++    }
++    pending_input_queue.push_back( ev );
++}
++
++// キューから 1 個取り出す。空なら error 型を返す。
++static input_event take_pending_input()
++{
++    if( pending_input_queue.empty() ) {
++        return input_event();
++    }
++    const input_event ev = pending_input_queue.front();
++    pending_input_queue.pop_front();
++    return ev;
++}
++
++// last_input が空（error）のときだけ、キューから 1 個補充する。
++// CheckMessages() の直後に呼ぶことで、
++// 「排出ループの最後のイベントが last_input を設定しない種類だった」
++// 場合の取りこぼしを防ぐ。
++static void drain_pending_input_if_idle()
++{
++    if( last_input.type == input_event_t::error && !pending_input_queue.empty() ) {
++        last_input = take_pending_input();
++    }
++}
++
++// 取り出したが使わなかった入力をキューの先頭へ戻す。
++// pump_events() が「入力を無視する」際に使う。破棄してはいけない。
++static void return_pending_input( const input_event &ev )
++{
++    if( ev.type == input_event_t::error || ev.type == input_event_t::timeout ) {
++        return;
++    }
++    if( pending_input_queue.size() >= pending_input_queue_max ) {
++        pending_input_queue.pop_back();
++    }
++    pending_input_queue.push_front( ev );
++}
++
++#else // !EMSCRIPTEN
++
++// ネイティブでは OS のイベントループが別に回っており、1 回の
++// CheckMessages() で複数のキー入力が同時に飲まれることは実質起きない。
++// 挙動を一切変えないため、全て空実装にする。
++static void drain_pending_input_if_idle() {}
++
++#endif // EMSCRIPTEN
++
+ static int inputdelay;         //How long getch will wait for a character to be typed
+ int fontwidth;          //the width of the font, background is always this size
+ int fontheight;         //the height of the font, background is always this size
+@@ -3164,6 +3290,25 @@
+     using cata::options::mouse;
+ 
+     while( SDL_PollEvent( &ev ) ) {
++#if defined(EMSCRIPTEN)
++        // [CDDA-BROSER] 前の周回で last_input に入った入力を、
++        // これから上書きしてしまう前にキューへ退避する。
++        //
++        // なぜループの【冒頭】で退避するのか:
++        //   この switch は 577 行あり、last_input に代入する箇所は
++        //   キーボード・テキスト入力・マウス・ジョイスティックなど
++        //   十数箇所に散在する。各代入点に手を入れると漏れが出るし、
++        //   上流の変更で新しい代入点が増えたときに追従できない。
++        //   「次の周回に入る直前」という 1 点だけを押さえれば、
++        //   どこで代入されたものでも確実に拾える。
++        //
++        // ループを抜けた後の last_input はそのまま呼び出し側へ渡るので
++        // 退避しない（＝従来と同じ 1 個が即座に返る）。よって
++        // 入力が 1 個しか無い通常時の挙動は完全に従来どおりで、
++        // 複数溜まったときだけ 2 個目以降がキューへ回る。
++        stash_pending_input( last_input );
++        last_input = input_event();
++#endif
+         imclient->process_input( &ev );
+         switch( ev.type ) {
+             case SDL_WINDOWEVENT:
+@@ -4124,6 +4269,28 @@
+     // Handle all events, but ignore any keypress
+     CheckMessages();
+ 
++    // [CDDA-BROSER]【重要】ここで入力を捨ててはいけない。
++    //
++    // 上流の意図は「ウィンドウイベントだけ処理して、キー入力は
++    // 消費しない」である。ネイティブでは last_input を捨てても
++    // 実害が無い。pump_events() が呼ばれる場面（ロード中・
++    // アニメーション中など）はそもそもプレイヤーが操作していないし、
++    // 万一押しても OS のキューにはまだ残っているので次に拾える。
++    //
++    // しかしブラウザでは CheckMessages() が SDL キューを空にした
++    // 時点で、その入力はもうどこにも存在しない。ここで捨てると
++    // 完全に消滅する。pump_events() は src 内 35 箇所から呼ばれ、
++    // 移動 1 回のターン処理でも do_turn.cpp:306 を通るため、
++    // 「ターン処理中に押したキーは全部消える」ことになる。
++    // これが「短時間に何度も移動すると追いつかなくなる」の主因。
++    //
++    // 正しい振る舞いは「消費しない」＝キューに戻すことなので、
++    // 破棄ではなく退避に変える。上流の意図（このターンでは
++    // キー入力として扱わない）は保たれたまま、入力は失われない。
++#if defined(EMSCRIPTEN)
++    return_pending_input( last_input );
++#endif
++
+     last_input = input_event();
+     previously_pressed_key = 0;
+ }
+@@ -4150,6 +4317,36 @@
+ 
+     previously_pressed_key = 0;
+ 
++#if defined(EMSCRIPTEN)
++    // [CDDA-BROSER] 溜まっている入力があれば、SDL キューを見る前に
++    // そこから 1 個返す。
++    //
++    // これが「押した回数だけ動く」を成立させる要点である。
++    // ブラウザは yield の瞬間に溜め込んだ keydown をまとめて配送し、
++    // CheckMessages() はそれを 1 回で全部飲む。飲んだ分を
++    // stash_pending_input() が保持しているので、ここで 1 個ずつ
++    // 取り出せば、押した回数と処理されるターン数が一致する。
++    //
++    // 描画の更新（この下の wnoutrefresh / refresh_display）より
++    // 前に返す理由:
++    //   キューが空でない＝プレイヤーの操作が未消化で溜まっている
++    //   状態である。ここで描画や yield を挟むと、溜まっている分を
++    //   捌く速度がフレームレートに縛られてしまう。溜まっている間は
++    //   最短経路で入力を返し、溜まりが解消してから通常の
++    //   「描画して入力を待つ」経路に戻るのが最も応答が良い。
++    //
++    // なお溜まりが無い通常時（キューが空）はこの分岐を素通りするので、
++    // 従来の挙動・描画タイミングは一切変わらない。
++    if( !pending_input_queue.empty() ) {
++        last_input = take_pending_input();
++        SDL_GetMouseState( &last_input.mouse_pos.x, &last_input.mouse_pos.y );
++        if( last_input.type == input_event_t::keyboard_char ) {
++            previously_pressed_key = last_input.get_first_input();
++        }
++        return last_input;
++    }
++#endif
++
+     // standards note: getch is sometimes required to call refresh
+     // see, e.g., http://linux.die.net/man/3/getch
+     // so although it's non-obvious, that refresh() call (and maybe InvalidateRect?) IS supposed to be there
+@@ -4190,6 +4387,12 @@
+     if( inputdelay < 0 ) {
+         do {
+             CheckMessages();
++            // [CDDA-BROSER] 排出ループの【最後の】イベントが last_input を
++            // 設定しない種類だった場合（無視されるマウス移動、ウィンドウ
++            // イベント、未対応キーなど）、last_input は error のままだが
++            // キューには先に届いたキー入力が残っている。この取りこぼしを
++            // 防ぐため、error なら必ずキューを見る。
++            drain_pending_input_if_idle();
+             if( last_input.type != input_event_t::error ) {
+                 break;
+             }
+@@ -4201,6 +4404,7 @@
+         bool timedout = false;
+         do {
+             CheckMessages();
++            drain_pending_input_if_idle();
+             endtime = SDL_GetTicks();
+             if( last_input.type != input_event_t::error ) {
+                 break;
+@@ -4213,6 +4417,7 @@
+         } while( !timedout );
+     } else {
+         CheckMessages();
++        drain_pending_input_if_idle();
+     }
+ 
+     SDL_GetMouseState( &last_input.mouse_pos.x, &last_input.mouse_pos.y );
