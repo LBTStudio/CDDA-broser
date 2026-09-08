@@ -253,18 +253,24 @@
         const etag = net.headers.get("ETag") || "";
         assetTags[url] = etag;
         let body;
-        if (net.body && net.body.getReader) {
-          const reader = net.body.getReader();
-          const chunks = [];
+        if (net.body && typeof TransformStream !== "undefined") {
           let loaded = 0;
-          for (;;) {
-            const step = await reader.read();
-            if (step.done) break;
-            chunks.push(step.value);
-            loaded += step.value.length;
-            showLoadProgress(label, loaded, total);
-          }
-          body = new Blob(chunks);
+          let lastProgress = 0;
+          // Let the browser build Blob storage from a stream. Do not retain
+          // every downloaded chunk in a JS array alongside the completed Blob.
+          const progress = new TransformStream({
+            transform(chunk, controller) {
+              loaded += chunk.byteLength;
+              const now = performance.now();
+              if (now - lastProgress >= 100) {
+                showLoadProgress(label, loaded, total);
+                lastProgress = now;
+              }
+              controller.enqueue(chunk);
+            },
+            flush() { showLoadProgress(label, loaded, total); },
+          });
+          body = await new Response(net.body.pipeThrough(progress)).blob();
         } else {
           body = await net.blob();
         }
@@ -272,11 +278,26 @@
           "Content-Type": net.headers.get("Content-Type") || "application/octet-stream",
         };
         if (etag) storeHeaders["x-cdda-etag"] = etag;
-        const resp = new Response(body, { headers: storeHeaders });
         if (cache) {
-          try { await cache.put(url, resp.clone()); } catch (e) { console.warn("Asset cache write failed (quota?):", e); }
+          // Blob is immutable and replayable; no Response tee/clone is needed.
+          try { await cache.put(url, new Response(body, { headers: storeHeaders })); } catch (e) { console.warn("Asset cache write failed (quota?):", e); }
         }
-        return resp;
+        return new Response(body, { headers: storeHeaders });
+      }
+
+      async function instantiateCachedWasm(response, imports) {
+        if (typeof WebAssembly.instantiateStreaming === "function" &&
+            response.headers.get("Content-Type") === "application/wasm") {
+          try {
+            // Consume the only response. Keeping an unread clone as a fallback
+            // queues the entire wasm body and can retain it throughout play.
+            return await WebAssembly.instantiateStreaming(response, imports);
+          } catch (e) {
+            // Streaming may have consumed the body. Reacquire ONLY on failure.
+            response = await cachedAssetResponse("cataclysm-tiles.wasm", "本体");
+          }
+        }
+        return WebAssembly.instantiate(await response.arrayBuffer(), imports);
       }
 
       async function boot() {
@@ -308,7 +329,7 @@
           const wasmPromise = cachedAssetResponse("cataclysm-tiles.wasm", "本体")
             .catch((e) => { console.warn("Wasm cache path unavailable; stock loader will run:", e); return null; });
           let dataBuf = await dataPromise;
-          const wasmResp = await wasmPromise;
+          let wasmResp = await wasmPromise;
 
           if (dataBuf) {
             /* file_packager's generated loader asks this hook for the
@@ -325,25 +346,24 @@
             Module.instantiateWasm = function (imports, receiveInstance) {
               (async () => {
                 try {
-                  let out;
-                  try {
-                    /* Streaming compile overlaps disk read (or download) and
-                       compilation, and lets Chrome attach its compiled-code
-                       cache to the response. */
-                    out = await WebAssembly.instantiateStreaming(wasmResp.clone(), imports);
-                  } catch (e) {
-                    out = await WebAssembly.instantiate(await wasmResp.arrayBuffer(), imports);
-                  }
+                  const response = wasmResp;
+                  wasmResp = null;
+                  const out = await instantiateCachedWasm(response, imports);
                   receiveInstance(out.instance, out.module);
                 } catch (e) {
                   /* Last resort: bypass the cache entirely. */
                   try {
-                    const out = await WebAssembly.instantiateStreaming(fetch("cataclysm-tiles.wasm"), imports);
+                    const response = await fetch("cataclysm-tiles.wasm", { cache: "reload" });
+                    if (!response.ok) throw new Error("Could not download WebAssembly");
+                    const out = await WebAssembly.instantiate(await response.arrayBuffer(), imports);
                     receiveInstance(out.instance, out.module);
                   } catch (e2) {
                     console.error(e, e2);
                     showFatalError("WebAssembly instantiation failed", String(e2));
                   }
+                } finally {
+                  wasmResp = null;
+                  delete Module.instantiateWasm;
                 }
               })();
               return {};
