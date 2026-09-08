@@ -460,12 +460,12 @@ its upstream turn-based display cadence is unchanged.
      } );
  } );
  
-+// Idle waits wake without consuming or reissuing input events.
++// Bubble after existing SDL listeners; never consume or reissue input.
 +EM_ASYNC_JS( void, cata_web_wait_input_impl, ( int timeout_ms ), {
 +    await new Promise( function( resolve ) {
 +        var events = ["keydown", "keyup", "mousedown", "mouseup", "mousemove",
 +                      "wheel", "touchstart", "touchend", "input",
-+                      "compositionupdate", "compositionend", "focus", "blur",
++                      "compositionupdate", "compositionend", "focusin", "focusout",
 +                      "resize", "visibilitychange"];
 +        var finished = false;
 +        var timer;
@@ -474,12 +474,12 @@ its upstream turn-based display cadence is unchanged.
 +            finished = true;
 +            clearTimeout( timer );
 +            events.forEach( function( name ) {
-+                window.removeEventListener( name, wake, true );
++                window.removeEventListener( name, wake, false );
 +            } );
 +            resolve();
 +        };
 +        events.forEach( function( name ) {
-+            window.addEventListener( name, wake, true );
++            window.addEventListener( name, wake, false );
 +        } );
 +        timer = setTimeout( wake, timeout_ms );
 +    } );
