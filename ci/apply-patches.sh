@@ -30,7 +30,11 @@ fi
 # パッチ適用（順序に意味がある）
 # ------------------------------------------------------------------
 # activity-and-ime は他の 6 つが当たった後の行番号を前提にしているため
-# 【必ず最後】に当てる。
+# activity-and-ime より前のものは順序が固定されている。
+#
+# input-queue は activity-and-ime が sdltiles.cpp に入れた
+# wait_for_input_events() ラムダと pump_events() の CATA_WEB_YIELD()
+# を前提に行番号が決まっているため、【activity-and-ime の後】に当てる。
 PATCHES="
 mo-reader
 loader-yield
@@ -39,6 +43,8 @@ world-yield
 json-cache
 idbfs-debounce
 activity-and-ime
+input-queue
+activity-perf
 "
 
 for name in $PATCHES; do
@@ -112,4 +118,153 @@ if [ "$throttled_calls" != "3" ]; then
     exit 1
 fi
 
-echo "[VERIFY] OK: 全 7 パッチが意図どおり適用された"
+# ------------------------------------------------------------------
+# F-28: 入力取りこぼしの修正（input-queue パッチ）
+# ------------------------------------------------------------------
+# 実行文として存在することを確認する（コメント内の言及では通さない）。
+grep -q '^[[:space:]]*static std::deque<input_event> pending_input_queue;' \
+                                                    src/sdltiles.cpp
+grep -q '^[[:space:]]*stash_pending_input( last_input );'   src/sdltiles.cpp
+grep -q '^[[:space:]]*return_pending_input( last_input );'  src/sdltiles.cpp
+grep -q '^[[:space:]]*drain_pending_input_if_idle();'       src/sdltiles.cpp
+
+# 【最重要の検査】pump_events() が入力を破棄していないこと。
+#
+# 上流の pump_events() は
+#     CheckMessages();
+#     last_input = input_event();   ← ここで捨てている
+# という構造で、ブラウザではこれが「ターン処理中に押したキーが
+# 全部消える」という致命的な症状になる（F-28）。
+# 破棄の前に return_pending_input() を通っていることを確認する。
+#
+# 行番号ではなく前後関係で検査する理由: 上流が pump_events() の
+# 中身を変えたときに、行番号ベースの検査は「当たったが意図した
+# 位置ではない」を見逃す。
+# -A 4 なのは、間に #endif と空行が挟まるため。
+# 行頭一致にしてコメントアウトを弾く。
+if ! grep -A 4 '^[[:space:]]*return_pending_input( last_input );' \
+        src/sdltiles.cpp | grep -q '^[[:space:]]*last_input = input_event();'; then
+    echo "ERROR: pump_events() で return_pending_input() の直後に" >&2
+    echo "       last_input のクリアが来ていない。" >&2
+    echo "       入力退避が pump_events() に入っていない可能性がある。" >&2
+    exit 1
+fi
+
+# 排出ループ冒頭の退避が入っていること。
+# switch の 577 行に散在する last_input 代入点を 1 点で拾う設計なので、
+# ここが抜けると 2 個目以降の入力が全て消える。
+#
+# 行数固定の grep -B N では検査できない（間に説明コメントが 20 行入る）。
+# 代わりに「排出ループの開始行より後、かつ switch の開始行より前」に
+# stash 呼び出しがあることを行番号で検査する。
+# ここが崩れるのは上流がループ構造を変えたときだけなので、
+# その場合は必ず気付けるようにする。
+drain_loop_line="$( grep -n 'while( SDL_PollEvent( &ev ) ) {' src/sdltiles.cpp \
+                    | tail -1 | cut -d: -f1 )"
+# 行頭が // でない（＝コメントアウトされていない）実行文だけを拾う。
+# コメントアウトを見逃すと「検証は通ったのに機能していない」に
+# なるので、ここは実行文であることを必ず確かめる。
+stash_line="$( grep -n '^[[:space:]]*stash_pending_input( last_input );' \
+               src/sdltiles.cpp | head -1 | cut -d: -f1 )"
+process_input_line="$( grep -n 'imclient->process_input( &ev );' src/sdltiles.cpp \
+                       | head -1 | cut -d: -f1 )"
+if [ -z "$drain_loop_line" ] || [ -z "$stash_line" ] || [ -z "$process_input_line" ]; then
+    echo "ERROR: 排出ループ / stash / process_input のいずれかが見つからない。" >&2
+    echo "       drain=${drain_loop_line} stash=${stash_line} proc=${process_input_line}" >&2
+    exit 1
+fi
+if [ "$stash_line" -le "$drain_loop_line" ] || \
+   [ "$stash_line" -ge "$process_input_line" ]; then
+    echo "ERROR: stash_pending_input() が排出ループ冒頭に無い。" >&2
+    echo "       期待: ${drain_loop_line} 行 < stash < ${process_input_line} 行" >&2
+    echo "       実際: stash = ${stash_line} 行" >&2
+    echo "       上流がループ構造を変えた可能性がある。" >&2
+    exit 1
+fi
+
+# キューの取り出しが 3 つの入力待ち分岐すべてに入っていること
+# （inputdelay < 0 / > 0 / == 0）。1 つでも漏れると、
+# 「排出ループ最後のイベントが last_input を設定しない種類」
+# だったときに取りこぼす。
+drain_calls="$( grep -c '^[[:space:]]*drain_pending_input_if_idle();' \
+                src/sdltiles.cpp )"
+if [ "$drain_calls" != "3" ]; then
+    echo "ERROR: drain_pending_input_if_idle() の呼び出しが ${drain_calls} 箇所。" >&2
+    echo "       期待値は 3（inputdelay の < 0 / > 0 / == 0 の各分岐）。" >&2
+    exit 1
+fi
+
+# ------------------------------------------------------------------
+# F-29: 複数ターン行動の所要時間の可視化（activity-perf パッチ）
+# ------------------------------------------------------------------
+# 実行文として存在することを確認する（コメント内の言及では通さない）。
+grep -q '^void sample_activity_turn( const avatar &u )'  src/do_turn.cpp
+grep -q '^    sample_activity_turn( u );'                src/do_turn.cpp
+grep -q '\[perf\] %1\$s: %2\$d turns in %3\$d ms'        src/do_turn.cpp
+
+# 粉砕の進捗表示。
+# 宣言（ヘッダ）と定義（実装）の両方が無いとリンクエラーになるので
+# 片方だけ入った状態を検出できるように別々に確認する。
+#
+# 【重要】宣言の検査でファイル全体を grep してはいけない。
+# `std::string get_progress_message( const player_activity & ) const override;`
+# という同一の行は他の activity_actor にも存在し（実測で 3 箇所）、
+# pulp のものを消してもファイル全体の grep は通ってしまう。
+# 実際に negative test でこの見逃しを踏んだ。
+# そこで pulp クラスの本体だけを切り出して検査する。
+pulp_class_line="$( grep -n '^class pulp_activity_actor' \
+                    src/activity_actor_definitions.h | head -1 | cut -d: -f1 )"
+if [ -z "$pulp_class_line" ]; then
+    echo "ERROR: class pulp_activity_actor が見つからない。" >&2
+    exit 1
+fi
+# クラス本体は次の `^class ` までとする（十分な余裕をとって 120 行見る）
+if ! sed -n "${pulp_class_line},+120p" src/activity_actor_definitions.h \
+        | sed -n "1,/^class [a-z_]*activity_actor/p" \
+        | grep -q '^ *std::string get_progress_message( const player_activity & ) const override;'; then
+    echo "ERROR: pulp_activity_actor クラス内に get_progress_message の" >&2
+    echo "       宣言が無い（${pulp_class_line} 行目のクラスを検査した）。" >&2
+    exit 1
+fi
+grep -q '^std::string pulp_activity_actor::get_progress_message' \
+                                                          src/activity_actor.cpp
+
+# 計測の呼び出しが【毎ターン通る位置】にあることを行番号で検査する。
+#
+# 行数固定の grep -A/-B では検査できない（間に説明コメントが
+# 60 行以上入る）。また「呼ばれてはいるが while ループの内側に
+# 入ってしまった」場合は計測が壊れる（1 ターンで複数回加算される）。
+# そこで
+#     debug_hour_timer.print_time() 行 < sample_activity_turn 行
+#                                     < u.update_body() 行
+# を確認する。この 3 つは do_turn() の直列部分に並んでいるので、
+# 順序が保たれていればループの外にあることが保証される。
+hour_timer_line="$( grep -n 'g->debug_hour_timer.print_time();' src/do_turn.cpp \
+                    | head -1 | cut -d: -f1 )"
+sample_line="$( grep -n '^    sample_activity_turn( u );' src/do_turn.cpp \
+                | head -1 | cut -d: -f1 )"
+update_body_line="$( grep -n '^    u.update_body();' src/do_turn.cpp \
+                     | head -1 | cut -d: -f1 )"
+if [ -z "$hour_timer_line" ] || [ -z "$sample_line" ] || [ -z "$update_body_line" ]; then
+    echo "ERROR: 計測呼び出しの位置検査に必要な目印が見つからない。" >&2
+    echo "       hour_timer=${hour_timer_line} sample=${sample_line} update_body=${update_body_line}" >&2
+    exit 1
+fi
+if [ "$sample_line" -le "$hour_timer_line" ] || \
+   [ "$sample_line" -ge "$update_body_line" ]; then
+    echo "ERROR: sample_activity_turn() が do_turn() の直列部分にない。" >&2
+    echo "       期待: ${hour_timer_line} 行 < sample < ${update_body_line} 行" >&2
+    echo "       実際: sample = ${sample_line} 行" >&2
+    echo "       ループ内に入ると 1 ターンで複数回加算され計測が壊れる。" >&2
+    exit 1
+fi
+
+# 呼び出しは 1 箇所だけであること（複数あると二重計上になる）。
+sample_calls="$( grep -c '^    sample_activity_turn( u );' src/do_turn.cpp )"
+if [ "$sample_calls" != "1" ]; then
+    echo "ERROR: sample_activity_turn() の呼び出しが ${sample_calls} 箇所。" >&2
+    echo "       期待値は 1（複数あると 1 ターンで二重に数える）。" >&2
+    exit 1
+fi
+
+echo "[VERIFY] OK: 全 9 パッチが意図どおり適用された"
