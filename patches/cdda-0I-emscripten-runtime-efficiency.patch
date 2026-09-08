@@ -1,0 +1,329 @@
+CDDA 0.I: safe runtime efficiency for low-memory browsers.
+Apply after activity-perf. Supersedes F-20's unsafe 16-turn danger-check
+throttle. Synthetic benchmark timings are NOT real-game performance proof.
+AI and danger checks retain upstream order and frequency. Yielding improves
+browser responsiveness, not the amount of AI work. Progress text is lazy;
+its upstream turn-based display cadence is unchanged.
+
+--- a/src/do_turn.cpp
++++ b/src/do_turn.cpp
+@@ -310,111 +310,6 @@
+ namespace
+ {
+ 
+-// [CDDA-BROWSER] mon_info_update() のレート制限
+-// ---------------------------------------------------------------------
+-// 【真因】
+-// 「読書がゲームにならないほど遅い」という報告の原因はこれ。
+-// 読書アクティビティ自体（read_activity_actor::do_turn）は
+-// 実測 0.0040ms で無視できる軽さである。遅いのは、技能書 1 冊が
+-// ゲーム内 30 分 =【1800 ターン】であり、その 1800 ターンぶん
+-// do_turn() の全パイプラインが回るためである。
+-//
+-// そのパイプラインの内訳を実測すると（1 回あたり ms）:
+-//     mon_info_update()      0.6170   ← 単独で最重量
+-//     monmove()              0.4185
+-//     ui_manager::redraw()   0.3650
+-//     u.process_turn()       0.2565
+-//     build_map_cache()      0.2333
+-//     process_items()        0.2155
+-//     build_floor_caches()   0.1350
+-//     process_fields()       0.0545
+-//     読書本体               0.0040
+-//     ---------------------------------
+-//     1 ターン合計           0.8600
+-// mon_info_update() だけで 1 ターンの【72%】を占める。
+-//
+-// 重い理由は Character::get_visible_creatures( MAPSIZE_X )
+-// （character.cpp:10624）で、可視クリーチャ全件について
+-// rl_dist() に加えて sees( here, critter ) の完全な LOS 判定を
+-// 行うためである。MAPSIZE_X = 132 なのでバブル全域が対象になる。
+-//
+-// さらにこれは do_turn.cpp の【3 箇所】（下記の呼び出し点）で
+-// 呼ばれており、いずれも元来レート制限が一切ない。
+-//
+-// 【単純に飛ばしてはいけない理由】
+-// mon_info_update() は表示更新だけの関数ではなく safemode を
+-// 駆動している（game.cpp:4856-4875）:
+-//     set_safe_mode( SAFE_MODE_STOP )   新規発見時に移動を止める
+-//     cancel_activity_or_ignore_query   アクティビティ中断の問い合わせ
+-//     turnssincelastmon / AUTOSAFEMODE  自動 safemode 復帰
+-//     previous_turn / mostseen          差分検出の基準値
+-// よって「呼ばない」ことはできない。できるのは
+-// 【ゲームターン数で上限を切って間引く】ことだけである。
+-//
+-// 【なぜ実時間ではなくゲームターン基準か】
+-// 実時間（例: 16ms ごと）で間引くと、CPU が速い環境では
+-// 1 回の間隔に入るターン数が増えてしまい、safemode の反応が
+-// 何ターン遅れるかが機種依存になる。モンスターの接近はゲーム
+-// ターンで進むので、遅延の上限もゲームターンで押さえる必要がある。
+-// ターン数で切れば、どんな機種でも遅れは最大 N ターンで一定。
+-//
+-// 【N=16 の根拠（実測の掃引結果・低速機想定 600 ターン）】
+-//     N=1  1592ms   N=2  1365ms   N=4  1290ms
+-//     N=8  1229ms   N=16 1172ms   N=32 1162ms   N=64 1178ms
+-// N=16 で総時間が飽和し、それ以上大きくしても速くならない。
+-// つまり N=16 は「最大の効果が得られる最小の N」であり、
+-// safemode の遅延を不必要に伸ばさずに済む値である。
+-// CDDA の 1 ターンは 1 ゲーム秒なので 16 ターン = 16 ゲーム秒。
+-//
+-// 【効果（低速機・CPU 3 倍遅い想定、読書 600 ターン）】
+-//                      総時間   fps    最大描画停止
+-//     現行 0.I         1719ms   16.9   106.1ms   ← 基準 A/B/D すべて NG
+-//     本 PR の他の修正 1623ms   54.8    23.7ms
+-//     本修正（N=16）   1181ms   56.7    18.6ms
+-// 0.I 比で 31% 高速化し、かつ描画停止を 106ms → 19ms に縮める。
+-//
+-// なお「描画のタイミングでだけ呼ぶ」案も試したが、低速機で
+-// 最大描画停止が 44.3ms まで悪化した（mon_info のコストが描画
+-// ウィンドウの内側に入るため）。ターン数で切る本方式を採用する。
+-//
+-// 【適用範囲を「アクティビティ中」だけに絞る】
+-// 間引きを常時かけると、通常の歩行・戦闘中も safemode の反応が
+-// 最大 16 ターン遅れうる。そこは元々 1 ターンに数回しか回らないので
+-// 間引いても速くならないうえ、危険度が高い場面である。
+-// そこで force フラグを用意し、u.activity が空（=プレイヤーが自分で
+-// 操作している場面）では毎ターン必ず実行する。間引くのは
+-// 読書・製作・分解・粉砕など「1800 ターン一気に進む」場面に限る。
+-// これにより通常プレイの挙動は 0.I と完全に同一のまま、
+-// 長時間アクティビティだけが速くなる。
+-//
+-// ネイティブ版は元の毎ターン呼び出しを維持する（間引く必要がない）。
+-#if defined(EMSCRIPTEN)
+-constexpr int mon_info_update_interval_turns = 16;
+-
+-// 間引いた mon_info_update()。
+-// 「前回実行したゲームターン」を覚えておき、N ターン経過するまでは
+-// 実行しない。強制実行が必要な場面では force=true を渡す。
+-void mon_info_update_throttled( const bool force = false )
+-{
+-    static time_point last_update = calendar::turn_zero;
+-    static bool has_run = false;
+-
+-    if( !force && has_run &&
+-        calendar::turn - last_update < time_duration::from_turns(
+-            mon_info_update_interval_turns ) ) {
+-        return;
+-    }
+-    last_update = calendar::turn;
+-    has_run = true;
+-    g->mon_info_update();
+-}
+-#else
+-void mon_info_update_throttled( const bool /*force*/ = false )
+-{
+-    g->mon_info_update();
+-}
+-#endif
+-
+ void monmove()
+ {
+     g->cleanup_dead();
+@@ -422,6 +317,8 @@
+     avatar &u = get_avatar();
+ 
+     for( monster &critter : g->all_monsters() ) {
++        // Cooperative scheduling only; do not skip AI or consume queued input.
++        CATA_WEB_YIELD();
+         if( !m.inbounds( critter.pos_abs() ) ) {
+             continue;
+         }
+@@ -465,6 +362,7 @@
+             critter.try_reproduce();
+         }
+         while( critter.get_moves() > 0 && !critter.is_dead() && !critter.has_effect( effect_ridden ) ) {
++            CATA_WEB_YIELD();
+             critter.made_footstep = false;
+             // Controlled critters don't make their own plans
+             if( !critter.has_effect( effect_controlled ) ) {
+@@ -507,6 +405,7 @@
+ 
+     // Now, do active NPCs.
+     for( npc &guy : g->all_npcs() ) {
++        CATA_WEB_YIELD();
+         int turns = 0;
+         int real_count = 0;
+         const int count_limit = std::max( 10, guy.get_moves() / 64 );
+@@ -519,6 +418,7 @@
+         }
+         while( !guy.is_dead() && ( !guy.in_sleep_state() || guy.activity.id() == ACT_OPERATION ) &&
+                guy.get_moves() > 0 && turns < 10 ) {
++            CATA_WEB_YIELD();
+             const int moves = guy.get_moves();
+             const bool has_destination = guy.has_destination_activity();
+             guy.move();
+@@ -842,10 +742,7 @@
+             while( u.get_moves() > 0 || g->uquit == QUIT_WATCH ) {
+                 m.process_falling();
+                 g->cleanup_dead();
+-                // [CDDA-BROWSER] ここはプレイヤーに行動力が残っている
+-                // ループ内なので、アクティビティが無ければ強制実行する。
+-                // 詳細は上の mon_info_update_throttled() のコメント参照。
+-                mon_info_update_throttled( !u.activity );
++                g->mon_info_update();
+                 // Process any new sounds the player caused during their turn.
+                 for( npc &guy : g->all_npcs() ) {
+                     if( rl_dist( guy.pos_bub(), u.pos_bub() ) < MAX_VIEW_DISTANCE ) {
+@@ -928,11 +825,7 @@
+                 start = now;
+             }
+ 
+-            // [CDDA-BROWSER] この else 節はアクティビティ中・睡眠中など
+-            // 「行動力を使い切っている」場面。ここが間引きの主目的。
+-            // 下の distraction 判定は mon_info_update() が更新した
+-            // new_seen_mon を読むため、実行した回だけ有効に働く。
+-            mon_info_update_throttled( !u.activity );
++            g->mon_info_update();
+ 
+             // If player is performing a task, a monster is dangerously close,
+             // and monster can reach to the player or it has some sort of a ranged attack,
+@@ -998,9 +891,7 @@
+             }
+         }
+     }
+-    // [CDDA-BROWSER] 毎ターン末尾の呼び出し。アクティビティが無ければ
+-    // 従来どおり毎ターン実行する。
+-    mon_info_update_throttled( !u.activity );
++    g->mon_info_update();
+     u.process_turn();
+     if( u.get_moves() < 0 && get_option<bool>( "FORCE_REDRAW" ) ) {
+         ui_manager::redraw();
+@@ -1012,45 +903,38 @@
+     }
+ 
+     const bool player_is_sleeping = u.has_effect( effect_sleep );
+-    bool wait_redraw = false;
+-    std::string wait_message;
+-    time_duration wait_refresh_rate;
+-    if( player_is_sleeping ) {
+-        wait_redraw = true;
+-        wait_message = _( "Wait till you wake up…" );
+-        wait_refresh_rate = 30_minutes;
+-    } else if( const std::optional<std::string> progress = u.activity.get_progress_message( u ) ) {
+-        wait_redraw = true;
+-        wait_message = *progress;
+-        if( u.activity.is_interruptible() && u.activity.interruptable_with_kb ) {
+-            wait_message += string_format( _( "\n%s to interrupt" ), press_x( ACTION_PAUSE ) );
+-        }
+-        if( u.activity.id() == ACT_AUTODRIVE ) {
++    const bool wait_redraw = player_is_sleeping || u.activity.has_progress_message();
++    if( wait_redraw ) {
++        time_duration wait_refresh_rate = 5_minutes;
++        if( player_is_sleeping ) {
++            wait_refresh_rate = 30_minutes;
++        } else if( u.activity.id() == ACT_AUTODRIVE ) {
+             wait_refresh_rate = 1_turns;
+         } else if( u.activity.id() == ACT_FIRSTAID ) {
+             wait_refresh_rate = 5_turns;
+-        } else {
+-            wait_refresh_rate = 5_minutes;
+-        }
+-    }
+-    if( wait_redraw ) {
+-        // [CDDA-BROWSER] 更新間隔の判定は【ターン基準のまま】維持する。
+-        //
+-        // 一度これを実時間基準に変える実装を書いたが、撤回した。
+-        // 理由: ターン基準であることがゲームの時間感覚に即しており、
+-        // 実時間で表示を間引く/詰めるのは症状に蓋をするだけで、
+-        // 「実処理時間が本家 CDDA より長い」という本質を隠してしまう。
+-        // 直すべきは 1 ターンあたりの実処理コストそのものである。
+-        //
+-        // ここで加えるのは yield のみ。理由は下記コメント参照。
++        }
++        // Keep the upstream game-turn cadence. Build text only when it will
++        // be displayed: corpse traversal, skill queries and key descriptions
++        // otherwise run every turn, even during long unattended activities.
+         if( g->first_redraw_since_waiting_started ||
+             calendar::once_every( std::min( 1_minutes, wait_refresh_rate ) ) ) {
+             if( g->first_redraw_since_waiting_started ||
+                 calendar::once_every( wait_refresh_rate ) ) {
+                 ui_manager::redraw();
+             }
+-
+-            // Avoid redrawing the main UI every time due to invalidation
++            std::string wait_message;
++            if( player_is_sleeping ) {
++                wait_message = _( "Wait till you wake up…" );
++            } else {
++                const std::optional<std::string> progress = u.activity.get_progress_message( u );
++                if( progress ) {
++                    wait_message = *progress;
++                }
++                if( u.activity.is_interruptible() && u.activity.interruptable_with_kb ) {
++                    wait_message += string_format( _( "\n%s to interrupt" ), press_x( ACTION_PAUSE ) );
++                }
++            }
++            // Avoid redrawing the main UI every time due to invalidation.
+             ui_adaptor dummy( ui_adaptor::disable_uis_below {} );
+             if( !g->wait_popup ) {
+                 g->wait_popup = std::make_unique<static_popup>();
+@@ -1059,24 +943,15 @@
+             ui_manager::redraw();
+             refresh_display();
+             g->first_redraw_since_waiting_started = false;
+-            // [CDDA-BROWSER] 描いた内容を実際に画面へ出すには、ブラウザの
+-            // イベントループを 1 回まわす必要がある。
+-            // refresh_display()（sdltiles.cpp:542）は SDL の
+-            // SetRenderTarget / RenderCopy / RenderPresent を呼ぶだけで
+-            // 制御を返さないため、ここで yield しないと
+-            // 「描いたのに表示されないまま次のターンへ進む」ことになる。
+-            //
+-            // これは表示頻度を変えるものではない。ターン基準で
+-            // 「描く」と決まった回だけ、その内容が実際に見えるように
+-            // するだけである。CATA_WEB_YIELD() は 16ms の時間予算付きで
+-            // MessageChannel 経由なので 1 回 0.075ms（FACTS.md F-01）。
+             CATA_WEB_YIELD();
+         }
+     } else {
+-        // Nothing to wait for now
+         g->wait_popup_reset();
+         g->first_redraw_since_waiting_started = true;
+     }
++    // Sleeping bypasses activity key polling. Yield even when no message is
++    // due, without changing its cadence or skipping any simulation turns.
++    CATA_WEB_YIELD();
+ 
+     m.invalidate_visibility_cache();
+ 
+--- a/src/player_activity.cpp
++++ b/src/player_activity.cpp
+@@ -141,10 +141,10 @@
+     return std::string( index < str_values.size() ? str_values[index] : def );
+ }
+ 
+-std::optional<std::string> player_activity::get_progress_message( const avatar &u ) const
++bool player_activity::has_progress_message() const
+ {
+     if( type == ACT_NULL || get_verb().empty() ) {
+-        return std::optional<std::string>();
++        return false;
+     }
+ 
+     if( type == ACT_AIM ||
+@@ -156,6 +156,15 @@
+         type == ACT_EAT_MENU ||
+         type == ACT_INVOKE_ITEM
+       ) {
++        return false;
++    }
++
++    return true;
++}
++
++std::optional<std::string> player_activity::get_progress_message( const avatar &u ) const
++{
++    if( !has_progress_message() ) {
+         return std::nullopt;
+     }
+ 
+--- a/src/player_activity.h
++++ b/src/player_activity.h
+@@ -130,6 +130,8 @@
+          * Helper that returns an activity specific progress message.
+          */
+         std::optional<std::string> get_progress_message( const avatar &u ) const;
++        // Cheap eligibility check; does not build text or inspect actor progress.
++        bool has_progress_message() const;
+ 
+         /**
+          * If this returns true, the action can be continued without

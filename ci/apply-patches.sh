@@ -45,6 +45,7 @@ idbfs-debounce
 activity-and-ime
 input-queue
 activity-perf
+runtime-efficiency
 "
 
 for name in $PATCHES; do
@@ -96,27 +97,21 @@ grep -q "MessageChannel"                           src/cata_web_yield.cpp
 grep -q "text_input_scope"                         src/cata_web_text_input.h
 # F-18: キーポーリング 100ms -> 16ms
 grep -q "activity_poll_interval_ms = 16"           src/do_turn.cpp
-# F-20: mon_info_update のターン数間引き
-grep -q "mon_info_update_interval_turns = 16"      src/do_turn.cpp
-grep -q "mon_info_update_throttled"                src/do_turn.cpp
-# F-19: IME はスタック覗き見をやめて参照カウントへ
-grep -q "cata_web::text_input_active"              src/sdltiles.cpp
-
-# mon_info_update() の生呼び出しが do_turn.cpp の
-# 【間引きラッパの中だけ】に閉じていることを確認する。
-# 3 箇所の呼び出し点が差し替え漏れなく置き換わったかの検査。
-raw_calls="$( grep -c 'g->mon_info_update()' src/do_turn.cpp )"
-if [ "$raw_calls" != "2" ]; then
-    echo "ERROR: do_turn.cpp の g->mon_info_update() 生呼び出しが ${raw_calls} 箇所。" >&2
-    echo "       期待値は 2（間引きラッパの Emscripten 側と native 側のみ）。" >&2
-    echo "       呼び出し点の差し替えが漏れている可能性がある。" >&2
+# Danger checks have gameplay side effects; never throttle them (F-20 retracted).
+if grep -q 'mon_info_update_throttled\|mon_info_update_interval_turns' src/do_turn.cpp; then
+    echo "ERROR: unsafe danger-check throttling remains" >&2
     exit 1
 fi
-throttled_calls="$( grep -c 'mon_info_update_throttled( !u.activity )' src/do_turn.cpp )"
-if [ "$throttled_calls" != "3" ]; then
-    echo "ERROR: 間引き呼び出しが ${throttled_calls} 箇所。期待値は 3（613/696/762 行）。" >&2
+raw_calls="$( grep -c '^[[:space:]]*g->mon_info_update();' src/do_turn.cpp )"
+if [ "$raw_calls" != "3" ]; then
+    echo "ERROR: expected all 3 upstream danger-check call sites" >&2
     exit 1
 fi
+grep -q '^bool player_activity::has_progress_message() const' src/player_activity.cpp
+grep -q 'u.activity.has_progress_message()' src/do_turn.cpp
+grep -q 'bool has_progress_message() const;' src/player_activity.h
+# F-19: IME uses explicit input scopes.
+grep -q "cata_web::text_input_active" src/sdltiles.cpp
 
 # ------------------------------------------------------------------
 # F-28: 入力取りこぼしの修正（input-queue パッチ）
@@ -267,4 +262,4 @@ if [ "$sample_calls" != "1" ]; then
     exit 1
 fi
 
-echo "[VERIFY] OK: 全 9 パッチが意図どおり適用された"
+echo "[VERIFY] OK: 全 10 パッチが意図どおり適用された"
