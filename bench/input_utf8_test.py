@@ -2,7 +2,9 @@
 """Test CDDA's actual input callback against its bundled ImGui library.
 
 Usage: python3 bench/input_utf8_test.py /path/to/patched/cdda
-HEAD must contain unpatched 0.I. No SDL/browser or full-game speed claims.
+HEAD must contain unpatched 0.I. SDL event construction and backend routing
+are extracted from real source, with a minimal SDL window/event stub. ImGui
+is real; this is not a full SDL/browser or full-game performance test.
 """
 from pathlib import Path
 import subprocess
@@ -42,6 +44,64 @@ struct string_input_popup_imgui {
     void update_input_history(ImGuiInputTextCallbackData *) { ++histories; }
 };
 '''
+# Exercise the missing hop in the old test: bridge -> SDL backend -> widget.
+sdl = (source / 'src/sdltiles.cpp').read_text()
+bridge = sdl[sdl.index('static void cdda_pump_web_ime()'):]
+commit = bridge[bridge.index('        const char *p = ime_buf;'):bridge.index('    // Composition preview:')]
+commit = commit[:commit.rindex('    }')]  # outer EM_ASM polling loop
+preview = bridge[bridge.index('        size_t chunk = strlen( ime_buf );'):]
+preview = preview[:preview.index('\n    }')]
+backend = (imgui / 'imgui_impl_sdl2.cpp').read_text()
+viewport = backend[backend.index('static ImGuiViewport* ImGui_ImplSDL2_GetViewportForWindowID('):]
+viewport = viewport[:viewport.index('\n}') + 2]
+text_case = backend[backend.index('        case SDL_TEXTINPUT:'):backend.index('        case SDL_KEYDOWN:')]
+program += r'''
+using Uint32 = unsigned int;
+constexpr int SDL_TEXTINPUT = 1, SDL_TEXTEDITING = 2;
+constexpr int SDL_TEXTINPUTEVENT_TEXT_SIZE = 32, SDL_TEXTEDITINGEVENT_TEXT_SIZE = 32;
+struct SDL_Event {
+    int type;
+    struct { Uint32 windowID; char text[32]; } text;
+    struct { Uint32 windowID; char text[32]; int start, length; } edit;
+};
+struct Window { void *get() { return this; } } window;
+Uint32 SDL_GetWindowID(void *) { return 17; }
+struct ImGui_ImplSDL2_Data { Uint32 WindowID = 17; } backend_data;
+ImGui_ImplSDL2_Data *ImGui_ImplSDL2_GetBackendData() { return &backend_data; }
+std::vector<SDL_Event> events;
+int SDL_PushEvent(const SDL_Event *event) { events.push_back(*event); return 1; }
+'''
+program += viewport + '\nbool route_text(const SDL_Event *event) {\n'
+program += '    ImGuiIO &io = ImGui::GetIO();\n    switch(event->type) {\n' + text_case
+program += '    default: return false;\n    }\n}\n'
+program += 'void pump_commit(const char *ime_buf) {\n' + commit + '\n}\n'
+program += 'void pump_preview(const char *ime_buf) {\n' + preview + '\n}\n'
+program += r'''
+static void deliver(const std::string &input) {
+    events.clear(); pump_commit(input.c_str());
+    std::string delivered;
+    for (const auto &event : events) {
+        assert(event.type == SDL_TEXTINPUT && event.text.windowID == 17);
+        assert(std::strlen(event.text.text) <= 31);
+        delivered += event.text.text;
+        assert(route_text(&event));
+    }
+    assert(delivered == input);
+}
+static void check_routing() {
+    SDL_Event old_event{}; old_event.type = SDL_TEXTINPUT;
+    std::strcpy(old_event.text.text, "日本");
+    assert(!route_text(&old_event)); // previous bridge silently lost ALL Japanese
+    old_event.text.windowID = 99;
+    assert(!route_text(&old_event)); // do not disable other-window rejection
+    std::puts("PASS negative control: real ImGui SDL text branch rejects windowID=0 and foreign windows");
+    for (const char *preview : {"", "にほん", "日本語日本語日本語日本語"}) {
+        events.clear(); pump_preview(preview);
+        assert(events.size() == 1 && events[0].type == SDL_TEXTEDITING);
+        assert(events[0].edit.windowID == 17 && std::strlen(events[0].edit.text) <= 31);
+    }
+}
+'''
 program += legacy + '\n' + current + r'''
 static void check(const char *input, int limit, const char *expected) {
     const int len = std::strlen(input);
@@ -66,18 +126,17 @@ static void check(const char *input, int limit, const char *expected) {
         assert(buf[len + 17 + i] == '#');
     }
 }
-static void check_widget() {
+static void check_widget(const std::string &input, int limit, const std::string &expected) {
+    ImGui::CreateContext();
     ImGuiIO &io = ImGui::GetIO();
     io.IniFilename = nullptr; io.LogFilename = nullptr;
     io.DisplaySize = ImVec2(640, 480); io.DeltaTime = 1.0f / 60;
     unsigned char *pixels; int width, height;
     io.Fonts->GetTexDataAsRGBA32(&pixels, &width, &height);
     char buffer[1024] = {};
-    string_input_popup_imgui popup{256};
-    std::string long_input;
-    for (int i = 0; i < 100; ++i) long_input += "日";
+    string_input_popup_imgui popup{limit};
     for (int frame = 0; frame < 6; ++frame) {
-        if (frame == 3) io.AddInputCharactersUTF8(long_input.c_str());
+        if (frame == 3) deliver(input);
         ImGui::NewFrame();
         ImGui::Begin("test");
         if (frame == 1) ImGui::SetKeyboardFocusHere();
@@ -86,9 +145,8 @@ static void check_widget() {
         ImGui::End();
         ImGui::Render(); // real ImGui also checks strlen/BufTextLen invariant
     }
-    assert(std::strlen(buffer) == 255); // 85 intact Japanese code points
-    assert(std::string(buffer) == long_input.substr(0, 255));
-    std::puts("PASS actual ImGui InputText: 300-byte Japanese input safely limited to 255 bytes");
+    assert(std::string(buffer) == expected);
+    ImGui::DestroyContext();
 }
 int main() {
     ImGui::CreateContext();
@@ -116,9 +174,14 @@ program += r'''
     ImGuiInputTextCallbackData history;
     history.UserData = &popup; history.EventFlag = ImGuiInputTextFlags_CallbackHistory;
     input_callback(&history); assert(popup.histories == 1);
-    check_widget();
+    check_routing();
     ImGui::DestroyContext();
 '''
+for text in ['', 'ASCII', '日本', '日本語' * 10, '𠮷野家', 'a' * 30 + '日', '日' * 100]:
+    for limit in [0, 4, 256]:
+        expected = text.encode('utf-8')[:limit].decode('utf-8', errors='ignore') if limit else text
+        program += f'    check_widget({literal(text)}, {limit}, {literal(expected)});\n'
+program += '    std::puts("PASS 21 bridge/backend/InputText cases: Japanese, multibyte chunks, limits, reopen");\n'
 program += f'    std::puts("PASS {count} UTF-8 boundary cases, byte limits/cursors/selection/canaries/history");\n}}\n'
 with tempfile.TemporaryDirectory(prefix='input-utf8-', dir=out) as tmp:
     cpp, binary = Path(tmp) / 'test.cpp', Path(tmp) / 'test'
