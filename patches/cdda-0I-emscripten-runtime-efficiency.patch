@@ -394,3 +394,74 @@ its upstream turn-based display cadence is unchanged.
      }
  
      return ret;
+
+--- a/src/do_turn.cpp
++++ b/src/do_turn.cpp
+@@ -916,8 +916,17 @@
+         // Keep the upstream game-turn cadence. Build text only when it will
+         // be displayed: corpse traversal, skill queries and key descriptions
+         // otherwise run every turn, even during long unattended activities.
+-        if( g->first_redraw_since_waiting_started ||
+-            calendar::once_every( std::min( 1_minutes, wait_refresh_rate ) ) ) {
++        bool refresh_progress = g->first_redraw_since_waiting_started ||
++                                calendar::once_every( std::min( 1_minutes, wait_refresh_rate ) );
++#if defined(EMSCRIPTEN)
++        // Game-turn intervals alone can leave the top-of-screen percentage
++        // unchanged for seconds on slow CPUs. Refresh that same popup from
++        // actual activity state, without running or skipping simulation work.
++        static double last_progress_refresh_ms = 0.0;
++        refresh_progress = refresh_progress ||
++                           cata_web::now_ms() - last_progress_refresh_ms >= 100.0;
++#endif
++        if( refresh_progress ) {
+             if( g->first_redraw_since_waiting_started ||
+                 calendar::once_every( wait_refresh_rate ) ) {
+                 ui_manager::redraw();
+@@ -943,6 +952,9 @@
+             ui_manager::redraw();
+             refresh_display();
+             g->first_redraw_since_waiting_started = false;
++#if defined(EMSCRIPTEN)
++            last_progress_refresh_ms = cata_web::now_ms();
++#endif
+             CATA_WEB_YIELD();
+         }
+     } else {
+--- a/src/cata_web_yield.cpp
++++ b/src/cata_web_yield.cpp
+@@ -54,6 +54,10 @@
+ // 例えば pump_events() の中から redraw が走り、その先でまた
+ // yield 判定に到達する経路が存在する。
+ bool yield_in_progress = false;
++// All call sites share the browser's last opportunity to process events.
++// Independent timers otherwise unwind the same Asyncify stack repeatedly
++// when one long turn crosses several yield sites in quick succession.
++double last_browser_yield_ms = 0.0;
+ 
+ } // namespace
+ 
+@@ -72,6 +76,7 @@
+     }
+     yield_in_progress = true;
+     cata_web_yield_impl();
++    last_browser_yield_ms = emscripten_get_now();
+     yield_in_progress = false;
+ }
+ 
+@@ -82,6 +87,7 @@
+     }
+     yield_in_progress = true;
+     cata_web_yield_paint_impl();
++    last_browser_yield_ms = emscripten_get_now();
+     yield_in_progress = false;
+ }
+ 
+@@ -91,7 +97,7 @@
+         return false;
+     }
+     const double now = emscripten_get_now();
+-    if( now - last_yield_ms < budget_ms ) {
++    if( now - last_yield_ms < budget_ms || now - last_browser_yield_ms < budget_ms ) {
+         return false;
+     }
+     yield_now();
