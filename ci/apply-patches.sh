@@ -262,4 +262,11 @@ if [ "$sample_calls" != "1" ]; then
     exit 1
 fi
 
-echo "[VERIFY] OK: 全 10 パッチが意図どおり適用された"
+# Exercise actual patched control flow before any expensive compilation.
+# Existing Actions jobs already call this script; no workflow changes needed.
+# Dependencies: Python 3, g++ (C++17), Node.js 22 (available on ubuntu-latest).
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+python3 "$SCRIPT_DIR/../bench/runtime_efficiency_test.py" "$PWD"
+node "$SCRIPT_DIR/../bench/asset_loader_test.js"
+
+echo "[VERIFY] OK: 全 10 パッチとランタイム回帰テストが合格"
