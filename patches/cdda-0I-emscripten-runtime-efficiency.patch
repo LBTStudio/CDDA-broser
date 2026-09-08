@@ -465,3 +465,83 @@ its upstream turn-based display cadence is unchanged.
          return false;
      }
      yield_now();
+
+--- a/src/cata_web_yield.h
++++ b/src/cata_web_yield.h
+@@ -55,6 +55,10 @@
+  */
+ void yield_now();
+ 
++// Idle input wait: wake on real browser input, with a bounded fallback for
++// gamepads and events queued internally by SDL. Never consumes an event.
++void wait_for_input( int timeout_ms );
++
+ /**
+  * 描画フレームを 1 枚確実に挟んでから戻る（requestAnimationFrame 待ち）。
+  *
+--- a/src/cata_web_yield.cpp
++++ b/src/cata_web_yield.cpp
+@@ -50,6 +50,32 @@
+     } );
+ } );
+ 
++// Unlike yield_now(), an idle wait must not continuously post messages.
++// Capture listeners only wake the suspended game; SDL still owns delivery.
++EM_ASYNC_JS( void, cata_web_wait_input_impl, ( int timeout_ms ), {
++    await new Promise( function( resolve ) {
++        var events = ["keydown", "keyup", "mousedown", "mouseup", "mousemove",
++                      "wheel", "touchstart", "touchend", "input",
++                      "compositionupdate", "compositionend", "focus", "blur",
++                      "resize", "visibilitychange"];
++        var finished = false;
++        var timer;
++        var wake = function() {
++            if( finished ) { return; }
++            finished = true;
++            clearTimeout( timer );
++            events.forEach( function( name ) {
++                window.removeEventListener( name, wake, true );
++            } );
++            resolve();
++        };
++        events.forEach( function( name ) {
++            window.addEventListener( name, wake, true );
++        } );
++        timer = setTimeout( wake, timeout_ms );
++    } );
++} );
++
+ // Asyncify の巻き戻しは入れ子にできないため、再入を弾く。
+ // 例えば pump_events() の中から redraw が走り、その先でまた
+ // yield 判定に到達する経路が存在する。
+@@ -72,6 +98,17 @@
+     }
+     yield_in_progress = true;
+     cata_web_yield_impl();
++    yield_in_progress = false;
++}
++
++void wait_for_input( const int timeout_ms )
++{
++    if( yield_in_progress ) {
++        return;
++    }
++    yield_in_progress = true;
++    cata_web_wait_input_impl( timeout_ms );
++    last_browser_yield_ms = emscripten_get_now();
+     yield_in_progress = false;
+ }
+ 
+--- a/src/sdltiles.cpp
++++ b/src/sdltiles.cpp
+@@ -4381,7 +4381,9 @@
+     // MessageChannel でも同じ効果が得られ、しかも実測 0.075ms で済む。
+     const auto wait_for_input_events = []() {
+ #if defined(EMSCRIPTEN)
+-        cata_web::yield_now();
++        // Keyboard/IME/mouse input wakes immediately; fallback polling is
++        // only for gamepads or SDL-internal events. Do not spin when idle.
++        cata_web::wait_for_input( inputdelay > 0 ? std::min( inputdelay, 16 ) : 16 );
+ #else
+         SDL_Delay( 1 );
+ #endif
