@@ -427,45 +427,6 @@ its upstream turn-based display cadence is unchanged.
              CATA_WEB_YIELD();
          }
      } else {
---- a/src/cata_web_yield.cpp
-+++ b/src/cata_web_yield.cpp
-@@ -54,6 +54,10 @@
- // 例えば pump_events() の中から redraw が走り、その先でまた
- // yield 判定に到達する経路が存在する。
- bool yield_in_progress = false;
-+// All call sites share the browser's last opportunity to process events.
-+// Independent timers otherwise unwind the same Asyncify stack repeatedly
-+// when one long turn crosses several yield sites in quick succession.
-+double last_browser_yield_ms = 0.0;
- 
- } // namespace
- 
-@@ -72,6 +76,7 @@
-     }
-     yield_in_progress = true;
-     cata_web_yield_impl();
-+    last_browser_yield_ms = emscripten_get_now();
-     yield_in_progress = false;
- }
- 
-@@ -82,6 +87,7 @@
-     }
-     yield_in_progress = true;
-     cata_web_yield_paint_impl();
-+    last_browser_yield_ms = emscripten_get_now();
-     yield_in_progress = false;
- }
- 
-@@ -91,7 +97,7 @@
-         return false;
-     }
-     const double now = emscripten_get_now();
--    if( now - last_yield_ms < budget_ms ) {
-+    if( now - last_yield_ms < budget_ms || now - last_browser_yield_ms < budget_ms ) {
-         return false;
-     }
-     yield_now();
-
 --- a/src/cata_web_yield.h
 +++ b/src/cata_web_yield.h
 @@ -55,6 +55,10 @@
@@ -479,14 +440,27 @@ its upstream turn-based display cadence is unchanged.
  /**
   * 描画フレームを 1 枚確実に挟んでから戻る（requestAnimationFrame 待ち）。
   *
+--- a/src/sdltiles.cpp
++++ b/src/sdltiles.cpp
+@@ -4381,7 +4381,9 @@
+     // MessageChannel でも同じ効果が得られ、しかも実測 0.075ms で済む。
+     const auto wait_for_input_events = []() {
+ #if defined(EMSCRIPTEN)
+-        cata_web::yield_now();
++        // Keyboard/IME/mouse input wakes immediately; fallback polling is
++        // only for gamepads or SDL-internal events. Do not spin when idle.
++        cata_web::wait_for_input( inputdelay > 0 ? std::min( inputdelay, 16 ) : 16 );
+ #else
+         SDL_Delay( 1 );
+ #endif
+
 --- a/src/cata_web_yield.cpp
 +++ b/src/cata_web_yield.cpp
-@@ -50,6 +50,32 @@
+@@ -50,10 +50,38 @@
      } );
  } );
  
-+// Unlike yield_now(), an idle wait must not continuously post messages.
-+// Capture listeners only wake the suspended game; SDL still owns delivery.
++// Idle waits wake without consuming or reissuing input events.
 +EM_ASYNC_JS( void, cata_web_wait_input_impl, ( int timeout_ms ), {
 +    await new Promise( function( resolve ) {
 +        var events = ["keydown", "keyup", "mousedown", "mouseup", "mousemove",
@@ -514,10 +488,18 @@ its upstream turn-based display cadence is unchanged.
  // Asyncify の巻き戻しは入れ子にできないため、再入を弾く。
  // 例えば pump_events() の中から redraw が走り、その先でまた
  // yield 判定に到達する経路が存在する。
-@@ -72,6 +98,17 @@
+ bool yield_in_progress = false;
++// Share the browser's last opportunity across otherwise independent sites.
++// Avoid back-to-back Asyncify unwinds after a long simulation step.
++double last_browser_yield_ms = 0.0;
+ 
+ } // namespace
+ 
+@@ -72,6 +100,18 @@
      }
      yield_in_progress = true;
      cata_web_yield_impl();
++    last_browser_yield_ms = emscripten_get_now();
 +    yield_in_progress = false;
 +}
 +
@@ -532,16 +514,20 @@ its upstream turn-based display cadence is unchanged.
      yield_in_progress = false;
  }
  
---- a/src/sdltiles.cpp
-+++ b/src/sdltiles.cpp
-@@ -4381,7 +4381,9 @@
-     // MessageChannel でも同じ効果が得られ、しかも実測 0.075ms で済む。
-     const auto wait_for_input_events = []() {
- #if defined(EMSCRIPTEN)
--        cata_web::yield_now();
-+        // Keyboard/IME/mouse input wakes immediately; fallback polling is
-+        // only for gamepads or SDL-internal events. Do not spin when idle.
-+        cata_web::wait_for_input( inputdelay > 0 ? std::min( inputdelay, 16 ) : 16 );
- #else
-         SDL_Delay( 1 );
- #endif
+@@ -82,6 +122,7 @@
+     }
+     yield_in_progress = true;
+     cata_web_yield_paint_impl();
++    last_browser_yield_ms = emscripten_get_now();
+     yield_in_progress = false;
+ }
+ 
+@@ -91,7 +132,7 @@
+         return false;
+     }
+     const double now = emscripten_get_now();
+-    if( now - last_yield_ms < budget_ms ) {
++    if( now - last_yield_ms < budget_ms || now - last_browser_yield_ms < budget_ms ) {
+         return false;
+     }
+     yield_now();
