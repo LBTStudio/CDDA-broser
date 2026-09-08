@@ -44,6 +44,7 @@ json-cache
 idbfs-debounce
 activity-and-ime
 input-queue
+activity-perf
 "
 
 for name in $PATCHES; do
@@ -193,4 +194,77 @@ if [ "$drain_calls" != "3" ]; then
     exit 1
 fi
 
-echo "[VERIFY] OK: 全 8 パッチが意図どおり適用された"
+# ------------------------------------------------------------------
+# F-29: 複数ターン行動の所要時間の可視化（activity-perf パッチ）
+# ------------------------------------------------------------------
+# 実行文として存在することを確認する（コメント内の言及では通さない）。
+grep -q '^void sample_activity_turn( const avatar &u )'  src/do_turn.cpp
+grep -q '^    sample_activity_turn( u );'                src/do_turn.cpp
+grep -q '\[perf\] %1\$s: %2\$d turns in %3\$d ms'        src/do_turn.cpp
+
+# 粉砕の進捗表示。
+# 宣言（ヘッダ）と定義（実装）の両方が無いとリンクエラーになるので
+# 片方だけ入った状態を検出できるように別々に確認する。
+#
+# 【重要】宣言の検査でファイル全体を grep してはいけない。
+# `std::string get_progress_message( const player_activity & ) const override;`
+# という同一の行は他の activity_actor にも存在し（実測で 3 箇所）、
+# pulp のものを消してもファイル全体の grep は通ってしまう。
+# 実際に negative test でこの見逃しを踏んだ。
+# そこで pulp クラスの本体だけを切り出して検査する。
+pulp_class_line="$( grep -n '^class pulp_activity_actor' \
+                    src/activity_actor_definitions.h | head -1 | cut -d: -f1 )"
+if [ -z "$pulp_class_line" ]; then
+    echo "ERROR: class pulp_activity_actor が見つからない。" >&2
+    exit 1
+fi
+# クラス本体は次の `^class ` までとする（十分な余裕をとって 120 行見る）
+if ! sed -n "${pulp_class_line},+120p" src/activity_actor_definitions.h \
+        | sed -n "1,/^class [a-z_]*activity_actor/p" \
+        | grep -q '^ *std::string get_progress_message( const player_activity & ) const override;'; then
+    echo "ERROR: pulp_activity_actor クラス内に get_progress_message の" >&2
+    echo "       宣言が無い（${pulp_class_line} 行目のクラスを検査した）。" >&2
+    exit 1
+fi
+grep -q '^std::string pulp_activity_actor::get_progress_message' \
+                                                          src/activity_actor.cpp
+
+# 計測の呼び出しが【毎ターン通る位置】にあることを行番号で検査する。
+#
+# 行数固定の grep -A/-B では検査できない（間に説明コメントが
+# 60 行以上入る）。また「呼ばれてはいるが while ループの内側に
+# 入ってしまった」場合は計測が壊れる（1 ターンで複数回加算される）。
+# そこで
+#     debug_hour_timer.print_time() 行 < sample_activity_turn 行
+#                                     < u.update_body() 行
+# を確認する。この 3 つは do_turn() の直列部分に並んでいるので、
+# 順序が保たれていればループの外にあることが保証される。
+hour_timer_line="$( grep -n 'g->debug_hour_timer.print_time();' src/do_turn.cpp \
+                    | head -1 | cut -d: -f1 )"
+sample_line="$( grep -n '^    sample_activity_turn( u );' src/do_turn.cpp \
+                | head -1 | cut -d: -f1 )"
+update_body_line="$( grep -n '^    u.update_body();' src/do_turn.cpp \
+                     | head -1 | cut -d: -f1 )"
+if [ -z "$hour_timer_line" ] || [ -z "$sample_line" ] || [ -z "$update_body_line" ]; then
+    echo "ERROR: 計測呼び出しの位置検査に必要な目印が見つからない。" >&2
+    echo "       hour_timer=${hour_timer_line} sample=${sample_line} update_body=${update_body_line}" >&2
+    exit 1
+fi
+if [ "$sample_line" -le "$hour_timer_line" ] || \
+   [ "$sample_line" -ge "$update_body_line" ]; then
+    echo "ERROR: sample_activity_turn() が do_turn() の直列部分にない。" >&2
+    echo "       期待: ${hour_timer_line} 行 < sample < ${update_body_line} 行" >&2
+    echo "       実際: sample = ${sample_line} 行" >&2
+    echo "       ループ内に入ると 1 ターンで複数回加算され計測が壊れる。" >&2
+    exit 1
+fi
+
+# 呼び出しは 1 箇所だけであること（複数あると二重計上になる）。
+sample_calls="$( grep -c '^    sample_activity_turn( u );' src/do_turn.cpp )"
+if [ "$sample_calls" != "1" ]; then
+    echo "ERROR: sample_activity_turn() の呼び出しが ${sample_calls} 箇所。" >&2
+    echo "       期待値は 1（複数あると 1 ターンで二重に数える）。" >&2
+    exit 1
+fi
+
+echo "[VERIFY] OK: 全 9 パッチが意図どおり適用された"

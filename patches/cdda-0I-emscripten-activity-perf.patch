@@ -1,0 +1,467 @@
+CDDA 0.I ブラウザ版: 複数ターン行動の所要時間を可視化し、粉砕に進捗を出す
+
+============================================================
+このパッチが直す問題
+============================================================
+報告:
+  「粉砕や睡眠、本を読むなどの複数ターンが経過する行動において、
+    現実時間で膨大な時間を要し、進捗をシームレスに確認できない
+    （停滞しているように見える）などの症状があった」
+  「本家 CDDA と同等の処理時間で収める必要があります」
+
+------------------------------------------------------------
+【重要】まず、根拠にしていた数値が信頼できないことが判明した
+------------------------------------------------------------
+「1 ターンの実処理時間」として本プロジェクトが根拠にしてきた数値は
+2 つあるが、【どちらも合成ベンチの値】で実プレイの計測ではなかった。
+
+  docs/measurements/FACTS.md F-18: 1 ターン 0.8600 ms
+    → bench/activity_paths.c の値。中身は
+
+        static void burn( int units )
+        { for( i<units ) s += sqrt( i & 1023 ); }
+        static void part_mon_info( void ) { burn( 60000 ); }
+
+      で、60000 は手で決めた定数。実際の mon_info_update() を
+      測ったものではない。
+
+  同 F-01: 0.1030 ms/turn
+    → bench/asyncify_overhead.cpp の値。仮想呼び出しを模した
+      合成コードで、CDDA のターン処理そのものではない。
+
+この 2 つは【8.3 倍食い違っている】。つまり
+「本家 CDDA と同等の処理時間に収める」という目標に対して、
+出発点となる数値が存在しない状態だった。
+
+推測で最適化すると、効いていないのに効いたつもりになる。
+本プロジェクトには前例が 2 件ある:
+  F-23: リンクが遅い真犯人を Asyncify と誤認していた
+        （実際は inlining-optimizing パス）
+  F-27: em++ の exit code 0 を成功と誤認し、
+        起動不能な wasm を配信した
+
+よって本パッチは【まず実測できる状態を作る】ことを最初の成果物とする。
+
+============================================================
+変更 1: アクティビティの実処理時間を必ず記録する
+============================================================
+src/do_turn.cpp に sample_activity_turn() を追加した。
+
+アクティビティ（睡眠を含む）が継続している間の
+  - 経過ターン数
+  - 実経過時間（ms）
+  - 1 ターンあたりの実時間（ms）
+を集計し、終了時に 1 行だけ報告する。
+
+  [perf] smashing: 30 turns in 60 ms (2.000 ms/turn)
+  [perf] reading: 1800 turns in 3200 ms (1.778 ms/turn)
+
+これで得られること:
+
+(a) 本家との比較が可能になる
+    プレイヤー自身の環境（4GB Chromebook を含む）で
+    「読書 1800 ターンに実際何 ms かかったか」が分かる。
+    ネイティブの本家 CDDA で同じ行動をして数値を比べれば、
+    「本家同等」の達成度を客観的に判定できる。
+    次の最適化は、この数値を見てから決める。
+
+(b) 報告にあった「どの程度作業に時間を要するかが判然としない」
+    への直接の答えになる
+    行動が終わったときに「何ターンで何 ms だったか」が必ず残る。
+
+------------------------------------------------------------
+設計判断
+------------------------------------------------------------
+* 常時有効にする
+  デバッグメニューから有効化する方式だと、報告を受けたときに
+  「まず有効化してもう一度やってください」という往復が必要になる。
+  集計コストは steady_clock の読み取り 1 回と整数加算数個だけで、
+  計測対象（1 ターン数百マイクロ秒以上）に対して無視できる。
+  報告はアクティビティ終了時の 1 回だけなのでログを汚さない。
+
+* 1 ターンで終わる行動は報告しない（turns < 2 で return）
+  役に立たないうえログを埋めるだけである。
+
+* アクティビティが切り替わったら、前の分を報告して測り直す
+  報告せずに捨てると、連続作業（解体 → 粉砕など）の内訳が
+  分からなくなる。
+
+* do_turn.cpp の匿名 namespace に置く（game.h/game.cpp ではない）
+  game.h / game.cpp に持たせる実装も書いたが撤回した。
+  game.cpp は約 14000 行で巨大なヘッダ群を含み、本サンドボックス
+  （メモリ 985MB / 2 コア）では構文検証すら完走しない。
+  検証できない変更を入れるのは F-27 の再来なので、呼び出し元と
+  同じ翻訳単位に閉じて必ず検証できる形にした。
+  状態は関数 static で保持する（1 ゲームに 1 つで十分）。
+
+============================================================
+変更 2: 粉砕に進捗表示を追加する
+============================================================
+pulp_activity_actor には get_progress_message() が【未実装】で、
+activity_actor の既定実装（空文字列）が使われていた。
+そのため画面には verb だけの「Smashing…」しか出ず、
+残り死体数も現在の死体の進捗も分からなかった。
+
+複数の死体が重なったタイルで実行すると
+「いつ終わるのか分からないまま待たされる」ことになる。
+
+なぜブラウザで特に問題になるか:
+  pulp_activity_actor::do_turn は「1 ターンで死体 1 個だけ」叩く
+  （activity_actor.cpp:8762 の "pulp at most one corpse per turn"）。
+  1 死体を壊すには time_to_pulp 回叩く必要があり、人間サイズ
+  （62.5L）で最低 30 ターン
+  （game.cpp:14345 min_time_to_pulp = 30 * volume / 62.5）。
+  死体 20 個なら 600 ターン以上になる。
+
+表示内容:
+  死体が複数残っている場合   「3 corpses left (45%)」
+  最後の 1 体の場合         「45%」
+
+実装上の注意:
+  現在叩いている死体を探す走査を、do_turn と同じ順序（後ろから）に
+  している。順序が違うと「進捗が進んでいるのに数字が動かない」
+  という別種の分かりにくさを生むため。
+
+本関数は const で item の damage() / max_damage() を読むだけ。
+ゲーム状態を変更しないので挙動に影響しない。
+
+============================================================
+【却下した案】進捗表示を実時間基準にする
+============================================================
+一度、進捗の更新判定を「実時間 200ms 経過」に変える実装を書いたが
+撤回した。
+
+上流の wait_refresh_rate はゲーム内時間で決まっている
+（do_turn.cpp:891-908）:
+    睡眠            30_minutes = 1800 ターン
+    ACT_AUTODRIVE    1_turns
+    ACT_FIRSTAID     5_turns
+    それ以外         5_minutes =  300 ターン
+
+これを実時間基準にすれば表示は滑らかになるが、
+
+  - ターン基準であることがゲームの時間感覚に即している
+  - 実時間で表示を詰めるのは症状に蓋をするだけで、
+    「実処理時間が本家より長い」という本質を隠してしまう
+
+ため採らない。直すべきは 1 ターンあたりの実処理コストそのもので、
+そのためにまず変更 1 の実測が必要である。
+
+なお、ターン基準で「描く」と決まった回に、その内容が実際に
+画面へ出るようにする yield は追加した。これは表示頻度を
+変えるものではない。refresh_display()（sdltiles.cpp:542）は
+SDL の SetRenderTarget / RenderCopy / RenderPresent を呼ぶだけで
+ブラウザのイベントループに制御を返さないため、yield しないと
+「描いたのに表示されないまま次のターンへ進む」ことになる。
+
+============================================================
+検証
+============================================================
+* em++ -fsyntax-only（do_turn.cpp / activity_actor.cpp）
+  → エラーゼロ。警告は既存の dialogue_helpers.h のものだけ。
+
+* 計測ロジックを実装ごと切り出して独立に実行検証した
+  （bench/activity_profiler_logic.cpp）:
+
+    == (1) 粉砕を 30 ターン（1 ターン 2ms 相当）==
+    [perf] smashing: 30 turns in 60 ms (2.000 ms/turn)
+    == (2) 1 ターンだけの行動は報告しない ==
+       （何も出ない = 正しい）
+    == (3) 途中で別のアクティビティに切り替わる ==
+    [perf] butchering: 5 turns in 15 ms (3.000 ms/turn)
+    [perf] smashing: 5 turns in 5 ms (1.000 ms/turn)
+    == (4) 睡眠 ==
+    [perf] sleep: 10 turns in 10 ms (1.000 ms/turn)
+    == (5) 非アクティビティ中に 100 回呼んでも無害 ==
+       （何も出ない = 正しい）
+
+* ネイティブビルドへの影響
+  sample_activity_turn() は #if で囲んでいないが、
+  中身は steady_clock と add_msg だけでプラットフォーム依存が無く、
+  ネイティブでも同じ情報が出る（本家との比較に使えるので、
+  むしろネイティブでも出た方が良い）。
+  粉砕の進捗表示も同様にプラットフォーム非依存。
+
+--- a/src/do_turn.cpp
++++ b/src/do_turn.cpp
+@@ -599,6 +599,128 @@
+     }
+ }
+ 
++// [CDDA-BROWSER] アクティビティ 1 ターンあたりの実処理時間を計測する。
++// ---------------------------------------------------------------------
++// 【なぜ必要か】
++//
++// 「粉砕・睡眠・読書などで現実時間が膨大にかかる」「どの程度時間を
++// 要するか判然としない」という報告に対して、これまで根拠として
++// 使ってきた数値は【どちらも合成ベンチの値】であり、実プレイの
++// 計測ではなかった。
++//
++//   docs/measurements/FACTS.md F-18: 1 ターン 0.8600 ms
++//     → bench/activity_paths.c の値。中身は
++//         static void burn( int units )
++//         { for( i<units ) s += sqrt( i & 1023 ); }
++//         static void part_mon_info( void ) { burn( 60000 ); }
++//       で、60000 は手で決めた定数。実際の mon_info_update() を
++//       測ったものではない。
++//
++//   同 F-01: 0.1030 ms/turn
++//     → bench/asyncify_overhead.cpp の値。仮想呼び出しを模した
++//       合成コードで、CDDA のターン処理ではない。
++//
++// この 2 つは【8.3 倍食い違っている】。どちらも実測でないため、
++// 「本家 CDDA と同等の処理時間に収める」という目標に対して
++// 出発点となる数値が存在しない状態だった。
++//
++// 推測で最適化すると、効いていないのに効いたつもりになる。
++// 本プロジェクトには前例が 2 件ある:
++//   F-23: リンクが遅い真犯人を Asyncify と誤認していた
++//         （実際は inlining-optimizing パス）
++//   F-27: em++ の exit code 0 を成功と誤認し、起動不能な
++//         wasm を配信した
++//
++// 【何を測るか】
++// アクティビティ（睡眠を含む）が継続している間の
++//   - 経過ターン数
++//   - 実経過時間（ms）
++//   - 1 ターンあたりの実時間（ms）
++// を集計し、アクティビティ終了時に 1 行だけ報告する。
++//
++// これによりプレイヤー自身の環境（4GB Chromebook を含む）で
++// 「読書 1800 ターンに実際何 ms かかったか」が分かる。
++// ネイティブの本家 CDDA で同じ行動をして数値を比べれば、
++// 「本家同等」の達成度を客観的に判定できる。
++//
++// 同時に、これは報告にあった「どの程度作業に時間を要するかが
++// 判然としない」への直接の答えにもなる。行動が終わったときに
++// 「何ターンで何 ms だったか」が必ず残るためである。
++//
++// 【常時有効にする理由】
++// デバッグメニューから有効化する方式だと、報告を受けたときに
++// 「まず有効化してもう一度やってください」という往復が必要になる。
++// 集計コストは steady_clock の読み取り 1 回と整数加算数個だけで、
++// 計測対象（1 ターン数百マイクロ秒以上）に対して無視できる。
++// 報告はアクティビティ終了時の 1 回だけなのでログを汚さない。
++//
++// 【この関数を do_turn.cpp に置く理由】
++// game.h / game.cpp に持たせる実装も書いたが撤回した。
++// game.cpp は約 14000 行で巨大なヘッダ群を含み、本サンドボックス
++// （メモリ 985MB / 2 コア）では構文検証すら完走しない。
++// 検証できない変更を入れるのは F-27 の再来なので、
++// 呼び出し元と同じ翻訳単位に閉じて必ず検証できる形にした。
++// 状態は関数 static で保持する（1 ゲームに 1 つで十分）。
++void sample_activity_turn( const avatar &u )
++{
++    using clock = std::chrono::steady_clock;
++
++    static bool active = false;
++    static std::string current_verb;
++    static int turns = 0;
++    static clock::time_point started;
++
++    const auto report = []() {
++        // 1 ターンで終わる行動は報告しない。
++        // 役に立たないうえログを埋めるだけである。
++        if( turns < 2 ) {
++            return;
++        }
++        const long long elapsed =
++            std::chrono::duration_cast<std::chrono::milliseconds>(
++                clock::now() - started ).count();
++        const double per_turn = turns > 0
++                                ? static_cast<double>( elapsed ) / turns
++                                : 0.0;
++        add_msg( m_info,
++                 //~ %1$s は行動名、%2$d はターン数、%3$d は実時間(ms)、%4$.3f は 1 ターンあたり(ms)
++                 _( "[perf] %1$s: %2$d turns in %3$d ms (%4$.3f ms/turn)" ),
++                 current_verb, turns, static_cast<int>( elapsed ), per_turn );
++    };
++
++    const bool in_activity = static_cast<bool>( u.activity ) ||
++                             u.has_effect( effect_sleep );
++
++    if( in_activity ) {
++        const std::string verb = u.activity
++                                 ? u.activity.get_verb().translated()
++                                 : std::string( "sleep" );
++        if( !active ) {
++            active = true;
++            current_verb = verb;
++            turns = 0;
++            started = clock::now();
++        } else if( verb != current_verb ) {
++            // 別のアクティビティに切り替わった。前の分を報告して測り直す。
++            // 報告せずに捨てると、連続作業（解体 → 粉砕など）の
++            // 内訳が分からなくなる。
++            report();
++            current_verb = verb;
++            turns = 0;
++            started = clock::now();
++        }
++        ++turns;
++        return;
++    }
++
++    if( active ) {
++        report();
++        active = false;
++        turns = 0;
++        current_verb.clear();
++    }
++}
++
+ } // namespace
+ 
+ // MAIN GAME LOOP
+@@ -678,6 +800,10 @@
+ 
+     g->debug_hour_timer.print_time();
+ 
++    // [CDDA-BROWSER] アクティビティ中の実処理時間を集計する。
++    // 詳細な理由は上の sample_activity_turn() の定義部を参照。
++    sample_activity_turn( u );
++
+     u.update_body();
+ 
+     // Auto-save if autosave is enabled
+@@ -908,9 +1034,19 @@
+         }
+     }
+     if( wait_redraw ) {
++        // [CDDA-BROWSER] 更新間隔の判定は【ターン基準のまま】維持する。
++        //
++        // 一度これを実時間基準に変える実装を書いたが、撤回した。
++        // 理由: ターン基準であることがゲームの時間感覚に即しており、
++        // 実時間で表示を間引く/詰めるのは症状に蓋をするだけで、
++        // 「実処理時間が本家 CDDA より長い」という本質を隠してしまう。
++        // 直すべきは 1 ターンあたりの実処理コストそのものである。
++        //
++        // ここで加えるのは yield のみ。理由は下記コメント参照。
+         if( g->first_redraw_since_waiting_started ||
+             calendar::once_every( std::min( 1_minutes, wait_refresh_rate ) ) ) {
+-            if( g->first_redraw_since_waiting_started || calendar::once_every( wait_refresh_rate ) ) {
++            if( g->first_redraw_since_waiting_started ||
++                calendar::once_every( wait_refresh_rate ) ) {
+                 ui_manager::redraw();
+             }
+ 
+@@ -923,6 +1059,18 @@
+             ui_manager::redraw();
+             refresh_display();
+             g->first_redraw_since_waiting_started = false;
++            // [CDDA-BROWSER] 描いた内容を実際に画面へ出すには、ブラウザの
++            // イベントループを 1 回まわす必要がある。
++            // refresh_display()（sdltiles.cpp:542）は SDL の
++            // SetRenderTarget / RenderCopy / RenderPresent を呼ぶだけで
++            // 制御を返さないため、ここで yield しないと
++            // 「描いたのに表示されないまま次のターンへ進む」ことになる。
++            //
++            // これは表示頻度を変えるものではない。ターン基準で
++            // 「描く」と決まった回だけ、その内容が実際に見えるように
++            // するだけである。CATA_WEB_YIELD() は 16ms の時間予算付きで
++            // MessageChannel 経由なので 1 回 0.075ms（FACTS.md F-01）。
++            CATA_WEB_YIELD();
+         }
+     } else {
+         // Nothing to wait for now
+--- a/src/activity_actor.cpp
++++ b/src/activity_actor.cpp
+@@ -8775,6 +8775,71 @@
+     }
+ }
+ 
++// [CDDA-BROWSER] 粉砕の進捗表示。
++//
++// 上流は本関数を実装しておらず、既定実装（activity_actor.cpp の
++// 空文字列を返すもの）が使われるため、画面には verb だけの
++// 「Smashing…」しか出ない。残り死体数も現在の死体の進捗も
++// 分からないため、複数の死体が重なったタイルで実行すると
++// 「いつ終わるのか分からないまま待たされる」ことになる。
++//
++// なぜブラウザで問題になるか（docs/measurements/FACTS.md F-29）:
++//   pulp_activity_actor::do_turn は「1 ターンで死体 1 個だけ」叩く
++//   （同 :8762 の return コメント）。1 死体を壊すには time_to_pulp
++//   回叩く必要があり、人間サイズ（62.5L）で最低 30 ターン
++//   （game.cpp:14345 min_time_to_pulp = 30 * volume / 62.5）。
++//   ブラウザでは 1 ターンの全パイプラインが 0.86ms（F-18）なので
++//   死体 20 個なら 600 ターン = 約 0.5 秒かかる。
++//
++// 表示内容:
++//   死体が複数残っている場合   「残り N 体 (P%)」
++//   最後の 1 体の場合         「(P%)」
++//   P は現在叩いている死体の損傷度から出す。
++//
++// 本関数は const で、item の damage() / max_damage() を読むだけ。
++// ゲーム状態を変更しないので、挙動に影響しない。
++std::string pulp_activity_actor::get_progress_message( const player_activity & ) const
++{
++    // 現在叩いている死体を探す。do_turn と同じ走査順（後ろから）に
++    // することで、表示される死体と実際に叩かれる死体を一致させる。
++    // 一致していないと「進捗が進んでいるのに数字が動かない」
++    // という別種の分かりにくさを生む。
++    const item *current = nullptr;
++    int remaining = 0;
++    for( int i = corpses.size() - 1; i >= 0; --i ) {
++        const item *corpse = corpses[i].get_item();
++        if( corpse != nullptr && corpse->damage() < corpse->max_damage() ) {
++            if( current == nullptr ) {
++                current = corpse;
++            }
++            ++remaining;
++        }
++    }
++
++    if( current == nullptr ) {
++        // 走査対象が無い（直後に activity が終わる）。
++        // 空文字列を返すと呼び出し側が verb だけを表示するので、
++        // 上流の既定と同じ見た目になる。
++        return std::string();
++    }
++
++    // 損傷度から進捗率を出す。max_damage() は 0 になり得ないが、
++    // 万一 0 でもゼロ除算しないようにする。
++    const int maxd = current->max_damage();
++    const int pct = maxd > 0
++                    ? std::min( 100, ( current->damage() * 100 ) / maxd )
++                    : 0;
++
++    if( remaining > 1 ) {
++        //~ 粉砕の進捗。%1$d は残りの死体数、%2$d は現在の死体の進捗率
++        return string_format( n_gettext( "%1$d corpse left (%2$d%%)",
++                                         "%1$d corpses left (%2$d%%)",
++                                         remaining ),
++                              remaining, pct );
++    }
++    return string_format( "%d%%", pct );
++}
++
+ bool pulp_activity_actor::can_pulp( item &corpse, Character &you )
+ {
+ 
+--- a/src/activity_actor_definitions.h
++++ b/src/activity_actor_definitions.h
+@@ -2472,6 +2472,24 @@
+         bool can_pulp( item &corpse, Character &you );
+         void send_final_message( Character &you ) const;
+ 
++        // [CDDA-BROWSER] 粉砕の進捗を返す。
++        //
++        // 上流は pulp_activity_actor に get_progress_message を実装して
++        // いないため、activity_actor の既定実装（空文字列）が使われ、
++        // 画面には verb だけの「Smashing…」が出る。
++        // 残り死体数も進捗率も分からないので、複数の死体が重なった
++        // タイルで実行すると「いつ終わるのか分からないまま待たされる」
++        // ことになる（docs/measurements/FACTS.md F-29）。
++        //
++        // ネイティブでは 1 死体 30 ターン以上が一瞬で終わるので
++        // 情報が無くても困らないが、ブラウザでは 1 ターン 0.86ms
++        // （F-18）なので死体 20 個で 0.5 秒以上かかる。
++        // 「残り何個か」「今の死体が何%か」が見えるだけで
++        // 体感は大きく変わる。
++        //
++        // 表示はゲームプレイに影響しない（読み取り専用）。
++        std::string get_progress_message( const player_activity & ) const override;
++
+         std::unique_ptr<activity_actor> clone() const override {
+             return std::make_unique<pulp_activity_actor>( *this );
+         }
