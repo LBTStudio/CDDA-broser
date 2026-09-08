@@ -327,3 +327,22 @@ its upstream turn-based display cadence is unchanged.
  
          /**
           * If this returns true, the action can be continued without
+
+--- a/src/input_popup.cpp
++++ b/src/input_popup.cpp
+@@ -176,7 +176,14 @@
+     if( data->EventFlag == ImGuiInputTextFlags_CallbackEdit ) {
+         int max = popup->get_max_input_length();
+         if( max > 0 && data->BufTextLen > max ) {
+-            data->BufTextLen = max;
++            // Keep the existing byte limit, but never retain half a UTF-8
++            // character. Updating BufTextLen alone violates ImGui's required
++            // strlen(Buf) invariant and leaves the old suffix in the buffer.
++            int end = max;
++            while( end > 0 && ( static_cast<unsigned char>( data->Buf[end] ) & 0xC0 ) == 0x80 ) {
++                --end;
++            }
++            data->DeleteChars( end, data->BufTextLen - end );
+             data->SelectionStart = data->BufTextLen;
+             data->SelectionEnd = data->BufTextLen;
+             data->CursorPos = data->BufTextLen;

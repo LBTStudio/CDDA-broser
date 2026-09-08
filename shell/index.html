@@ -30,6 +30,7 @@
       .profile-chip .del { color: #c66; margin-left: 8px; font-weight: bold; }
       #profile-note { font-size: 12px; opacity: 0.55; max-width: 480px; text-align: center; line-height: 1.5; margin-top: 8px; }
       #error-overlay { display: none; position: absolute; inset: 0; z-index: 20; background: rgba(10, 0, 0, 0.92); color: #fdd; font-family: Terminus, monospace; padding: 28px; box-sizing: border-box; overflow: auto; }
+      #save-warning { position: fixed; right: 8px; top: 8px; max-width: min(460px, 80vw); z-index: 6; padding: 8px 12px; color: #ffe0a0; background: #351d08; font: 14px/1.5 sans-serif; pointer-events: none; }
       #error-overlay h2 { color: #f88; margin-top: 0; }
       #error-overlay pre { white-space: pre-wrap; word-break: break-all; background: #200; padding: 10px; border-radius: 4px; font-size: 13px; }
       #error-overlay button { font-family: Terminus, monospace; font-size: 18px; padding: 8px 22px; background: #632; color: #fff; border: none; border-radius: 4px; cursor: pointer; margin-right: 10px; }
@@ -96,6 +97,7 @@
     <canvas id="canvas" style="width: 100%; height: 100%; min-width: 640px; min-height: 384px;" tabindex="-1"></canvas>
     <input id="ime-proxy" type="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" aria-hidden="true" tabindex="-1" />
     <div id="loading-message" style="display: none">Loading...</div>
+    <div id="save-warning" role="status" aria-live="polite" hidden></div>
 
     <div id="mod-overlay">
       <h2>Mods / MOD管理</h2>
@@ -501,10 +503,22 @@
         return migrateJapaneseDefault(fs, mountPoint + "/config");
       };
 
+      /* Persistence errors stay visible until all pending writes succeed.
+         A transient toast could disappear while the save is still at risk. */
+      const saveWarning = document.getElementById("save-warning");
+      window.CDDA_ON_IDBFS_SYNC_STATE = function (failed, detail) {
+        saveWarning.hidden = !failed;
+        saveWarning.textContent = failed ?
+          "セーブのブラウザ保存に失敗しました。自動再試行中です。再読み込み・終了をせず、Export Savesでバックアップしてください。 / Save sync failed; retrying. Export a backup before leaving." : "";
+        if (failed) console.warn("IDBFS sync failed:", detail);
+      };
+
       /* Called by the patched runtime when IndexedDB is unavailable (storage
          pressure, private browsing, corrupted DB).  The game continues on
          in-memory storage; make that visible instead of failing silently. */
       window.CDDA_ON_IDBFS_ERROR = function (detail) {
+        saveWarning.hidden = false;
+        saveWarning.textContent = "ブラウザ保存を利用できません。再読み込み・終了前にExport Savesでバックアップしてください。 / Browser persistence unavailable; export a backup before leaving.";
         console.warn("IDBFS unavailable:", detail);
         noticeMessage(
           "\u6ce8\u610f: \u3053\u306e\u30d6\u30e9\u30a6\u30b6\u3067\u306f\u30bb\u30fc\u30d6\u3092\u4fdd\u5b58\u3067\u304d\u307e\u305b\u3093\uff08\u518d\u8aad\u307f\u8fbc\u307f\u3067\u6d88\u3048\u307e\u3059\uff09\u3002 / " +
@@ -716,6 +730,10 @@
         } else {
           imeComposing = false;
           imeProxy.value = "";
+          // Text queued for a closed field must not become map commands or
+          // appear in the next filter. Blur may itself emit compositionend;
+          // the handlers below check imeWanted before accepting that event.
+          window.cddaImeState.commits.length = 0;
           window.cddaImeState.preview = null;
           if (document.activeElement === imeProxy) imeProxy.blur();
         }
@@ -728,7 +746,8 @@
          so those keys never reach the game as game input.  keyCode 229 is
          the standard "IME is processing" marker. */
       function imeSwallowKey(e) {
-        if (imeComposing || e.isComposing || e.keyCode === 229) {
+        if (imeWanted && !errorShown && e.target === imeProxy &&
+            (imeComposing || e.isComposing || e.keyCode === 229)) {
           e.stopImmediatePropagation();
         }
       }
@@ -736,14 +755,17 @@
       window.addEventListener("keyup", imeSwallowKey, true);
 
       imeProxy.addEventListener("compositionstart", () => {
+        if (!imeWanted || errorShown) return;
         imeComposing = true;
         window.cddaImeState.preview = "";
       });
       imeProxy.addEventListener("compositionupdate", (e) => {
+        if (!imeWanted || errorShown) return;
         window.cddaImeState.preview = e.data || "";
       });
       imeProxy.addEventListener("compositionend", (e) => {
         imeComposing = false;
+        if (!imeWanted || errorShown) { imeProxy.value = ""; return; }
         const text = e.data || "";
         if (text) window.cddaImeState.commits.push(text);
         window.cddaImeState.preview = "";
@@ -753,6 +775,7 @@
       // paste, or an IME that commits without composition events) is
       // forwarded as committed text as well.
       imeProxy.addEventListener("input", (e) => {
+        if (!imeWanted || errorShown) { imeProxy.value = ""; return; }
         if (imeComposing || e.isComposing) return;
         const text = imeProxy.value;
         if (text) window.cddaImeState.commits.push(text);
