@@ -346,3 +346,51 @@ its upstream turn-based display cadence is unchanged.
              data->SelectionStart = data->BufTextLen;
              data->SelectionEnd = data->BufTextLen;
              data->CursorPos = data->BufTextLen;
+
+--- a/src/sdltiles.cpp
++++ b/src/sdltiles.cpp
+@@ -2913,6 +2913,8 @@
+             }
+             SDL_Event commit_event {};
+             commit_event.type = SDL_TEXTINPUT;
++            // ImGui rejects text events not addressed to its SDL window.
++            commit_event.text.windowID = SDL_GetWindowID( window.get() );
+             memcpy( commit_event.text.text, p, chunk );
+             commit_event.text.text[chunk] = '\0';
+             SDL_PushEvent( &commit_event );
+@@ -2952,6 +2954,7 @@
+         }
+         SDL_Event edit_event {};
+         edit_event.type = SDL_TEXTEDITING;
++        edit_event.edit.windowID = SDL_GetWindowID( window.get() );
+         memcpy( edit_event.edit.text, ime_buf, chunk );
+         edit_event.edit.text[chunk] = '\0';
+         edit_event.edit.start = 0;
+--- a/src/game.cpp
++++ b/src/game.cpp
+@@ -8308,11 +8308,13 @@
+ {
+     const std::string name = it->tname();
+ 
+-    if( std::find( item_order.begin(), item_order.end(), name ) == item_order.end() ) {
++    // The map already indexes every encountered name. Avoid scanning the
++    // growing order vector for each item; retain first-seen ordering.
++    auto entry = temp_items.try_emplace( name, it, relative_pos );
++    if( entry.second ) {
+         item_order.push_back( name );
+-        temp_items[name] = map_item_stack( it, relative_pos );
+     } else {
+-        temp_items[name].add_at_pos( it, relative_pos );
++        entry.first->second.add_at_pos( it, relative_pos );
+     }
+ 
+     for( const item *content : it->all_known_contents() ) {
+@@ -8348,7 +8350,7 @@
+ 
+     ret.reserve( item_order.size() );
+     for( auto &elem : item_order ) {
+-        ret.push_back( temp_items[elem] );
++        ret.push_back( std::move( temp_items.at( elem ) ) );
+     }
+ 
+     return ret;
