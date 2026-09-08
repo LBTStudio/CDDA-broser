@@ -82,6 +82,7 @@ program = r'''
 using time_duration = int;
 constexpr int operator""_minutes(unsigned long long n) { return n * 60; }
 constexpr int operator""_turns(unsigned long long n) { return n; }
+namespace cata_web { double clock_ms = 0; double now_ms() { return clock_ms; } }
 namespace calendar {
 int turn = 0;
 bool once_every(int n) { return turn % n == 0; }
@@ -188,11 +189,36 @@ int main() {
             ++scenarios;
         }
     }
-    printf("PASS: %d scenarios, exact upstream display cadence/text/reset; AI order preserved\n", scenarios);
+    printf("PASS: %d scenarios, upstream turn-based cadence/text/reset; AI order preserved\n", scenarios);
+#if defined(EMSCRIPTEN)
+    avatar u; u.activity.type = ACT_PULP;
+    game slow_game; g = &slow_game;
+    calendar::turn = 1; cata_web::clock_ms = 1000;
+    new_wait(u);
+    assert(g->wait_popup->message.find("working: 1") == 0);
+    calendar::turn = 2; cata_web::clock_ms = 1099;
+    progress_calls = 0; new_wait(u); assert(progress_calls == 0);
+    calendar::turn = 3; cata_web::clock_ms = 1100;
+    new_wait(u); assert(progress_calls == 1);
+    assert(g->wait_popup->message.find("working: 3") == 0);
+    // Slow turns refresh actual state without waiting for turn 60.
+    for (int turn = 4; turn < 60; ++turn) {
+        calendar::turn = turn; cata_web::clock_ms += 100;
+        progress_calls = 0; new_wait(u); assert(progress_calls == 1);
+        assert(g->wait_popup->message.find("working: " + std::to_string(turn)) == 0);
+    }
+    u.activity.type = ACT_NULL; new_wait(u); assert(!g->wait_popup);
+    u.activity.type = ACT_READ; new_wait(u); assert(g->wait_popup);
+    u.sleeping = true; cata_web::clock_ms += 100;
+    progress_calls = 0; new_wait(u); assert(progress_calls == 0);
+    assert(g->wait_popup->message == "Wait till you wake up…");
+    puts("PASS real-time popup: 99ms no refresh, 100ms actual progress refresh, reset/restart/sleep");
+#endif
 }
 '''.replace('TYPE_COUNT', str(len(ids)))
 with tempfile.TemporaryDirectory(prefix='runtime-', dir=out) as tmp:
     cpp, binary = Path(tmp) / 'test.cpp', Path(tmp) / 'test'
     cpp.write_text(program)
-    subprocess.run(['g++', '-std=c++17', '-O2', '-Wall', '-Wextra', '-Werror', str(cpp), '-o', str(binary)], check=True)
-    subprocess.run([str(binary)], check=True)
+    for defines in [[], ['-DEMSCRIPTEN']]:
+        subprocess.run(['g++', '-std=c++17', '-O2', '-Wall', '-Wextra', '-Werror', *defines, str(cpp), '-o', str(binary)], check=True)
+        subprocess.run([str(binary)], check=True)
