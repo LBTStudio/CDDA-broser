@@ -1,5 +1,68 @@
 # bench/ — 性能検証ベンチマーク一式
 
+## 2026-09-09: JSPI候補の自動検証（利用者の実機フィードバック不要）
+
+実Chromium 151 + Emscripten 4.0.15で、こちらの環境に閉じた検証を実施しました。
+通常条件/CPU 4倍制限の10実行、同じ計算結果、一時停止後のC++例外/RAII、
+JSPI+JS例外の非適合を自動で確認します。**ゲーム全体・4GB端末の再現ではありません。**
+`asyncify_overhead.cpp` の旧版には一時停止可能な呼び出しがなく、計装が除去され得ました。
+旧版から「AsyncifyのCPU負荷はない」と結論するのは不適切です。
+
+### 再現用コマンド（検証担当側で実行）
+
+専用のEmscripten **4.0.15** を使用します。公開用3.1.51の環境に上書きせず、
+付属Binaryenも差し替えません。`playwright-core` と対応するChromiumを用意します。
+実ソースの試験は未改変0.IをHEADに持ち、全10パッチを適用したツリーを指定します。
+
+```sh
+source /path/to/isolated-emsdk/emsdk_env.sh
+export CDDA_EMXX=/path/to/isolated-emsdk/upstream/emscripten/em++
+export CDDA_EMCC=/path/to/isolated-emsdk/upstream/emscripten/emcc
+export CDDA_PLAYWRIGHT_MODULE=/path/to/node_modules/playwright-core
+
+# 4構成 + 不適合の負例、通常/CPU制限で計10実行。コンパイルも自動。
+node bench/jspi_probe.js
+
+# 実Makefileの既定維持・例外ABI・メモリ設定・再実行・不正値の検査
+python3 bench/jspi_build_test.py /path/to/patched/cdda
+
+# 実スケジューラのキー/日本語起床、順序、アイドル空回り抑止
+CDDA_RUNTIME_BACKEND=asyncify node bench/scheduler_browser_test.js /path/to/patched/cdda
+CDDA_RUNTIME_BACKEND=jspi node bench/scheduler_browser_test.js /path/to/patched/cdda
+
+# 実main.cppのmount_idbfsを使う保存/復元/失敗復旧/分離
+CDDA_RUNTIME_BACKEND=jspi node bench/idbfs_browser_test.js /path/to/patched/cdda
+
+# HTML IMEブリッジ + 実Chromium CDP変換試験
+node bench/ime_bridge_test.js
+```
+
+- `jspi_probe.js` は同一ソース・同一コンパイラ・O2・64MiB初期メモリで比較。
+  各条件をウォームアップ後7回測り、中央値/最小/最大と全条件のチェックサム一致を記録。
+  結果は `bench/out/jspi-probe/results.json`。基準ログは `docs/measurements/raw/2026-09-09-jspi-mechanism.json`。
+- 比較は **Asyncify+JS例外 → JSPI+Wasm例外** であり、JSPI単独の寄与ではありません。
+  同期対照2種も実行して例外処理方式の影響を切り分けます。同期版は待機しないため製品候補ではありません。
+- JSPI+JS例外は `trying to suspend JS frames` が期待される負例です。
+  4.0.15でAsyncify+Wasm例外を試したところコンパイラ側で失敗したため、公開候補にはしません。
+- スケジューラ試験は実wasm/ブラウザを使いますが、既存SDL受信者はテスト用リスナーです。
+  日本語イベントは型付きDOMイベント。表示される往復時間にはPlaywright通信を含み、ゲームの入力遅延ではありません。
+- 保存試験は実IndexedDBですが最小wasmです。ゲームの全セーブ内容・タブ破棄・物理ディスク容量不足を保証しません。
+- ブラウザは毎回専用コンテキストを使い、利用者のセーブは読み書きしません。外部HTTPサーバーも不要です。
+- 実 `cata_web_yield.cpp` / `input_popup.cpp` / `main.cpp` / `sdltiles.cpp` は新コンパイラの
+  `-fwasm-exceptions -fsyntax-only -Wall -Wextra -Werror` で合格。フルリンク/実ゲームの動作確認とは別です。
+
+### JSPI版ゲームのビルド条件と未完了項目
+
+未改変0.Iにパッチを適用し、`CDDA_RUNTIME_BACKEND=jspi bash ci/tune-makefile.sh` 相当の
+設定で全オブジェクト/PCHを再生成します。**既定はAsyncifyのままです。**
+実ソースツリー内から呼ぶ際はスクリプトを絶対パスで指定してください。
+SDL依存の初回キャッシュロック問題は、先に
+`embuilder build freetype harfbuzz sdl2_ttf sdl2_image` を行って解消しました。
+JSPI版のフルビルドと実ゲームの移動・ロード・長時間RAM計測は未完了です。
+約1GBの手元環境では巨大な `game.cpp` の検査がメモリ上限に近づき、安全のため停止しました。
+GitHub連携にはActions実行・workflow編集の権限がないため、検証用workflow差分はPR本文の添付で別提供します。
+公開版を無検証で切り替えず、利用者の検証待ちにもせず、未達をそのまま記録します。
+
 ## 2026-09-08: 証拠の扱いと現行の回帰テスト
 
 **以下の古い説明には、合成ループを実ゲームの実測と誤認した記述が残っています。**
@@ -186,7 +249,7 @@ Emscripten の HTML シェルが favicon を探しているだけなので**無�
 |---|---|---|
 | `yield_cost.c` | `emscripten_sleep(0)` の 1 回あたりコストと、**スタック深度を変えても変わらない**こと | F-01 |
 | `yield_kinds.c` | `emscripten_sleep(0/1)` / `MessageChannel` / `scheduler.yield()` / `requestAnimationFrame` のコスト比較 | F-01 |
-| `asyncify_overhead.cpp` | Asyncify 計装あり／なしで **CPU 速度が変わらない**こと（＝Asyncify は無罪） | F-02 |
+| `asyncify_overhead.cpp` | 実際の一時停止を含むJSPI/Asyncify対照試験。旧版の「CPU負荷なし」という結論は撤回（上記2026-09-09節） | F-02は採用しない |
 | `paint_starve.c` | yield の種類ごとに、実際に描画フレームが何枚入るか。`scheduler.yield()` が rAF を飢餓させることの証拠 | F-04 |
 | `per_turn_yield.c` | ターンごとに yield する構造でのスループットと最大描画停止 | F-05 |
 | `verify_primitive.cpp` | **実装した `cata_web_yield` そのもの**の動作検証（6 項目）。再入ガード、`yield_if_due` の予算判定、`yield_paint` が確実に 1 フレーム入れること | F-17 |

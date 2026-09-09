@@ -8,11 +8,13 @@ const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 const { chromium } = require(process.env.CDDA_PLAYWRIGHT_MODULE || 'playwright-core');
 if (!process.argv[2] || !process.env.CDDA_EMCC) throw new Error('Set CDDA_EMCC and supply patched source directory');
+const backend = process.env.CDDA_RUNTIME_BACKEND || 'asyncify';
+assert(['asyncify', 'jspi'].includes(backend), 'Unknown suspension backend');
 const source = fs.readFileSync(path.join(process.argv[2], 'src/main.cpp'), 'utf8');
 const start = source.indexOf('EM_ASYNC_JS( void, mount_idbfs,');
 const end = source.indexOf('\n} );', start);
 assert(start >= 0 && end > start);
-const out = path.join(__dirname, 'out/idbfs-browser');
+const out = path.join(__dirname, 'out/idbfs-browser-' + backend);
 fs.mkdirSync(out, { recursive: true });
 process.env.TMPDIR = out;
 const harness = '#include <emscripten.h>\n' + source.slice(start, end + 5) + `
@@ -25,7 +27,8 @@ int main(int argc, char **argv) {
 `;
 fs.writeFileSync(path.join(out, 'harness.c'), harness);
 execFileSync(process.env.CDDA_EMCC, [path.join(out, 'harness.c'), '-o', path.join(out, 'harness.js'),
-  '-O1', '-sASYNCIFY', '-sFORCE_FILESYSTEM=1', '-sEXPORTED_RUNTIME_METHODS=["FS"]',
+  '-O1', ...(backend === 'jspi' ? ['-sJSPI', '-fwasm-exceptions'] : ['-sASYNCIFY']),
+  '-sFORCE_FILESYSTEM=1', '-sEXPORTED_RUNTIME_METHODS=["FS"]',
   '-sEXIT_RUNTIME=0', '-sINITIAL_MEMORY=16777216', '-sASSERTIONS=1', '-lidbfs.js'], { stdio: 'inherit' });
 const html = `<!doctype html><meta charset="utf-8"><script>
 window.testReady = false;
@@ -122,7 +125,8 @@ async function run() {
     assert.equal(await page.evaluate(() => FS.readFile(root + '/save/世界.sav', { encoding: 'utf8' })), content);
     assert.deepEqual(errors, []);
     console.log('PASS real IDBFS: player profile isolation; no browser runtime errors');
-    console.log('NOTE: injected error is not real disk exhaustion; tab eviction/4GB/full-game testing remains required');
+    console.log('PASS backend=' + backend + ': autonomous real-browser persistence checks completed');
+    console.log('NOTE: injected error is not real disk exhaustion; this does not establish full-game/4GB/eviction guarantees');
   } finally {
     await browser.close();
   }
