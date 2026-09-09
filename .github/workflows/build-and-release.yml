@@ -63,6 +63,18 @@ on:
         options:
           - "O2"
           - "O1"
+      runtime_backend:
+        description: "asyncify=公開用 / jspi=実験用・deploy_pages=false必須"
+        required: false
+        default: "asyncify"
+        type: choice
+        options:
+          - "asyncify"
+          - "jspi"
+
+env:
+  CDDA_RUNTIME_BACKEND: ${{ inputs.runtime_backend || 'asyncify' }}
+  CDDA_EMSDK_VERSION: ${{ inputs.runtime_backend == 'jspi' && '4.0.15' || '3.1.51' }}
 
 permissions:
   contents: read
@@ -88,6 +100,12 @@ jobs:
       link_cache_key: ${{ steps.plan.outputs.link_cache_key }}
 
     steps:
+      - name: Reject experimental production deployment
+        if: ${{ inputs.runtime_backend == 'jspi' && inputs.deploy_pages != false }}
+        run: |
+          echo 'JSPI is not validated for production. Select deploy_pages=false.' >&2
+          exit 1
+
       - name: Checkout wrapper repository
         uses: actions/checkout@v4
 
@@ -112,11 +130,18 @@ jobs:
       - name: Setup emsdk (for wasm-opt --version)
         uses: mymindstorm/setup-emsdk@v14
         with:
-          version: 3.1.51
+          version: ${{ env.CDDA_EMSDK_VERSION }}
+
+      - name: Prime JSPI SDL dependency variants
+        if: ${{ inputs.runtime_backend == 'jspi' }}
+        run: |
+          source "$EMSDK/emsdk_env.sh"
+          embuilder build freetype harfbuzz sdl2_ttf sdl2_image
 
       # 【重要】Binaryen 差し替えを指紋計算の前に実行する
       # これがないと、116 と 132 のキャッシュが混ざる
       - name: Replace wasm-opt with Binaryen 132
+        if: ${{ inputs.runtime_backend != 'jspi' }}
         run: |
           set -euo pipefail
           source "$EMSDK/emsdk_env.sh"
@@ -133,7 +158,7 @@ jobs:
           echo "matrix=$( cat ../shard-plan/matrix.json )" >> "$GITHUB_OUTPUT"
 
           # ccache のキャッシュキーに使うハッシュ
-          cache_key="$( cat ../patches/*.patch ../ci/*.sh | sha256sum | cut -c1-16 )"
+          cache_key="$( { printf '%s\n' "$CDDA_RUNTIME_BACKEND" "$CDDA_EMSDK_VERSION"; cat ../patches/*.patch ../ci/*.sh; } | sha256sum | cut -c1-16 )"
           echo "cache_key=${cache_key}" >> "$GITHUB_OUTPUT"
           echo "キャッシュキー: ${cache_key}"
 
@@ -166,6 +191,9 @@ jobs:
             echo "| 項目 | 値 |"
             echo "|---|---|"
             echo "| レベル | ${{ inputs.link_opt }} |"
+            echo "| Runtime | $CDDA_RUNTIME_BACKEND |"
+            echo "| Emscripten | $CDDA_EMSDK_VERSION |"
+            echo "| 注意 | JSPIは検証用成果物のみ。実ゲームの高速化率は未測定 |"
             echo "| 効果 | ${{ inputs.link_opt == 'O1' && '約 53 分（-78%）' || '約 3h14m（-20%）' }} |"
             echo ""
             echo "## 各工程の実測"
@@ -189,6 +217,12 @@ jobs:
         shard: ${{ fromJSON( needs.plan.outputs.matrix ) }}
 
     steps:
+      - name: Reject experimental production deployment
+        if: ${{ inputs.runtime_backend == 'jspi' && inputs.deploy_pages != false }}
+        run: |
+          echo 'JSPI is not validated for production. Select deploy_pages=false.' >&2
+          exit 1
+
       - name: Checkout wrapper repository
         uses: actions/checkout@v4
 
@@ -238,7 +272,13 @@ jobs:
       - name: Setup emsdk
         uses: mymindstorm/setup-emsdk@v14
         with:
-          version: 3.1.51
+          version: ${{ env.CDDA_EMSDK_VERSION }}
+
+      - name: Prime JSPI SDL dependency variants
+        if: ${{ inputs.runtime_backend == 'jspi' }}
+        run: |
+          source "$EMSDK/emsdk_env.sh"
+          embuilder build freetype harfbuzz sdl2_ttf sdl2_image
 
       - name: Restore ccache
         uses: actions/cache@v4
@@ -283,6 +323,12 @@ jobs:
     timeout-minutes: 90
 
     steps:
+      - name: Reject experimental production deployment
+        if: ${{ inputs.runtime_backend == 'jspi' && inputs.deploy_pages != false }}
+        run: |
+          echo 'JSPI is not validated for production. Select deploy_pages=false.' >&2
+          exit 1
+
       - name: Checkout wrapper repository
         uses: actions/checkout@v4
 
@@ -307,7 +353,13 @@ jobs:
       - name: Setup emsdk
         uses: mymindstorm/setup-emsdk@v14
         with:
-          version: 3.1.51
+          version: ${{ env.CDDA_EMSDK_VERSION }}
+
+      - name: Prime JSPI SDL dependency variants
+        if: ${{ inputs.runtime_backend == 'jspi' }}
+        run: |
+          source "$EMSDK/emsdk_env.sh"
+          embuilder build freetype harfbuzz sdl2_ttf sdl2_image
 
       - name: Pack game data with Japanese translation
         working-directory: cdda
@@ -338,6 +390,12 @@ jobs:
     timeout-minutes: 330
 
     steps:
+      - name: Reject experimental production deployment
+        if: ${{ inputs.runtime_backend == 'jspi' && inputs.deploy_pages != false }}
+        run: |
+          echo 'JSPI is not validated for production. Select deploy_pages=false.' >&2
+          exit 1
+
       - name: Checkout wrapper repository
         uses: actions/checkout@v4
 
@@ -413,10 +471,17 @@ jobs:
       - name: Setup emsdk
         uses: mymindstorm/setup-emsdk@v14
         with:
-          version: 3.1.51
+          version: ${{ env.CDDA_EMSDK_VERSION }}
+
+      - name: Prime JSPI SDL dependency variants
+        if: ${{ inputs.runtime_backend == 'jspi' }}
+        run: |
+          source "$EMSDK/emsdk_env.sh"
+          embuilder build freetype harfbuzz sdl2_ttf sdl2_image
 
       # 【重要】Binaryen 差し替えを実施（指紋計算と同じ場所で）
       - name: Replace wasm-opt with Binaryen 132
+        if: ${{ inputs.runtime_backend != 'jspi' }}
         run: |
           set -euo pipefail
           source "$EMSDK/emsdk_env.sh"
@@ -512,6 +577,12 @@ jobs:
     timeout-minutes: 60
 
     steps:
+      - name: Reject experimental production deployment
+        if: ${{ inputs.runtime_backend == 'jspi' && inputs.deploy_pages != false }}
+        run: |
+          echo 'JSPI is not validated for production. Select deploy_pages=false.' >&2
+          exit 1
+
       - name: Checkout wrapper repository
         uses: actions/checkout@v4
 
@@ -582,7 +653,7 @@ jobs:
           retention-days: 30
 
       - name: Upload GitHub Pages artifact
-        if: ${{ inputs.deploy_pages != false }}
+        if: ${{ inputs.deploy_pages != false && inputs.runtime_backend != 'jspi' }}
         uses: actions/upload-pages-artifact@v3
         with:
           path: site/
@@ -592,7 +663,7 @@ jobs:
   # ==================================================================
   deploy:
     name: Deploy to GitHub Pages
-    if: ${{ inputs.deploy_pages != false }}
+    if: ${{ inputs.deploy_pages != false && inputs.runtime_backend != 'jspi' }}
     needs: bundle
     runs-on: ubuntu-latest
 
