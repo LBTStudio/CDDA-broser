@@ -1,91 +1,121 @@
 diff --git a/src/main.cpp b/src/main.cpp
-index cd7b94e..78c2723 100644
 --- a/src/main.cpp
 +++ b/src/main.cpp
-@@ -573,43 +573,129 @@ bool assure_essential_dirs_exist()
+@@ -573,42 +573,153 @@
  }  // namespace
- 
+
  #if defined(EMSCRIPTEN)
 -EM_ASYNC_JS( void, mount_idbfs, (), {
 -    console.log( "Mounting IDBFS for persistence..." );
 -    FS.mkdir( '/home/web_user/.cataclysm-dda' );
 -    FS.mount( IDBFS, {}, '/home/web_user/.cataclysm-dda' );
 -    await new Promise( function( resolve, reject )
--    {
--        FS.syncfs( true, function( err ) {
--            if( err ) {
--                reject( err );
--            } else {
--                console.log( "Successfully mounted IDBFS." );
--                resolve();
--            }
--        } );
--    } );
 +// The mount point must follow getenv("HOME"): the web shell assigns one HOME
 +// per player profile, and PATH_INFO::init_user_dir resolves the save tree as
 +// HOME + "/.cataclysm-dda/".  Mounting a fixed /home/web_user path would put
 +// per-profile saves on volatile MEMFS and silently lose them on reload.
 +EM_ASYNC_JS( void, mount_idbfs, ( const char *user_dir ), {
 +    const mountPoint = UTF8ToString( user_dir );
- 
-     let fsNeedsSync = false;
--    window.setFsNeedsSync = function setFsNeedsSync()
--    {
--        if( !fsNeedsSync ) {
--            requestAnimationFrame( syncFs );
--        }
--        fsNeedsSync = true;
--    };
++
++    let fsNeedsSync = false;
 +    let fsSyncInFlight = false;
 +    let fsSyncTimer = null;
 +    let fsPersistenceReady = false;
++    let fsRetryDelayMs = 0;
++    let fsSyncError = false;
 +    const fsSyncDebounceMs = 250;
- 
-     function syncFs()
++
++    function reportSyncError( failed, detail )
      {
+-        FS.syncfs( true, function( err ) {
++        if( failed === fsSyncError ) {
++            return;
++        }
++        fsSyncError = failed;
++        if( typeof window.CDDA_ON_IDBFS_SYNC_STATE === 'function' ) {
++            try {
++                window.CDDA_ON_IDBFS_SYNC_STATE( failed, detail );
++            } catch( hook_error ) {
++                console.error( "IDBFS sync status hook failed:", hook_error );
++            }
++        }
++    }
++
++    function scheduleFsSync()
++    {
++        if( !fsPersistenceReady || fsSyncInFlight || !fsNeedsSync || fsSyncTimer !== null ) {
++            return;
++        }
++        fsSyncTimer = setTimeout( function() {
++            fsSyncTimer = null;
++            // Persistence must not wait for a paint: rAF stops in hidden tabs.
++            syncFs();
++        }, fsRetryDelayMs || fsSyncDebounceMs );
++    }
++
++    function syncFs()
++    {
 +        if( !fsPersistenceReady || fsSyncInFlight || !fsNeedsSync ) {
 +            return;
 +        }
 +        fsNeedsSync = false;
 +        fsSyncInFlight = true;
-         console.log( "Persisting to IDBFS..." );
-         FS.syncfs( false, function( err ) {
--            fsNeedsSync = false;
++        function complete( err )
++        {
 +            fsSyncInFlight = false;
              if( err ) {
-                 console.error( err );
+-                reject( err );
++                // Retain dirty state even if no further file is changed.
++                // Retry with capped backoff, not a hot quota-error loop.
++                fsNeedsSync = true;
++                fsRetryDelayMs = Math.min( 30000, Math.max( 1000, fsRetryDelayMs * 2 ) );
++                console.error( "IDBFS persistence failed:", err );
++                reportSyncError( true, String( err ) );
              } else {
-                 console.log( "Successfully persisted to IDBFS..." );
+-                console.log( "Successfully mounted IDBFS." );
+-                resolve();
++                fsRetryDelayMs = 0;
++                // Writes made during sync require another pass. Do not claim
++                // recovery until that pass has also completed successfully.
++                if( !fsNeedsSync ) {
++                    reportSyncError( false, "" );
++                }
              }
-+            if( fsNeedsSync ) {
-+                window.setFsNeedsSync();
-+            }
-         } );
-     }
-+
-+    // Defined before the first await: filesystem.cpp calls this on every
-+    // file mutation, and mutations happen while the asynchronous restore
-+    // below is still pending (or after it failed).  If this function did
-+    // not exist yet, EM_ASM( window.setFsNeedsSync() ) would throw an
-+    // uncaught TypeError that halts the game right after character
-+    // creation.
-+    window.setFsNeedsSync = function setFsNeedsSync()
-+    {
-+        fsNeedsSync = true;
-+        if( !fsPersistenceReady || fsSyncInFlight || fsSyncTimer !== null ) {
-+            return;
+-        } );
+-    } );
+-
+-    let fsNeedsSync = false;
++            scheduleFsSync();
 +        }
-+        fsSyncTimer = setTimeout( function() {
-+            fsSyncTimer = null;
-+            requestAnimationFrame( syncFs );
-+        }, fsSyncDebounceMs );
-+    };
++        try {
++            FS.syncfs( false, complete );
++        } catch( sync_error ) {
++            complete( sync_error );
++        }
++    }
 +
-+    // The debounce window must not become a data-loss window: flush pending
-+    // changes immediately when the tab is hidden or torn down (ChromeOS
-+    // discards background tabs aggressively on 4GB devices).
++    // Defined before the first await: mutations may occur during restore.
+     window.setFsNeedsSync = function setFsNeedsSync()
+     {
+-        if( !fsNeedsSync ) {
+-            requestAnimationFrame( syncFs );
+-        }
+         fsNeedsSync = true;
++        scheduleFsSync();
+     };
+
+-    function syncFs()
++    // Best effort only: a discarded page cannot await IndexedDB completion.
++    // Also flush on return to a tab whose timers were suspended by ChromeOS.
 +    function flushFsSync()
-+    {
+     {
+-        console.log( "Persisting to IDBFS..." );
+-        FS.syncfs( false, function( err ) {
+-            fsNeedsSync = false;
+-            if( err ) {
+-                console.error( err );
+-            } else {
+-                console.log( "Successfully persisted to IDBFS..." );
 +        if( fsSyncTimer !== null ) {
 +            clearTimeout( fsSyncTimer );
 +            fsSyncTimer = null;
@@ -93,12 +123,7 @@ index cd7b94e..78c2723 100644
 +        syncFs();
 +    }
 +    window.addEventListener( 'pagehide', flushFsSync );
-+    document.addEventListener( 'visibilitychange', function()
-+    {
-+        if( document.visibilityState === 'hidden' ) {
-+            flushFsSync();
-+        }
-+    } );
++    document.addEventListener( 'visibilitychange', flushFsSync );
 +
 +    try {
 +        console.log( "Mounting IDBFS for persistence at " + mountPoint + "..." );
@@ -128,7 +153,8 @@ index cd7b94e..78c2723 100644
 +                window.CDDA_ON_IDBFS_ERROR( String( mount_error ) );
 +            } catch( hook_error ) {
 +                console.error( "CDDA_ON_IDBFS_ERROR hook failed:", hook_error );
-+            }
+             }
+-        } );
 +        }
 +        return;
 +    }
@@ -151,13 +177,12 @@ index cd7b94e..78c2723 100644
 +        } catch( hook_error ) {
 +            console.error( "CDDA_ON_IDBFS_MOUNTED hook failed:", hook_error );
 +        }
-+    }
+     }
  } );
  #endif
- 
-@@ -633,7 +719,15 @@ int main( int argc, const char *argv[] )
+@@ -633,7 +744,15 @@
  #endif
- 
+
  #if defined(EMSCRIPTEN)
 -    mount_idbfs();
 +    {
@@ -170,5 +195,5 @@ index cd7b94e..78c2723 100644
 +        mount_idbfs( idbfs_dir.c_str() );
 +    }
  #endif
- 
+
      on_out_of_scope json_member_reporting_guard{ [] {

@@ -327,3 +327,207 @@ its upstream turn-based display cadence is unchanged.
  
          /**
           * If this returns true, the action can be continued without
+
+--- a/src/input_popup.cpp
++++ b/src/input_popup.cpp
+@@ -176,7 +176,14 @@
+     if( data->EventFlag == ImGuiInputTextFlags_CallbackEdit ) {
+         int max = popup->get_max_input_length();
+         if( max > 0 && data->BufTextLen > max ) {
+-            data->BufTextLen = max;
++            // Keep the existing byte limit, but never retain half a UTF-8
++            // character. Updating BufTextLen alone violates ImGui's required
++            // strlen(Buf) invariant and leaves the old suffix in the buffer.
++            int end = max;
++            while( end > 0 && ( static_cast<unsigned char>( data->Buf[end] ) & 0xC0 ) == 0x80 ) {
++                --end;
++            }
++            data->DeleteChars( end, data->BufTextLen - end );
+             data->SelectionStart = data->BufTextLen;
+             data->SelectionEnd = data->BufTextLen;
+             data->CursorPos = data->BufTextLen;
+
+--- a/src/sdltiles.cpp
++++ b/src/sdltiles.cpp
+@@ -2913,6 +2913,8 @@
+             }
+             SDL_Event commit_event {};
+             commit_event.type = SDL_TEXTINPUT;
++            // ImGui rejects text events not addressed to its SDL window.
++            commit_event.text.windowID = SDL_GetWindowID( window.get() );
+             memcpy( commit_event.text.text, p, chunk );
+             commit_event.text.text[chunk] = '\0';
+             SDL_PushEvent( &commit_event );
+@@ -2952,6 +2954,7 @@
+         }
+         SDL_Event edit_event {};
+         edit_event.type = SDL_TEXTEDITING;
++        edit_event.edit.windowID = SDL_GetWindowID( window.get() );
+         memcpy( edit_event.edit.text, ime_buf, chunk );
+         edit_event.edit.text[chunk] = '\0';
+         edit_event.edit.start = 0;
+--- a/src/game.cpp
++++ b/src/game.cpp
+@@ -8308,11 +8308,13 @@
+ {
+     const std::string name = it->tname();
+ 
+-    if( std::find( item_order.begin(), item_order.end(), name ) == item_order.end() ) {
++    // The map already indexes every encountered name. Avoid scanning the
++    // growing order vector for each item; retain first-seen ordering.
++    auto entry = temp_items.try_emplace( name, it, relative_pos );
++    if( entry.second ) {
+         item_order.push_back( name );
+-        temp_items[name] = map_item_stack( it, relative_pos );
+     } else {
+-        temp_items[name].add_at_pos( it, relative_pos );
++        entry.first->second.add_at_pos( it, relative_pos );
+     }
+ 
+     for( const item *content : it->all_known_contents() ) {
+@@ -8348,7 +8350,7 @@
+ 
+     ret.reserve( item_order.size() );
+     for( auto &elem : item_order ) {
+-        ret.push_back( temp_items[elem] );
++        ret.push_back( std::move( temp_items.at( elem ) ) );
+     }
+ 
+     return ret;
+
+--- a/src/do_turn.cpp
++++ b/src/do_turn.cpp
+@@ -916,8 +916,17 @@
+         // Keep the upstream game-turn cadence. Build text only when it will
+         // be displayed: corpse traversal, skill queries and key descriptions
+         // otherwise run every turn, even during long unattended activities.
+-        if( g->first_redraw_since_waiting_started ||
+-            calendar::once_every( std::min( 1_minutes, wait_refresh_rate ) ) ) {
++        bool refresh_progress = g->first_redraw_since_waiting_started ||
++                                calendar::once_every( std::min( 1_minutes, wait_refresh_rate ) );
++#if defined(EMSCRIPTEN)
++        // Game-turn intervals alone can leave the top-of-screen percentage
++        // unchanged for seconds on slow CPUs. Refresh that same popup from
++        // actual activity state, without running or skipping simulation work.
++        static double last_progress_refresh_ms = 0.0;
++        refresh_progress = refresh_progress ||
++                           cata_web::now_ms() - last_progress_refresh_ms >= 100.0;
++#endif
++        if( refresh_progress ) {
+             if( g->first_redraw_since_waiting_started ||
+                 calendar::once_every( wait_refresh_rate ) ) {
+                 ui_manager::redraw();
+@@ -943,6 +952,9 @@
+             ui_manager::redraw();
+             refresh_display();
+             g->first_redraw_since_waiting_started = false;
++#if defined(EMSCRIPTEN)
++            last_progress_refresh_ms = cata_web::now_ms();
++#endif
+             CATA_WEB_YIELD();
+         }
+     } else {
+--- a/src/cata_web_yield.h
++++ b/src/cata_web_yield.h
+@@ -55,6 +55,10 @@
+  */
+ void yield_now();
+ 
++// Idle input wait: wake on real browser input, with a bounded fallback for
++// gamepads and events queued internally by SDL. Never consumes an event.
++void wait_for_input( int timeout_ms );
++
+ /**
+  * 描画フレームを 1 枚確実に挟んでから戻る（requestAnimationFrame 待ち）。
+  *
+--- a/src/sdltiles.cpp
++++ b/src/sdltiles.cpp
+@@ -4381,7 +4381,9 @@
+     // MessageChannel でも同じ効果が得られ、しかも実測 0.075ms で済む。
+     const auto wait_for_input_events = []() {
+ #if defined(EMSCRIPTEN)
+-        cata_web::yield_now();
++        // Keyboard/IME/mouse input wakes immediately; fallback polling is
++        // only for gamepads or SDL-internal events. Do not spin when idle.
++        cata_web::wait_for_input( inputdelay > 0 ? std::min( inputdelay, 16 ) : 16 );
+ #else
+         SDL_Delay( 1 );
+ #endif
+
+--- a/src/cata_web_yield.cpp
++++ b/src/cata_web_yield.cpp
+@@ -50,10 +50,38 @@
+     } );
+ } );
+ 
++// Bubble after existing SDL listeners; never consume or reissue input.
++EM_ASYNC_JS( void, cata_web_wait_input_impl, ( int timeout_ms ), {
++    await new Promise( function( resolve ) {
++        var events = ["keydown", "keyup", "mousedown", "mouseup", "mousemove",
++                      "wheel", "touchstart", "touchend", "input",
++                      "compositionupdate", "compositionend", "focusin", "focusout",
++                      "resize", "visibilitychange"];
++        var finished = false;
++        var timer;
++        var wake = function() {
++            if( finished ) { return; }
++            finished = true;
++            clearTimeout( timer );
++            events.forEach( function( name ) {
++                window.removeEventListener( name, wake, false );
++            } );
++            resolve();
++        };
++        events.forEach( function( name ) {
++            window.addEventListener( name, wake, false );
++        } );
++        timer = setTimeout( wake, timeout_ms );
++    } );
++} );
++
+ // Asyncify の巻き戻しは入れ子にできないため、再入を弾く。
+ // 例えば pump_events() の中から redraw が走り、その先でまた
+ // yield 判定に到達する経路が存在する。
+ bool yield_in_progress = false;
++// Share the browser's last opportunity across otherwise independent sites.
++// Avoid back-to-back Asyncify unwinds after a long simulation step.
++double last_browser_yield_ms = 0.0;
+ 
+ } // namespace
+ 
+@@ -72,6 +100,18 @@
+     }
+     yield_in_progress = true;
+     cata_web_yield_impl();
++    last_browser_yield_ms = emscripten_get_now();
++    yield_in_progress = false;
++}
++
++void wait_for_input( const int timeout_ms )
++{
++    if( yield_in_progress ) {
++        return;
++    }
++    yield_in_progress = true;
++    cata_web_wait_input_impl( timeout_ms );
++    last_browser_yield_ms = emscripten_get_now();
+     yield_in_progress = false;
+ }
+ 
+@@ -82,6 +122,7 @@
+     }
+     yield_in_progress = true;
+     cata_web_yield_paint_impl();
++    last_browser_yield_ms = emscripten_get_now();
+     yield_in_progress = false;
+ }
+ 
+@@ -91,7 +132,7 @@
+         return false;
+     }
+     const double now = emscripten_get_now();
+-    if( now - last_yield_ms < budget_ms ) {
++    if( now - last_yield_ms < budget_ms || now - last_browser_yield_ms < budget_ms ) {
+         return false;
+     }
+     yield_now();

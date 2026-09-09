@@ -12,6 +12,9 @@ CDDAの実プレイ性能として使用しないでください。CPU負荷倍�
 ```sh
 python3 bench/runtime_efficiency_test.py /path/to/patched/cdda
 node bench/asset_loader_test.js
+node bench/ime_bridge_test.js
+node bench/idbfs_sync_test.js /path/to/patched/cdda
+python3 bench/input_utf8_test.py /path/to/patched/cdda
 ```
 
 最初のテストは未改変0.IをHEADに持ち、全パッチ適用済みのソースツリーを指定します。
@@ -20,7 +23,45 @@ AIがyield以外で同じコードであることを確認します。
 読書1800ターンの1800→31は**進捗文字列の生成回数**であって所要時間ではありません。
 2番目は実シェルのローダーをNodeの実ストリーム/wasmと模擬ストレージで動かし、
 失敗時の復旧と参照解放を検証します。ブラウザ実機のRAM測定ではありません。
-どちらも `ci/apply-patches.sh` に組み込まれています。
+3番目は実HTMLのIMEブリッジを抽出し、変換・確定・取消・貼り付け・入力終了後の
+文字漏れ・外部DOMへの非干渉を検証します。
+4番目はパッチ適用後の `main.cpp` にある実JavaScriptを抽出し、同期/復旧・描画待ち非依存・
+保留変更・タブイベント・マウント失敗・実シェルの警告など12シナリオを検証します。
+タイマーとFSは制御用アダプターで、実IndexedDBの試験ではありません。
+5番目は実 `input_popup.cpp` のコールバックを抽出し、CDDA同梱の実ImGuiとリンクします。
+UTF-8境界・バイト上限・カーソル・選択・履歴など895条件と、実InputTextへの
+300バイトの日本語入力を検証します。旧コールバックのバッファ長不一致も負例で確認。
+ソースツリーのHEADは未改変0.Iとし、同梱 `src/third-party/imgui` が必要です。
+このテストはネイティブのImGui試験で、実ブラウザやゲーム全体の試験ではありません。
+5つとも `ci/apply-patches.sh` に組み込まれています。追加のnpmパッケージは不要です。
+
+### 任意の実ブラウザ統合テスト（PR #12）
+
+こちらは自動ビルド前の軽量テストには含まれません。Emscripten 3.1.51、
+`playwright-core`、対応するChromium実行ファイルが別途必要です。
+既存のPlaywrightブラウザキャッシュを使います。`CDDA_PLAYWRIGHT_MODULE` は
+インストール済みのモジュールへの絶対パスです。
+
+```sh
+CDDA_PLAYWRIGHT_MODULE=/path/to/node_modules/playwright-core \
+  node bench/ime_bridge_test.js
+
+# 必要なら事前に emsdk_env.sh を読み込み、Emscriptenを有効にします。
+CDDA_EMCC=/path/to/emsdk/upstream/emscripten/emcc \
+CDDA_PLAYWRIGHT_MODULE=/path/to/node_modules/playwright-core \
+  node bench/idbfs_browser_test.js /path/to/patched/cdda
+```
+
+- IME: 実ChromiumのCDPで「にほん→日本」の確定、欄終了後の漏れ遮断、再入力を確認。
+  OS固有の候補ウィンドウや、実ゲーム内の各フィルタは未検証です。
+- IDBFS: 実ソースの `mount_idbfs` を最小wasmへ組み込み、実Emscripten IDBFS/IndexedDBを
+  使用。1000回のdirty通知→1回の同期、日本語ファイルの再ロード後の一致、
+  1回の同期失敗を注入しての復旧、同期中変更の直列保存、プレイヤー分離を確認します。
+  rAFが呼ばれると失敗する条件でも保存が成功します。実ChromeOSのタブ破棄とは異なります。
+- テスト成果物と一時ファイルは `bench/out/` に生成します。ブラウザはテスト専用の
+  新規コンテキストを使用し、利用者のセーブにはアクセスしません。
+- 仮想テストURLへの要求はPlaywrightで応答するためHTTPサーバーの起動は不要です。
+  これらはゲーム全体のビルド・性能試験ではありません。
 
 これらの合格は実ゲームの速度・4GB RAMでの安定性・セーブ完全性の保証ではありません。
 それらには4GB実機と比較対象のネイティブ版による別の実プレイ計測が必要です。
