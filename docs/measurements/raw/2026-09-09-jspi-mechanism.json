@@ -1,0 +1,129 @@
+{
+  "compiler": "emcc (Emscripten gcc/clang-like replacement + linker emulating GNU ld) 4.0.15 (09f52557f0d48b65b8c724853ed8f4e8bf80e669)",
+  "browser": "151.0.7922.34",
+  "note": "Mechanism-only. Exception ABI changes as well as suspension backend. CPU throttle is not Chromebook emulation.",
+  "runs": [
+    {
+      "backend": "sync-js-eh",
+      "cpuThrottle": 1,
+      "wasmBytes": 103301,
+      "logs": [
+        "PASS suspension followed by exception and RAII cleanup",
+        "RESULT backend=sync-js-eh interval=0 turns=800 checksum=98763608 suspends=0 median_ms=41.800 min_ms=40.400 max_ms=50.000",
+        "RESULT backend=sync-js-eh interval=16 turns=800 checksum=98763608 suspends=50 median_ms=41.500 min_ms=40.100 max_ms=95.100",
+        "RESULT backend=sync-js-eh interval=1 turns=800 checksum=98763608 suspends=800 median_ms=41.100 min_ms=40.400 max_ms=46.100",
+        "DONE mechanism-only; not game speed, memory, or Chromebook results"
+      ],
+      "errors": []
+    },
+    {
+      "backend": "asyncify-js-eh",
+      "cpuThrottle": 1,
+      "wasmBytes": 185465,
+      "logs": [
+        "PASS suspension followed by exception and RAII cleanup",
+        "RESULT backend=asyncify-js-eh interval=0 turns=800 checksum=98763608 suspends=0 median_ms=61.200 min_ms=55.000 max_ms=76.900",
+        "RESULT backend=asyncify-js-eh interval=16 turns=800 checksum=98763608 suspends=50 median_ms=57.800 min_ms=57.200 max_ms=110.800",
+        "RESULT backend=asyncify-js-eh interval=1 turns=800 checksum=98763608 suspends=800 median_ms=97.900 min_ms=66.800 max_ms=177.200",
+        "DONE mechanism-only; not game speed, memory, or Chromebook results"
+      ],
+      "errors": []
+    },
+    {
+      "backend": "sync-wasm-eh",
+      "cpuThrottle": 1,
+      "wasmBytes": 103481,
+      "logs": [
+        "PASS suspension followed by exception and RAII cleanup",
+        "RESULT backend=sync-wasm-eh interval=0 turns=800 checksum=98763608 suspends=0 median_ms=13.000 min_ms=12.900 max_ms=13.100",
+        "RESULT backend=sync-wasm-eh interval=16 turns=800 checksum=98763608 suspends=50 median_ms=13.000 min_ms=12.900 max_ms=13.100",
+        "RESULT backend=sync-wasm-eh interval=1 turns=800 checksum=98763608 suspends=800 median_ms=13.000 min_ms=12.900 max_ms=13.100",
+        "DONE mechanism-only; not game speed, memory, or Chromebook results"
+      ],
+      "errors": []
+    },
+    {
+      "backend": "jspi-wasm-eh",
+      "cpuThrottle": 1,
+      "wasmBytes": 103528,
+      "logs": [
+        "PASS suspension followed by exception and RAII cleanup",
+        "RESULT backend=jspi-wasm-eh interval=0 turns=800 checksum=98763608 suspends=0 median_ms=14.800 min_ms=13.400 max_ms=25.900",
+        "RESULT backend=jspi-wasm-eh interval=16 turns=800 checksum=98763608 suspends=50 median_ms=14.200 min_ms=13.800 max_ms=14.300",
+        "RESULT backend=jspi-wasm-eh interval=1 turns=800 checksum=98763608 suspends=800 median_ms=19.900 min_ms=19.600 max_ms=44.600",
+        "DONE mechanism-only; not game speed, memory, or Chromebook results"
+      ],
+      "errors": []
+    },
+    {
+      "backend": "jspi-js-eh-negative",
+      "cpuThrottle": 1,
+      "wasmBytes": 103387,
+      "logs": [],
+      "errors": [
+        "trying to suspend JS frames"
+      ]
+    },
+    {
+      "backend": "jspi-js-eh-negative",
+      "cpuThrottle": 4,
+      "wasmBytes": 103387,
+      "logs": [],
+      "errors": [
+        "trying to suspend JS frames"
+      ]
+    },
+    {
+      "backend": "jspi-wasm-eh",
+      "cpuThrottle": 4,
+      "wasmBytes": 103528,
+      "logs": [
+        "PASS suspension followed by exception and RAII cleanup",
+        "RESULT backend=jspi-wasm-eh interval=0 turns=800 checksum=98763608 suspends=0 median_ms=54.400 min_ms=19.900 max_ms=58.000",
+        "RESULT backend=jspi-wasm-eh interval=16 turns=800 checksum=98763608 suspends=50 median_ms=58.800 min_ms=57.100 max_ms=59.300",
+        "RESULT backend=jspi-wasm-eh interval=1 turns=800 checksum=98763608 suspends=800 median_ms=64.600 min_ms=35.300 max_ms=83.500",
+        "DONE mechanism-only; not game speed, memory, or Chromebook results"
+      ],
+      "errors": []
+    },
+    {
+      "backend": "sync-wasm-eh",
+      "cpuThrottle": 4,
+      "wasmBytes": 103481,
+      "logs": [
+        "PASS suspension followed by exception and RAII cleanup",
+        "RESULT backend=sync-wasm-eh interval=0 turns=800 checksum=98763608 suspends=0 median_ms=54.400 min_ms=37.700 max_ms=71.600",
+        "RESULT backend=sync-wasm-eh interval=16 turns=800 checksum=98763608 suspends=50 median_ms=50.400 min_ms=30.200 max_ms=81.100",
+        "RESULT backend=sync-wasm-eh interval=1 turns=800 checksum=98763608 suspends=800 median_ms=54.100 min_ms=51.800 max_ms=54.700",
+        "DONE mechanism-only; not game speed, memory, or Chromebook results"
+      ],
+      "errors": []
+    },
+    {
+      "backend": "asyncify-js-eh",
+      "cpuThrottle": 4,
+      "wasmBytes": 185465,
+      "logs": [
+        "PASS suspension followed by exception and RAII cleanup",
+        "RESULT backend=asyncify-js-eh interval=0 turns=800 checksum=98763608 suspends=0 median_ms=226.000 min_ms=186.700 max_ms=231.300",
+        "RESULT backend=asyncify-js-eh interval=16 turns=800 checksum=98763608 suspends=50 median_ms=242.100 min_ms=235.400 max_ms=297.200",
+        "RESULT backend=asyncify-js-eh interval=1 turns=800 checksum=98763608 suspends=800 median_ms=278.600 min_ms=250.700 max_ms=289.000",
+        "DONE mechanism-only; not game speed, memory, or Chromebook results"
+      ],
+      "errors": []
+    },
+    {
+      "backend": "sync-js-eh",
+      "cpuThrottle": 4,
+      "wasmBytes": 103301,
+      "logs": [
+        "PASS suspension followed by exception and RAII cleanup",
+        "RESULT backend=sync-js-eh interval=0 turns=800 checksum=98763608 suspends=0 median_ms=164.600 min_ms=143.700 max_ms=172.200",
+        "RESULT backend=sync-js-eh interval=16 turns=800 checksum=98763608 suspends=50 median_ms=165.200 min_ms=145.300 max_ms=172.800",
+        "RESULT backend=sync-js-eh interval=1 turns=800 checksum=98763608 suspends=800 median_ms=161.200 min_ms=136.500 max_ms=168.400",
+        "DONE mechanism-only; not game speed, memory, or Chromebook results"
+      ],
+      "errors": []
+    }
+  ]
+}

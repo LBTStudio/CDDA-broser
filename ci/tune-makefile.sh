@@ -8,6 +8,14 @@
 #     ../ci/tune-makefile.sh
 set -euo pipefail
 
+# JSPI is an artifact-only experiment. It needs a modern matched toolchain
+# and native Wasm exceptions; JS exception invoke_* frames cannot suspend.
+CDDA_RUNTIME_BACKEND="${CDDA_RUNTIME_BACKEND:-asyncify}"
+case "$CDDA_RUNTIME_BACKEND" in
+    asyncify|jspi) ;;
+    *) echo "ERROR: CDDA_RUNTIME_BACKEND must be asyncify or jspi" >&2; exit 1 ;;
+esac
+
 if [ ! -f Makefile ]; then
     echo "ERROR: CDDA のソースツリー内で実行してください" >&2
     exit 1
@@ -295,12 +303,46 @@ if ! grep -q '^print-%:' Makefile; then
 fi
 
 # ------------------------------------------------------------------
+# Artifact-only JSPI candidate (never selected by default).
+# Keep ordinary C++ exception semantics; do not disable exception handling.
+# A clean source tree is required when switching backends.
+# ------------------------------------------------------------------
+if [ "$CDDA_RUNTIME_BACKEND" = "jspi" ]; then
+    python3 - <<'PY'
+from pathlib import Path
+p = Path('Makefile')
+text = p.read_text()
+common = 'EMCC_COMMON_FLAGS = -sUSE_SDL=2 -sUSE_SDL_IMAGE=2 -sUSE_SDL_TTF=2 -sSDL2_IMAGE_FORMATS=[\'png\'] -fexceptions'
+native = common.replace('-fexceptions', '-fwasm-exceptions')
+assert text.count(common) + text.count(native) == 1, 'unexpected exception flags'
+text = text.replace(common, native)
+text = text.replace('  LDFLAGS += -sASYNCIFY\n',
+                    "  LDFLAGS += -sJSPI\n  LDFLAGS += -sJSPI_EXPORTS=['main']\n  LDFLAGS += -sSUPPORT_LONGJMP=wasm\n")
+text = '\n'.join(line for line in text.split('\n') if '-sASYNCIFY_STACK_SIZE=' not in line)
+assert '-sJSPI\n' in text and '-sASYNCIFY' not in text, 'mixed suspension backends'
+p.write_text(text)
+PY
+else
+    if grep -q -- '-sJSPI' Makefile; then
+        echo "ERROR: use a clean CDDA tree when switching from JSPI to Asyncify" >&2
+        exit 1
+    fi
+fi
+
+# ------------------------------------------------------------------
 # 検証
 # ------------------------------------------------------------------
 grep -n -E 'INITIAL_MEMORY|MAXIMUM_MEMORY|ASYNCIFY_STACK_SIZE|-sSTACK_SIZE|LDFLAGS \+= -O' Makefile
 grep -q -- '-sINITIAL_MEMORY=256MB'          Makefile
 grep -q -- '-sMAXIMUM_MEMORY=2GB'            Makefile
-grep -q -- '-sASYNCIFY_STACK_SIZE=16777216'  Makefile
+if [ "$CDDA_RUNTIME_BACKEND" = "asyncify" ]; then
+    grep -q -- '-sASYNCIFY_STACK_SIZE=16777216' Makefile
+else
+    grep -q -- '-fwasm-exceptions' Makefile
+    grep -q -- '-sJSPI_EXPORTS=' Makefile
+    grep -q -- '-sSUPPORT_LONGJMP=wasm' Makefile
+    echo '[TUNE] JSPI + native Wasm exceptions: experimental artifact, Chrome 137+ required'
+fi
 grep -q -- '-sSTACK_SIZE=4194304'            Makefile
 # リンク最適化が指定どおりになっていること。
 # 既定 -O2（配信用 / -20%）、CDDA_LINK_OPT=O1 なら -O1（検証用 / -78%）。
