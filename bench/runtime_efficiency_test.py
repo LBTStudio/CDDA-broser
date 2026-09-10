@@ -87,17 +87,20 @@ namespace calendar {
 int turn = 0;
 bool once_every(int n) { return turn % n == 0; }
 }
-static int progress_calls, key_calls, yields, redraws;
+static int progress_calls, key_calls, yields, redraws, full_redraws, presents;
+static int popup_depth = 0, progress_step = 1;
+static std::string pause_label = "pause";
 #define CATA_WEB_YIELD() (++yields)
 const int effect_sleep = 1, ACTION_PAUSE = 2;
 const char *_(const char *s) { return s; }
-std::string press_x(int) { ++key_calls; return "pause"; }
+std::string press_x(int) { ++key_calls; return pause_label; }
 std::string string_format(const char *, const std::string &s) { return "\n" + s + " to interrupt"; }
-namespace ui_manager { void redraw() { ++redraws; } }
-void refresh_display() {}
+namespace ui_manager { void redraw() { ++redraws; if (!popup_depth) ++full_redraws; } }
+void refresh_display() { ++presents; }
 struct ui_adaptor {
     struct disable_uis_below {};
-    explicit ui_adaptor(disable_uis_below) {}
+    explicit ui_adaptor(disable_uis_below) { ++popup_depth; }
+    ~ui_adaptor() { --popup_depth; }
 };
 struct static_popup {
     std::string message;
@@ -127,7 +130,7 @@ struct player_activity {
     std::optional<std::string> get_progress_message(const avatar &) const {
         ++progress_calls;
         if (!has_progress_message()) return std::nullopt;
-        return verb + ": " + std::to_string(calendar::turn);
+        return verb + ": " + std::to_string(calendar::turn / progress_step);
     }
 };
 struct avatar {
@@ -155,15 +158,20 @@ int main() {
             int old_keys = 0, new_keys = 0;
             for (int turn = 1; turn <= 1800; ++turn) {
                 calendar::turn = turn;
-                g = &old_game; progress_calls = key_calls = redraws = yields = 0;
+                g = &old_game; progress_calls = key_calls = redraws = yields = full_redraws = presents = 0;
                 old_wait(u);
                 old_calls += progress_calls; old_keys += key_calls;
-                const int expected_redraws = redraws;
-                g = &new_game; progress_calls = key_calls = redraws = yields = 0;
+                const int expected_redraws = redraws, expected_full_redraws = full_redraws;
+                g = &new_game; progress_calls = key_calls = redraws = yields = full_redraws = presents = 0;
                 new_wait(u);
                 new_calls += progress_calls; new_keys += key_calls;
                 assert(yields >= 1); // includes sleep and non-display turns
+#if defined(EMSCRIPTEN)
+                assert(redraws <= expected_redraws); // only identical popup draws may disappear
+#else
                 assert(redraws == expected_redraws);
+#endif
+                assert(full_redraws == expected_full_redraws);
                 assert(old_game.resets == new_game.resets);
                 assert(old_game.first_redraw_since_waiting_started == new_game.first_redraw_since_waiting_started);
                 assert(bool(old_game.wait_popup) == bool(new_game.wait_popup));
@@ -189,7 +197,7 @@ int main() {
             ++scenarios;
         }
     }
-    printf("PASS: %d scenarios, upstream turn-based cadence/text/reset; AI order preserved\n", scenarios);
+    printf("PASS: %d scenarios, upstream full-UI cadence/visible text/reset; AI order preserved\n", scenarios);
 #if defined(EMSCRIPTEN)
     avatar u; u.activity.type = ACT_PULP;
     game slow_game; g = &slow_game;
@@ -213,6 +221,42 @@ int main() {
     progress_calls = 0; new_wait(u); assert(progress_calls == 0);
     assert(g->wait_popup->message == "Wait till you wake up…");
     puts("PASS real-time popup: 99ms no refresh, 100ms actual progress refresh, reset/restart/sleep");
+    // Count real render calls, not elapsed game or wall time. The sidebar/full
+    // UI schedule and displayed text must agree at every simulated turn.
+    for (bool sleeping : {false, true}) {
+        avatar stable; stable.activity.type = ACT_READ; stable.sleeping = sleeping;
+        game before, after;
+        progress_step = 1000000;
+        int old_presents = 0, new_presents = 0, old_full = 0, new_full = 0;
+        const int turns = sleeping ? 28800 : 1800;
+        for (int t = 1; t <= turns; ++t) {
+            calendar::turn = t; cata_web::clock_ms += 1;
+            g = &before; presents = full_redraws = 0; old_wait(stable);
+            old_presents += presents; old_full += full_redraws;
+            g = &after; presents = full_redraws = 0; new_wait(stable);
+            new_presents += presents; new_full += full_redraws;
+            assert(before.wait_popup->message == after.wait_popup->message);
+        }
+        assert(old_full == new_full);
+        assert(old_presents == (sleeping ? 481 : 31));
+        assert(new_presents == (sleeping ? 17 : 7));
+        printf("PASS identical %s popup: %d -> %d presents; %d full UI updates unchanged\n",
+               sleeping ? "8h sleep" : "30min reading", old_presents, new_presents, new_full);
+        // Externally closed popup, text changes and shortcut changes must redraw.
+        g = &after; g->wait_popup.reset(); calendar::turn = turns + 1;
+        presents = 0; new_wait(stable); assert(presents == 1 && g->wait_popup);
+        stable.sleeping = false; stable.activity.verb = "changed";
+        cata_web::clock_ms += 100; presents = 0; new_wait(stable); assert(presents == 1);
+        pause_label = "new key"; cata_web::clock_ms += 100;
+        presents = 0; new_wait(stable); assert(presents == 1);
+        assert(g->wait_popup->message.find("new key") != std::string::npos);
+        // An unchanged wall-clock refresh still advances its sampling clock.
+        cata_web::clock_ms += 100; presents = progress_calls = 0; new_wait(stable);
+        assert(presents == 0 && progress_calls == 1);
+        cata_web::clock_ms += 1; new_wait(stable); assert(progress_calls == 1);
+        pause_label = "pause";
+    }
+    progress_step = 1;
 #endif
 }
 '''.replace('TYPE_COUNT', str(len(ids)))
@@ -289,6 +333,61 @@ for sig in ['void pulp_activity_actor::start(', 'void pulp_activity_actor::do_tu
             'bool pulp_activity_actor::can_pulp(', 'bool pulp_activity_actor::punch_corpse_once(',
             'void pulp_activity_actor::finish(']:
     assert tokens(function(upstream('activity_actor.cpp'), sig)) == tokens(function(actor, sig))
+# Compile the actual percentage getter; no RNG, movement or actor state stubs
+# are exposed to it, and the five simulation methods above remain upstream.
+pulp_getter = function(actor, 'std::string pulp_activity_actor::get_progress_message(')
+assert 'n_gettext' not in pulp_getter and 'remaining' not in pulp_getter
+pulp_program = r'''
+#include <algorithm>
+#include <cassert>
+#include <cstdio>
+#include <string>
+#include <vector>
+struct player_activity {};
+struct item {
+    int d = 0, maxd = 4000;
+    int damage() const { return d; }
+    int max_damage() const { return maxd; }
+};
+static int visits = 0;
+struct item_location {
+    const item *ptr;
+    const item *get_item() const { ++visits; return ptr; }
+};
+struct pulp_activity_actor {
+    std::vector<item_location> corpses;
+    std::string get_progress_message(const player_activity &) const;
+};
+std::string string_format(const char *fmt, int pct) {
+    char buffer[32]; std::snprintf(buffer, sizeof(buffer), fmt, pct); return buffer;
+}
+'''
+pulp_program += pulp_getter + r'''
+int main() {
+    player_activity act; pulp_activity_actor actor;
+    item current, done{4000,4000}, old{1000,4000};
+    actor.corpses = {{&old}, {&current}, {nullptr}, {&done}};
+    for (int damage = -1000; damage < 4000; ++damage) {
+        current.d = damage;
+        const auto expected = std::to_string(std::clamp(damage * 100 / 4000, 0, 100)) + "%";
+        assert(actor.get_progress_message(act) == expected);
+        assert(current.d == damage && old.d == 1000 && done.d == 4000);
+    }
+    current.d = 4000; assert(actor.get_progress_message(act) == "25%");
+    old.d = 4000; assert(actor.get_progress_message(act).empty());
+    actor.corpses = {{nullptr}}; assert(actor.get_progress_message(act).empty());
+    item invalid{-1,0}; actor.corpses = {{&invalid}};
+    assert(actor.get_progress_message(act).empty());
+    current.d = 2000; actor.corpses.assign(1000, {&current}); visits = 0;
+    assert(actor.get_progress_message(act) == "50%"); assert(visits == 1);
+    std::puts("PASS pulping: 5000 damage boundaries, skipped targets, percent-only text, one lookup for 1000 live corpses");
+}
+'''
+with tempfile.TemporaryDirectory(prefix='pulp-progress-', dir=out) as tmp:
+    cpp, binary = Path(tmp) / 'test.cpp', Path(tmp) / 'test'
+    cpp.write_text(pulp_program)
+    subprocess.run(['g++', '-std=c++17', '-O2', '-Wall', '-Wextra', '-Werror', str(cpp), '-o', str(binary)], check=True)
+    subprocess.run([str(binary)], check=True)
 stack_h = (source / 'src/map_item_stack.h').read_text()
 stack_h = stack_h[stack_h.index('class map_item_stack\n'):stack_h.index('\nstd::vector<map_item_stack> filter_item_stacks')]
 stack_cpp = (source / 'src/map_item_stack.cpp').read_text()
