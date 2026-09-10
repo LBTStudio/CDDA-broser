@@ -347,25 +347,6 @@ its upstream turn-based display cadence is unchanged.
              data->SelectionEnd = data->BufTextLen;
              data->CursorPos = data->BufTextLen;
 
---- a/src/sdltiles.cpp
-+++ b/src/sdltiles.cpp
-@@ -2913,6 +2913,8 @@
-             }
-             SDL_Event commit_event {};
-             commit_event.type = SDL_TEXTINPUT;
-+            // ImGui rejects text events not addressed to its SDL window.
-+            commit_event.text.windowID = SDL_GetWindowID( window.get() );
-             memcpy( commit_event.text.text, p, chunk );
-             commit_event.text.text[chunk] = '\0';
-             SDL_PushEvent( &commit_event );
-@@ -2952,6 +2954,7 @@
-         }
-         SDL_Event edit_event {};
-         edit_event.type = SDL_TEXTEDITING;
-+        edit_event.edit.windowID = SDL_GetWindowID( window.get() );
-         memcpy( edit_event.edit.text, ime_buf, chunk );
-         edit_event.edit.text[chunk] = '\0';
-         edit_event.edit.start = 0;
 --- a/src/game.cpp
 +++ b/src/game.cpp
 @@ -8308,11 +8308,13 @@
@@ -440,20 +421,6 @@ its upstream turn-based display cadence is unchanged.
  /**
   * 描画フレームを 1 枚確実に挟んでから戻る（requestAnimationFrame 待ち）。
   *
---- a/src/sdltiles.cpp
-+++ b/src/sdltiles.cpp
-@@ -4381,7 +4381,9 @@
-     // MessageChannel でも同じ効果が得られ、しかも実測 0.075ms で済む。
-     const auto wait_for_input_events = []() {
- #if defined(EMSCRIPTEN)
--        cata_web::yield_now();
-+        // Keyboard/IME/mouse input wakes immediately; fallback polling is
-+        // only for gamepads or SDL-internal events. Do not spin when idle.
-+        cata_web::wait_for_input( inputdelay > 0 ? std::min( inputdelay, 16 ) : 16 );
- #else
-         SDL_Delay( 1 );
- #endif
-
 --- a/src/cata_web_yield.cpp
 +++ b/src/cata_web_yield.cpp
 @@ -50,10 +50,38 @@
@@ -531,3 +498,169 @@ its upstream turn-based display cadence is unchanged.
          return false;
      }
      yield_now();
+--- a/src/sdltiles.cpp
++++ b/src/sdltiles.cpp
+@@ -203,13 +203,51 @@
+ //   ゲームプレイの意味を変えるものではない。
+ //   押した回数だけ移動する、という本来の CDDA の挙動になる。
+ //
+-// 上限を設ける理由:
+-//   キーを押しっぱなしにした場合や、タブを長時間放置して戻った
+-//   場合に無制限に溜まると、指を離した後も延々と動き続けて
+-//   しまう（プレイ体験を損なう）。上限を超えた分は古いものから
+-//   捨てる。64 は 1 秒間に 60 回来ても 1 秒ぶん保持できる値。
++// Deliberate presses keep their FIFO order. OS auto-repeat is a revocable,
++// single pending intent, NOT a backlog of future game turns.
+ static std::deque<input_event> pending_input_queue;
+ static constexpr size_t pending_input_queue_max = 64;
++static std::optional<SDL_Keysym> pending_key_repeat;
++static bool web_repeat_focused = true;
++static input_event sdl_keysym_to_keycode_evt( const SDL_Keysym &keysym );
++
++// Called after ImGui receives the original event. Text/IME is not coalesced.
++static bool filter_web_key_repeat( const SDL_Event &ev, const bool keycode_mode )
++{
++    if( !keycode_mode ) {
++        pending_key_repeat.reset();
++    }
++    if( ev.type == SDL_WINDOWEVENT ) {
++        switch( ev.window.event ) {
++            case SDL_WINDOWEVENT_FOCUS_LOST:
++            case SDL_WINDOWEVENT_HIDDEN:
++            case SDL_WINDOWEVENT_MINIMIZED:
++                web_repeat_focused = false;
++                pending_key_repeat.reset();
++                break;
++            case SDL_WINDOWEVENT_FOCUS_GAINED:
++                web_repeat_focused = true;
++                break;
++            default:
++                break;
++        }
++    } else if( ev.type == SDL_KEYUP ) {
++        // Also invalidate captured modifiers on release. Other held keys can
++        // produce a new repeat; no deliberate press is removed from the FIFO.
++        pending_key_repeat.reset();
++        return keycode_mode;
++    } else if( ev.type == SDL_KEYDOWN ) {
++        if( !ev.key.repeat ) {
++            pending_key_repeat.reset();
++        } else if( keycode_mode ) {
++            if( web_repeat_focused ) {
++                pending_key_repeat = ev.key.keysym;
++            }
++            return true;
++        }
++    }
++    return false;
++}
+ 
+ // last_input を上書きする直前に呼び、失われる入力を退避する。
+ // error 型（=入力なし）は退避しない。
+@@ -250,6 +288,14 @@
+ {
+     if( last_input.type == input_event_t::error && !pending_input_queue.empty() ) {
+         last_input = take_pending_input();
++    }
++    // Only input consumers may materialize a repeat. pump_events() never
++    // turns it into a durable tap when returning last_input to the FIFO.
++    if( last_input.type == input_event_t::error && pending_key_repeat ) {
++        if( !SDL_IsTextInputActive() && web_repeat_focused ) {
++            last_input = sdl_keysym_to_keycode_evt( *pending_key_repeat );
++        }
++        pending_key_repeat.reset();
+     }
+ }
+ 
+@@ -2913,6 +2959,8 @@
+             }
+             SDL_Event commit_event {};
+             commit_event.type = SDL_TEXTINPUT;
++            // ImGui rejects text events not addressed to its SDL window.
++            commit_event.text.windowID = SDL_GetWindowID( window.get() );
+             memcpy( commit_event.text.text, p, chunk );
+             commit_event.text.text[chunk] = '\0';
+             SDL_PushEvent( &commit_event );
+@@ -2952,6 +3000,7 @@
+         }
+         SDL_Event edit_event {};
+         edit_event.type = SDL_TEXTEDITING;
++        edit_event.edit.windowID = SDL_GetWindowID( window.get() );
+         memcpy( edit_event.edit.text, ime_buf, chunk );
+         edit_event.edit.text[chunk] = '\0';
+         edit_event.edit.start = 0;
+@@ -3310,6 +3359,11 @@
+         last_input = input_event();
+ #endif
+         imclient->process_input( &ev );
++#if defined(EMSCRIPTEN)
++        if( filter_web_key_repeat( ev, !SDL_IsTextInputActive() ) ) {
++            continue;
++        }
++#endif
+         switch( ev.type ) {
+             case SDL_WINDOWEVENT:
+                 switch( ev.window.event ) {
+@@ -3885,6 +3939,14 @@
+             break;
+         }
+     }
++#if defined(EMSCRIPTEN)
++    // The final SDL event must not jump ahead of older queued taps. Normalize
++    // once here so pump_events() can safely return the oldest event to front.
++    if( !pending_input_queue.empty() ) {
++        stash_pending_input( last_input );
++        last_input = take_pending_input();
++    }
++#endif
+     bool resized = false;
+     if( resize_dims.has_value() ) {
+         restore_on_out_of_scope prev_last_input( last_input );
+@@ -4318,33 +4380,9 @@
+     previously_pressed_key = 0;
+ 
+ #if defined(EMSCRIPTEN)
+-    // [CDDA-BROSER] 溜まっている入力があれば、SDL キューを見る前に
+-    // そこから 1 個返す。
+-    //
+-    // これが「押した回数だけ動く」を成立させる要点である。
+-    // ブラウザは yield の瞬間に溜め込んだ keydown をまとめて配送し、
+-    // CheckMessages() はそれを 1 回で全部飲む。飲んだ分を
+-    // stash_pending_input() が保持しているので、ここで 1 個ずつ
+-    // 取り出せば、押した回数と処理されるターン数が一致する。
+-    //
+-    // 描画の更新（この下の wnoutrefresh / refresh_display）より
+-    // 前に返す理由:
+-    //   キューが空でない＝プレイヤーの操作が未消化で溜まっている
+-    //   状態である。ここで描画や yield を挟むと、溜まっている分を
+-    //   捌く速度がフレームレートに縛られてしまう。溜まっている間は
+-    //   最短経路で入力を返し、溜まりが解消してから通常の
+-    //   「描画して入力を待つ」経路に戻るのが最も応答が良い。
+-    //
+-    // なお溜まりが無い通常時（キューが空）はこの分岐を素通りするので、
+-    // 従来の挙動・描画タイミングは一切変わらない。
+-    if( !pending_input_queue.empty() ) {
+-        last_input = take_pending_input();
+-        SDL_GetMouseState( &last_input.mouse_pos.x, &last_input.mouse_pos.y );
+-        if( last_input.type == input_event_t::keyboard_char ) {
+-            previously_pressed_key = last_input.get_first_input();
+-        }
+-        return last_input;
+-    }
++    // Even with pending taps, let the browser deliver releases and poll SDL
++    // before consuming repeat intent. The shared budget avoids a yield per tap.
++    CATA_WEB_YIELD();
+ #endif
+ 
+     // standards note: getch is sometimes required to call refresh
+@@ -4378,7 +4416,9 @@
+     // MessageChannel でも同じ効果が得られ、しかも実測 0.075ms で済む。
+     const auto wait_for_input_events = []() {
+ #if defined(EMSCRIPTEN)
+-        cata_web::yield_now();
++        // Keyboard/IME/mouse input wakes immediately; fallback polling is
++        // only for gamepads or SDL-internal events. Do not spin when idle.
++        cata_web::wait_for_input( inputdelay > 0 ? std::min( inputdelay, 16 ) : 16 );
+ #else
+         SDL_Delay( 1 );
+ #endif
