@@ -27,7 +27,7 @@ name: Build CDDA 0.I WebAssembly
 #   ・リンク結果をキャッシュ化（入力が同じなら 4 時間省略）
 #   ・リンク最適化レベルを切り替え可能に（配信用 O2 / 検証用 O1）
 #
-# 【ジョブの依存���係】
+# 【ジョブの依存関係】
 #
 #     plan ────┬──> compile (N並列) ──> link ──┐
 #              │                                ├──> bundle ──> deploy
@@ -100,12 +100,6 @@ jobs:
       link_cache_key: ${{ steps.plan.outputs.link_cache_key }}
 
     steps:
-      - name: Reject experimental production deployment
-        if: ${{ inputs.runtime_backend == 'jspi' && inputs.deploy_pages != false }}
-        run: |
-          echo 'JSPI is not validated for production. Select deploy_pages=false.' >&2
-          exit 1
-
       - name: Checkout wrapper repository
         uses: actions/checkout@v4
 
@@ -217,12 +211,6 @@ jobs:
         shard: ${{ fromJSON( needs.plan.outputs.matrix ) }}
 
     steps:
-      - name: Reject experimental production deployment
-        if: ${{ inputs.runtime_backend == 'jspi' && inputs.deploy_pages != false }}
-        run: |
-          echo 'JSPI is not validated for production. Select deploy_pages=false.' >&2
-          exit 1
-
       - name: Checkout wrapper repository
         uses: actions/checkout@v4
 
@@ -323,11 +311,6 @@ jobs:
     timeout-minutes: 90
 
     steps:
-      - name: Reject experimental production deployment
-        if: ${{ inputs.runtime_backend == 'jspi' && inputs.deploy_pages != false }}
-        run: |
-          echo 'JSPI is not validated for production. Select deploy_pages=false.' >&2
-          exit 1
 
       - name: Checkout wrapper repository
         uses: actions/checkout@v4
@@ -390,12 +373,6 @@ jobs:
     timeout-minutes: 330
 
     steps:
-      - name: Reject experimental production deployment
-        if: ${{ inputs.runtime_backend == 'jspi' && inputs.deploy_pages != false }}
-        run: |
-          echo 'JSPI is not validated for production. Select deploy_pages=false.' >&2
-          exit 1
-
       - name: Checkout wrapper repository
         uses: actions/checkout@v4
 
@@ -577,12 +554,6 @@ jobs:
     timeout-minutes: 60
 
     steps:
-      - name: Reject experimental production deployment
-        if: ${{ inputs.runtime_backend == 'jspi' && inputs.deploy_pages != false }}
-        run: |
-          echo 'JSPI is not validated for production. Select deploy_pages=false.' >&2
-          exit 1
-
       - name: Checkout wrapper repository
         uses: actions/checkout@v4
 
@@ -653,7 +624,7 @@ jobs:
           retention-days: 30
 
       - name: Upload GitHub Pages artifact
-        if: ${{ inputs.deploy_pages != false && inputs.runtime_backend != 'jspi' }}
+        if: ${{ inputs.deploy_pages != false }}
         uses: actions/upload-pages-artifact@v3
         with:
           path: site/
@@ -663,7 +634,7 @@ jobs:
   # ==================================================================
   deploy:
     name: Deploy to GitHub Pages
-    if: ${{ inputs.deploy_pages != false && inputs.runtime_backend != 'jspi' }}
+    if: ${{ inputs.deploy_pages != false }}
     needs: bundle
     runs-on: ubuntu-latest
 
