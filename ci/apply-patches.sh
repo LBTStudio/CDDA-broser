@@ -268,6 +268,7 @@ fi
 # Dependencies: Python 3, g++ (C++17), Node.js 22 (available on ubuntu-latest).
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 python3 "$SCRIPT_DIR/../bench/runtime_efficiency_test.py" "$PWD"
+python3 "$SCRIPT_DIR/../bench/sleep_save_test.py" "$PWD"
 python3 "$SCRIPT_DIR/../bench/input_utf8_test.py" "$PWD"
 python3 "$SCRIPT_DIR/../bench/key_repeat_test.py" "$PWD"
 python3 "$SCRIPT_DIR/../bench/gear_guide_test.py" "$PWD"

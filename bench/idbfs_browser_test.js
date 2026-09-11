@@ -119,6 +119,39 @@ async function run() {
     assert.equal(await page.evaluate(() => FS.readFile(root + '/save/first.sav', { encoding: 'utf8' })), '先行の変更');
     console.log('PASS real IDBFS: writes made during sync are persisted in serialized subsequent pass');
 
+    // A save spanning many event-loop turns must not start intermediate scans.
+    // Exercise real IDBFS renames/deletes and a failed final sync, then reload.
+    await page.evaluate(async () => {
+      FS.writeFile(root + '/save/delete.sav', 'old');
+      window.setFsNeedsSync();
+      window.beginFsSyncBatch();
+      window.beginFsSyncBatch();
+      for (let i = 0; i < 4; ++i) {
+        FS.writeFile(root + '/save/batch.tmp', '保存の最終世代 ' + i);
+        window.setFsNeedsSync();
+        document.dispatchEvent(new Event('visibilitychange'));
+        window.dispatchEvent(new Event('pagehide'));
+        await new Promise(resolve => setTimeout(resolve, 300));
+        if (successWrites !== 0 || activeWrites !== 0) throw new Error('mid-save sync');
+      }
+      FS.rename(root + '/save/batch.tmp', root + '/save/batch.sav');
+      FS.unlink(root + '/save/delete.sav');
+      window.setFsNeedsSync();
+      window.endFsSyncBatch();
+      await new Promise(resolve => setTimeout(resolve, 350));
+      if (successWrites !== 0) throw new Error('nested batch escaped');
+      failNext = true;
+      window.endFsSyncBatch();
+    });
+    await page.waitForFunction(() => syncStates.some(s => s.failed));
+    await page.waitForFunction(() => successWrites === 1 && activeWrites === 0 && !syncStates.at(-1).failed);
+    assert.equal(await page.evaluate(() => maxActiveWrites), 1);
+    await open();
+    assert.equal(await page.evaluate(() => FS.readFile(root + '/save/batch.sav', {encoding: 'utf8'})), '保存の最終世代 3');
+    assert.equal(await page.evaluate(() => FS.analyzePath(root + '/save/batch.tmp').exists), false);
+    assert.equal(await page.evaluate(() => FS.analyzePath(root + '/save/delete.sav').exists), false);
+    console.log('PASS real IDBFS: long/nested save, lifecycle flushes, final retry, rename/delete reload');
+
     await open('beta');
     assert.equal(await page.evaluate(() => FS.analyzePath(root + '/save/世界.sav').exists), false);
     await open('alpha');
