@@ -758,3 +758,146 @@ its upstream turn-based display cadence is unchanged.
  }
  
  bool pulp_activity_actor::can_pulp( item &corpse, Character &you )
+
+--- a/src/player_hardcoded_effects.cpp
++++ b/src/player_hardcoded_effects.cpp
+@@ -14,6 +14,7 @@
+ #include "avatar.h"
+ #include "bodypart.h"
+ #include "calendar.h"
++#include "cata_web_yield.h"
+ #include "character.h"
+ #include "coordinates.h"
+ #include "creature.h"
+@@ -1050,7 +1051,18 @@
+
+     u.set_moves( 0 );
+     if( u.is_avatar() ) {
++#if defined(EMSCRIPTEN)
++        // Sleep simulates one-second turns, not display frames. Do not cross
++        // into SDL/JS thousands of times before new browser input can arrive.
++        // Keep this clock independent of AI yields (which do not poll SDL).
++        static double last_sleep_poll_ms = -cata_web::default_budget_ms;
++        if( cata_web::now_ms() - last_sleep_poll_ms >= cata_web::default_budget_ms ) {
++            inp_mngr.pump_events();
++            last_sleep_poll_ms = cata_web::now_ms();
++        }
++#else
+         inp_mngr.pump_events();
++#endif
+     }
+
+     if( intense < 1 ) {
+--- a/src/main.cpp
++++ b/src/main.cpp
+@@ -586,6 +586,7 @@
+     let fsPersistenceReady = false;
+     let fsRetryDelayMs = 0;
+     let fsSyncError = false;
++    let fsSyncBatchDepth = 0;
+     const fsSyncDebounceMs = 250;
+
+     function reportSyncError( failed, detail )
+@@ -605,7 +606,8 @@
+
+     function scheduleFsSync()
+     {
+-        if( !fsPersistenceReady || fsSyncInFlight || !fsNeedsSync || fsSyncTimer !== null ) {
++        if( !fsPersistenceReady || fsSyncInFlight || fsSyncBatchDepth ||
++            !fsNeedsSync || fsSyncTimer !== null ) {
+             return;
+         }
+         fsSyncTimer = setTimeout( function() {
+@@ -617,7 +619,7 @@
+
+     function syncFs()
+     {
+-        if( !fsPersistenceReady || fsSyncInFlight || !fsNeedsSync ) {
++        if( !fsPersistenceReady || fsSyncInFlight || fsSyncBatchDepth || !fsNeedsSync ) {
+             return;
+         }
+         fsNeedsSync = false;
+@@ -656,6 +658,24 @@
+         scheduleFsSync();
+     };
+
++    // A yielding C++ save can last much longer than the debounce window.
++    // Do not repeatedly enumerate/copy its partly-written tree on each yield.
++    // Existing in-flight writes may finish; dirty state still requires a final
++    // pass. This batches requests, NOT an atomic multi-file save transaction.
++    window.beginFsSyncBatch = function() {
++        ++fsSyncBatchDepth;
++        if( fsSyncTimer !== null ) {
++            clearTimeout( fsSyncTimer );
++            fsSyncTimer = null;
++        }
++    };
++    window.endFsSyncBatch = function() {
++        if( fsSyncBatchDepth > 0 ) {
++            --fsSyncBatchDepth;
++        }
++        scheduleFsSync();
++    };
++
+     // Best effort only: a discarded page cannot await IndexedDB completion.
+     // Also flush on return to a tab whose timers were suspended by ChromeOS.
+     function flushFsSync()
+--- a/src/game.cpp
++++ b/src/game.cpp
+@@ -3654,6 +3654,14 @@
+
+ bool game::save()
+ {
++#if defined(EMSCRIPTEN)
++    // Balance on every return and exception, including save-event handlers.
++    // Dirty notifications remain enabled; only starting IDBFS sync is delayed.
++    on_out_of_scope fs_sync_batch_guard{ [] {
++            EM_ASM( window.endFsSyncBatch(); );
++        } };
++    EM_ASM( window.beginFsSyncBatch(); );
++#endif
+     std::chrono::seconds time_since_load =
+         std::chrono::duration_cast<std::chrono::seconds>(
+             std::chrono::steady_clock::now() - time_of_last_load );
+@@ -13493,13 +13501,13 @@
+     ui_manager::redraw();
+     refresh_display();
+
+-    time_t now = std::time( nullptr ); //timestamp for start of saving procedure
+-
+-    //perform save
+-    save();
+-    //Now reset counters for autosaving, so we don't immediately autosave after a quicksave or autosave.
+-    moves_since_last_save = 0;
+-    last_save_timestamp = now;
++    // A failed save must remain eligible for retry. Count the minimum real
++    // interval from completion, so a slow successful save does not immediately
++    // trigger another autosave when its duration exceeded that interval.
++    if( save() ) {
++        moves_since_last_save = 0;
++        last_save_timestamp = std::time( nullptr );
++    }
+ }
+
+ void game::quickload()
+--- a/src/filesystem.cpp
++++ b/src/filesystem.cpp
+@@ -78,7 +78,6 @@
+
+ bool assure_dir_exist( const std::filesystem::path &path )
+ {
+-    setFsNeedsSync();
+     std::error_code ec;
+     bool exists{false};
+     bool created{false};
+@@ -91,6 +90,10 @@
+                 return false;
+             }
+             created = std::filesystem::create_directories( p, ec );
++            // Existing-directory checks are reads, not mutations. A failed
++            // recursive creation can still have created parents: retain dirty
++            // state on that path too, without changing the return semantics.
++            setFsNeedsSync();
+             if( !created ) {
+                 // TEMPORARY until we drop VS2019 support
+                 // VS2019 std::filesystem doesn't handle trailing slashes well in this

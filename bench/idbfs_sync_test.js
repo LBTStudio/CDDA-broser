@@ -79,6 +79,57 @@ function environment(options = {}) {
 }
 
 const cases = [
+  ['long nested save batches cancel timers and defer lifecycle flushes', async () => {
+    const e = environment(); await e.restore(); e.dirty();
+    assert.equal(e.timers.size, 1);
+    e.window.beginFsSyncBatch(); assert.equal(e.timers.size, 0);
+    e.window.beginFsSyncBatch();
+    // Each burst would allow another full-tree scan without a save boundary.
+    for (let i = 0; i < 100; ++i) {
+      e.dirty(); e.event('visibilitychange'); e.event('pagehide');
+      assert.equal(e.writes(), 0); assert.equal(e.timers.size, 0);
+    }
+    e.window.endFsSyncBatch(); assert.equal(e.timers.size, 0);
+    e.window.endFsSyncBatch(); e.tick(250); e.finish();
+    assert.equal(e.writes(), 1); assert.equal(e.timers.size, 0);
+    // Empty or unmatched end calls must not underflow or create idle writes.
+    e.window.endFsSyncBatch(); e.window.beginFsSyncBatch(); e.window.endFsSyncBatch();
+    assert.equal(e.timers.size, 0);
+    e.dirty(); e.tick(250); e.finish(); assert.equal(e.writes(), 2);
+  }],
+  ['in-flight completion during a batch retains changes and retry backoff', async () => {
+    for (const fail of [false, true]) {
+      const e = environment(); await e.restore(); e.dirty(); e.tick(250);
+      e.window.beginFsSyncBatch(); e.dirty();
+      e.finish(fail ? new Error('quota') : null);
+      assert.equal(e.timers.size, 0); assert.equal(e.writes(), 1);
+      e.event('visibilitychange', 'visible'); assert.equal(e.writes(), 1);
+      e.window.endFsSyncBatch(); e.tick(fail ? 1000 : 250); e.finish();
+      assert.equal(e.writes(), 2); assert.equal(e.maxActive(), 1);
+      assert.equal(e.timers.size, 0);
+      if (fail) assert.equal(e.notices.at(-1).failed, false);
+    }
+  }],
+  ['batch exit before in-flight completion still schedules final dirty pass', async () => {
+    const e = environment(); await e.restore(); e.dirty(); e.tick(250);
+    e.window.beginFsSyncBatch(); e.dirty(); e.window.endFsSyncBatch();
+    assert.equal(e.timers.size, 0);
+    e.finish(); e.tick(250); e.finish();
+    assert.equal(e.writes(), 2); assert.equal(e.maxActive(), 1);
+  }],
+  ['restore and restore failure remain safe inside a batch', async () => {
+    for (const fail of [false, true]) {
+      const e = environment(); e.window.beginFsSyncBatch(); e.dirty();
+      await e.restore(fail ? new Error('restore') : null);
+      assert.equal(e.timers.size, 0); assert.equal(e.writes(), 0);
+      e.window.endFsSyncBatch();
+      if (fail) {
+        e.event('pagehide'); assert.equal(e.writes(), 0); assert.equal(e.timers.size, 0);
+      } else {
+        e.tick(250); e.finish(); assert.equal(e.writes(), 1);
+      }
+    }
+  }],
   ['profile mount, no idle write, pre-restore mutations', async () => {
     const e = environment();
     assert.equal(typeof e.window.setFsNeedsSync, 'function');
