@@ -27,7 +27,8 @@ def original(name):
 
 def body(text, signature):
     start = text.index(signature)
-    opening = text.index('{', start)
+    # A constructor initializer can contain a lambda body before its own body.
+    opening = text.index('\n{', start) + 1
     depth, end = 1, opening + 1
     while depth:
         depth += (text[end] == '{') - (text[end] == '}')
@@ -188,7 +189,7 @@ public:
     if namespace == 'optimized':
         program += body(text['creature_tracker.cpp'],
                         'shared_ptr_fast<const creature_tracker::monster_snapshot>') + '\n'
-    program += 'class game { public: creature_tracker *critter_tracker; Character u;\n'
+    program += 'class game { public: class creature_tracker *critter_tracker; Character u;\n'
     header = text['game.h']
     start = header.index('        template<typename T>\n        class non_dead_range')
     end = header.index('\n    public:\n', start)
