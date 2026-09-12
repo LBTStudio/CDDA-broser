@@ -34,7 +34,38 @@ int main() {
     });
     // Forced yield remains available after idle waits and cannot deadlock.
     cata_web::yield_now();
-    EM_ASM({ window.done = true; });
+    EM_ASM({
+        window.paintOrder = [];
+        window.realRaf = window.requestAnimationFrame;
+        window.realCancel = window.cancelAnimationFrame;
+        window.requestAnimationFrame = function(cb) {
+            return realRaf(function(t) {
+                cb(t);
+                queueMicrotask(function() { paintOrder.push("raf-microtask"); });
+            });
+        };
+    });
+    cata_web::yield_paint();
+    EM_ASM({
+        paintOrder.push("resumed");
+        window.requestAnimationFrame = function() { throw new Error("hidden rAF requested"); };
+        Object.defineProperty(document, "hidden", { configurable: true, get: function() { return true; } });
+        window.hiddenStart = performance.now();
+    });
+    cata_web::yield_paint();
+    EM_ASM({
+        window.hiddenMs = performance.now() - hiddenStart;
+        delete document.hidden;
+        window.cancelledFrames = 0;
+        window.requestAnimationFrame = function() { return 999; };
+        window.cancelAnimationFrame = function(id) { if(id === 999) ++cancelledFrames; };
+    });
+    cata_web::yield_paint();
+    EM_ASM({
+        window.requestAnimationFrame = realRaf;
+        window.cancelAnimationFrame = realCancel;
+        window.done = true;
+    });
     return 0;
 }
 `);
@@ -81,12 +112,16 @@ var Module={};</script><script src="test.js"></script>` });
       latencies.push(Date.now() - start); // includes Playwright roundtrips, not game latency
     }
     await page.waitForFunction(() => window.done, undefined, { timeout: 10000 });
-    const result = await page.evaluate(() => ({ delivered, fallbackMs, idleUsedMessageChannel }));
+    const result = await page.evaluate(() => ({ delivered, fallbackMs, idleUsedMessageChannel, paintOrder, hiddenMs, cancelledFrames }));
     assert.deepEqual(errors, []);
     assert.deepEqual(result.delivered.map(e => e.name), ['keydown', 'keyup', 'input', 'compositionend']);
     assert.deepEqual(result.delivered.slice(2).map(e => e.data), ['日本', '包帯']);
     assert(result.fallbackMs >= 250, 'idle wait must not hot-spin');
     assert.equal(result.idleUsedMessageChannel, false);
+    assert.deepEqual(result.paintOrder, ['raf-microtask', 'resumed']);
+    assert(result.hiddenMs >= 80 && result.hiddenMs < 1500);
+    assert.equal(result.cancelledFrames, 1);
+    console.log('PASS real paint: post-rAF task, hidden fallback, cancelled throttled frame');
     console.log('PASS actual scheduler ' + backend + ': input order, key/IME wake, 20 bounded idle waits, forced yield');
     console.log(JSON.stringify({ ...result, testRoundtripMs: latencies }));
   } finally { await browser.close(); }

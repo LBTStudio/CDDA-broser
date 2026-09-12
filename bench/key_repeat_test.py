@@ -97,10 +97,12 @@ static unsigned yields = 0, delivered = 0;
 #define CATA_WEB_YIELD() (++yields)
 namespace cata_web { void wait_for_input(int) {} }
 namespace catacurses { int stdscr = 0; }
-struct ui_adaptor { static bool has_imgui() { return false; } };
+bool imgui_visible = false;
+int present_calls = 0, periodic_present_calls = 0;
+struct ui_adaptor { static bool has_imgui() { return imgui_visible; } };
 void wnoutrefresh(int) {}
-void refresh_display() {}
-void try_sdl_update() {}
+void refresh_display() { ++present_calls; needupdate = false; }
+void try_sdl_update() { ++periodic_present_calls; }
 void StartTextInput() { SDL_StartTextInput(); }
 void StopTextInput() { SDL_StopTextInput(); }
 struct client { void process_input(const SDL_Event *) { ++delivered; } };
@@ -220,6 +222,14 @@ int main() {
     reset_state(); key('l');
     for(int i=0;i<1000;++i) { SDL_Event ev; ev.type=SDL_MOUSEMOTION; events.push_back(ev); }
     assert(consume(0) == 'l'); assert(queued() == 0); ++cases;
+    reset_state(); imgui_visible = true; inputdelay = 0; needupdate = false;
+    for (int i = 0; i < 10000; ++i) assert(consume(0) == 0);
+    assert(periodic_present_calls == 0 && present_calls == 0);
+    needupdate = true; consume(0); assert(present_calls == 1);
+    inputdelay = -1; key('l'); consume(0); assert(periodic_present_calls == 1);
+    inputdelay = 10; key('l'); consume(0); assert(periodic_present_calls == 2);
+    inputdelay = 0; imgui_visible = false;
+    std::cout << "PASS 10000 idle activity polls: no unchanged frame copies; dirty/blocking updates preserved\n";
     assert(yields > 0 && delivered > 10000);
     std::cout << "PASS " << cases << " source-derived repeat/FIFO scenarios\n";
 }
