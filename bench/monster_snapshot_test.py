@@ -92,14 +92,17 @@ program = r'''
 #include "memory_fast.h"
 static bool count_allocations = false, fail_allocation = false;
 static size_t allocations = 0, allocated_bytes = 0;
-void *operator new(std::size_t size) {
+// Keep allocator hooks out of line, like the normal runtime entry points.
+// Inlining malloc/free into library callers triggers GCC's mismatched-new-delete
+// diagnostic even though this matched replacement pair owns both operations.
+[[gnu::noinline]] void *operator new(std::size_t size) {
     if (fail_allocation) throw std::bad_alloc();
     if (count_allocations) { ++allocations; allocated_bytes += size; }
     if (void *p = std::malloc(size ? size : 1)) return p;
     throw std::bad_alloc();
 }
-void operator delete(void *p) noexcept { std::free(p); }
-void operator delete(void *p, std::size_t) noexcept { std::free(p); }
+[[gnu::noinline]] void operator delete(void *p) noexcept { std::free(p); }
+[[gnu::noinline]] void operator delete(void *p, std::size_t) noexcept { std::free(p); }
 struct position {
     int n;
     bool operator<(position b) const { return n < b.n; }
