@@ -1,16 +1,16 @@
 CDDA 0.I: safe runtime efficiency for low-memory browsers.
-Apply after activity-perf. Supersedes F-20's unsafe 16-turn danger-check
-throttle. Synthetic benchmark timings are NOT real-game performance proof.
-AI and danger checks retain upstream order and frequency. Yielding improves
-browser responsiveness, not the amount of AI work. Progress text is lazy;
-its upstream turn-based display cadence is unchanged.
+Apply after activity-perf. Supersedes F-20's unsafe danger-check throttle.
+AI/danger checks retain upstream order/frequency. Web waiting progress uses
+real reading moves and elapsed sleep time, sampled at 100ms safe points.
+World/sidebar rendering is separately bounded; native cadence is unchanged.
+Synthetic work counts are NOT proof of native-equivalent game performance.
 
 --- a/src/player_activity.cpp
 +++ b/src/player_activity.cpp
 @@ -141,10 +141,10 @@
      return std::string( index < str_values.size() ? str_values[index] : def );
  }
- 
+
 -std::optional<std::string> player_activity::get_progress_message( const avatar &u ) const
 +bool player_activity::has_progress_message() const
  {
@@ -18,7 +18,7 @@ its upstream turn-based display cadence is unchanged.
 -        return std::optional<std::string>();
 +        return false;
      }
- 
+
      if( type == ACT_AIM ||
 @@ -156,6 +156,15 @@
          type == ACT_EAT_MENU ||
@@ -35,7 +35,29 @@ its upstream turn-based display cadence is unchanged.
 +    if( !has_progress_message() ) {
          return std::nullopt;
      }
- 
+
+@@ -213,6 +222,21 @@
+     if( actor ) {
+         extra_info = actor->get_progress_message( *this );
+     }
++
++#if defined(EMSCRIPTEN)
++    // Knowledge XP is awarded at chapter boundaries, not continuously. Show
++    // the current reading interval independently, including non-skill books.
++    // This is not a percentage of the whole book or of the next skill level.
++    if( type == ACT_READ && moves_total > 0 ) {
++        const long long completed = std::clamp<long long>(
++                                        static_cast<long long>( moves_total ) - moves_left, 0, moves_total );
++        // Wide integer arithmetic avoids overflow and premature rounding to 100%.
++        const int tenths = static_cast<int>( completed * 1000 / moves_total );
++        const std::string interval = string_format( "%s: %d.%d%%", _( "Progress" ),
++                                     tenths / 10, tenths % 10 );
++        extra_info = extra_info.empty() ? interval : interval + " | " + extra_info;
++    }
++#endif
+
+     return extra_info.empty() ? string_format( _( "%s…" ),
+             get_verb().translated() ) : string_format( _( "%s: %s" ),
 --- a/src/player_activity.h
 +++ b/src/player_activity.h
 @@ -130,6 +130,8 @@
@@ -44,10 +66,9 @@ its upstream turn-based display cadence is unchanged.
          std::optional<std::string> get_progress_message( const avatar &u ) const;
 +        // Cheap eligibility check; does not build text or inspect actor progress.
 +        bool has_progress_message() const;
- 
+
          /**
           * If this returns true, the action can be continued without
-
 --- a/src/input_popup.cpp
 +++ b/src/input_popup.cpp
 @@ -176,7 +176,14 @@
@@ -66,13 +87,27 @@ its upstream turn-based display cadence is unchanged.
              data->SelectionStart = data->BufTextLen;
              data->SelectionEnd = data->BufTextLen;
              data->CursorPos = data->BufTextLen;
-
 --- a/src/game.cpp
 +++ b/src/game.cpp
-@@ -8308,11 +8308,13 @@
+@@ -3654,6 +3654,14 @@
+
+ bool game::save()
+ {
++#if defined(EMSCRIPTEN)
++    // Balance on every return and exception, including save-event handlers.
++    // Dirty notifications remain enabled; only starting IDBFS sync is delayed.
++    on_out_of_scope fs_sync_batch_guard{ [] {
++            EM_ASM( window.endFsSyncBatch(); );
++        } };
++    EM_ASM( window.beginFsSyncBatch(); );
++#endif
+     std::chrono::seconds time_since_load =
+         std::chrono::duration_cast<std::chrono::seconds>(
+             std::chrono::steady_clock::now() - time_of_last_load );
+@@ -8308,11 +8316,13 @@
  {
      const std::string name = it->tname();
- 
+
 -    if( std::find( item_order.begin(), item_order.end(), name ) == item_order.end() ) {
 +    // The map already indexes every encountered name. Avoid scanning the
 +    // growing order vector for each item; retain first-seen ordering.
@@ -84,24 +119,44 @@ its upstream turn-based display cadence is unchanged.
 -        temp_items[name].add_at_pos( it, relative_pos );
 +        entry.first->second.add_at_pos( it, relative_pos );
      }
- 
+
      for( const item *content : it->all_known_contents() ) {
-@@ -8348,7 +8350,7 @@
- 
+@@ -8348,7 +8358,7 @@
+
      ret.reserve( item_order.size() );
      for( auto &elem : item_order ) {
 -        ret.push_back( temp_items[elem] );
 +        ret.push_back( std::move( temp_items.at( elem ) ) );
      }
- 
-     return ret;
 
+     return ret;
+@@ -13491,13 +13501,13 @@
+     ui_manager::redraw();
+     refresh_display();
+
+-    time_t now = std::time( nullptr ); //timestamp for start of saving procedure
+-
+-    //perform save
+-    save();
+-    //Now reset counters for autosaving, so we don't immediately autosave after a quicksave or autosave.
+-    moves_since_last_save = 0;
+-    last_save_timestamp = now;
++    // A failed save must remain eligible for retry. Count the minimum real
++    // interval from completion, so a slow successful save does not immediately
++    // trigger another autosave when its duration exceeded that interval.
++    if( save() ) {
++        moves_since_last_save = 0;
++        last_save_timestamp = std::time( nullptr );
++    }
+ }
+
+ void game::quickload()
 --- a/src/cata_web_yield.h
 +++ b/src/cata_web_yield.h
 @@ -55,6 +55,10 @@
   */
  void yield_now();
- 
+
 +// Idle input wait: wake on real browser input, with a bounded fallback for
 +// gamepads and events queued internally by SDL. Never consumes an event.
 +void wait_for_input( int timeout_ms );
@@ -111,10 +166,36 @@ its upstream turn-based display cadence is unchanged.
   *
 --- a/src/cata_web_yield.cpp
 +++ b/src/cata_web_yield.cpp
-@@ -50,10 +50,38 @@
+@@ -41,12 +41,52 @@
      } );
  } );
- 
+
+-// requestAnimationFrame 待ち。描画を 1 枚確実に挟みたい場所専用。
++// Resume in a task AFTER rAF, not in its Promise microtask (before paint).
++// A bounded fallback avoids deadlock when hidden tabs stop requesting frames.
+ EM_ASYNC_JS( void, cata_web_yield_paint_impl, (), {
+     await new Promise( function( resolve ) {
+-        requestAnimationFrame( function() {
++        var frame = null;
++        var afterFrame = null;
++        var finished = false;
++        var finish = function() {
++            if( finished ) { return; }
++            finished = true;
++            clearTimeout( fallback );
++            if( afterFrame !== null ) { clearTimeout( afterFrame ); }
++            if( frame !== null ) { cancelAnimationFrame( frame ); }
+             resolve();
++        };
++        var fallback = setTimeout( finish, 100 );
++        if( !document.hidden ) {
++            frame = requestAnimationFrame( function() {
++                afterFrame = setTimeout( finish, 0 );
++            } );
++        }
++    } );
++} );
++
 +// Bubble after existing SDL listeners; never consume or reissue input.
 +EM_ASYNC_JS( void, cata_web_wait_input_impl, ( int timeout_ms ), {
 +    await new Promise( function( resolve ) {
@@ -135,22 +216,22 @@ its upstream turn-based display cadence is unchanged.
 +        };
 +        events.forEach( function( name ) {
 +            window.addEventListener( name, wake, false );
-+        } );
+         } );
 +        timer = setTimeout( wake, timeout_ms );
-+    } );
-+} );
-+
- // Asyncify の巻き戻しは入れ子にできないため、再入を弾く。
+     } );
+ } );
+
+@@ -54,6 +94,9 @@
  // 例えば pump_events() の中から redraw が走り、その先でまた
  // yield 判定に到達する経路が存在する。
  bool yield_in_progress = false;
 +// Share the browser's last opportunity across otherwise independent sites.
 +// Avoid back-to-back Asyncify unwinds after a long simulation step.
 +double last_browser_yield_ms = 0.0;
- 
+
  } // namespace
- 
-@@ -72,6 +100,18 @@
+
+@@ -72,6 +115,18 @@
      }
      yield_in_progress = true;
      cata_web_yield_impl();
@@ -168,16 +249,16 @@ its upstream turn-based display cadence is unchanged.
 +    last_browser_yield_ms = emscripten_get_now();
      yield_in_progress = false;
  }
- 
-@@ -82,6 +122,7 @@
+
+@@ -82,6 +137,7 @@
      }
      yield_in_progress = true;
      cata_web_yield_paint_impl();
 +    last_browser_yield_ms = emscripten_get_now();
      yield_in_progress = false;
  }
- 
-@@ -91,7 +132,7 @@
+
+@@ -91,7 +147,7 @@
          return false;
      }
      const double now = emscripten_get_now();
@@ -242,7 +323,7 @@ its upstream turn-based display cadence is unchanged.
 +    }
 +    return false;
 +}
- 
+
  // last_input を上書きする直前に呼び、失われる入力を退避する。
  // error 型（=入力なし）は退避しない。
 @@ -250,6 +288,14 @@
@@ -259,7 +340,7 @@ its upstream turn-based display cadence is unchanged.
 +        pending_key_repeat.reset();
      }
  }
- 
+
 @@ -2913,6 +2959,8 @@
              }
              SDL_Event commit_event {};
@@ -306,7 +387,7 @@ its upstream turn-based display cadence is unchanged.
          restore_on_out_of_scope prev_last_input( last_input );
 @@ -4318,33 +4380,9 @@
      previously_pressed_key = 0;
- 
+
  #if defined(EMSCRIPTEN)
 -    // [CDDA-BROSER] 溜まっている入力があれば、SDL キューを見る前に
 -    // そこから 1 個返す。
@@ -339,9 +420,26 @@ its upstream turn-based display cadence is unchanged.
 +    // before consuming repeat intent. The shared budget avoids a yield per tap.
 +    CATA_WEB_YIELD();
  #endif
- 
+
      // standards note: getch is sometimes required to call refresh
-@@ -4378,7 +4416,9 @@
+@@ -4358,7 +4396,16 @@
+     if( needupdate ) {
+         refresh_display();
+     } else if( ui_adaptor::has_imgui() ) {
++#if defined(EMSCRIPTEN)
++        // Nonblocking activity polls must not copy unchanged software frames.
++        // Dirty frames above, SDL resize/expose below and blocking menus keep
++        // their existing redraw behavior.
++        if( inputdelay != 0 ) {
++            try_sdl_update();
++        }
++#else
+         try_sdl_update();
++#endif
+     }
+
+     // [CDDA-BROSER] 入力待ちループの SDL_Delay( 1 ) について。
+@@ -4378,7 +4425,9 @@
      // MessageChannel でも同じ効果が得られ、しかも実測 0.075ms で済む。
      const auto wait_for_input_events = []() {
  #if defined(EMSCRIPTEN)
@@ -357,7 +455,7 @@ its upstream turn-based display cadence is unchanged.
 @@ -310,111 +310,6 @@
  namespace
  {
- 
+
 -// [CDDA-BROWSER] mon_info_update() のレート制限
 -// ---------------------------------------------------------------------
 -// 【真因】
@@ -468,7 +566,7 @@ its upstream turn-based display cadence is unchanged.
      g->cleanup_dead();
 @@ -422,6 +317,8 @@
      avatar &u = get_avatar();
- 
+
      for( monster &critter : g->all_monsters() ) {
 +        // Cooperative scheduling only; do not skip AI or consume queued input.
 +        CATA_WEB_YIELD();
@@ -484,7 +582,7 @@ its upstream turn-based display cadence is unchanged.
              // Controlled critters don't make their own plans
              if( !critter.has_effect( effect_controlled ) ) {
 @@ -507,6 +405,7 @@
- 
+
      // Now, do active NPCs.
      for( npc &guy : g->all_npcs() ) {
 +        CATA_WEB_YIELD();
@@ -511,20 +609,32 @@ its upstream turn-based display cadence is unchanged.
                  // Process any new sounds the player caused during their turn.
                  for( npc &guy : g->all_npcs() ) {
                      if( rl_dist( guy.pos_bub(), u.pos_bub() ) < MAX_VIEW_DISTANCE ) {
-@@ -928,11 +825,7 @@
+@@ -925,14 +822,17 @@
+                                  std::chrono::steady_clock::now() );
+             if( ( now - start ).count() > activity_poll_interval_ms ) {
+                 handle_key_blocking_activity();
++#if defined(EMSCRIPTEN)
++                // Exclude rendering, modal dialogs and suspension from the next
++                // polling budget; otherwise a slow poll triggers another at once.
++                start = std::chrono::time_point_cast<std::chrono::milliseconds>(
++                            std::chrono::steady_clock::now() );
++#else
                  start = now;
-             }
- 
+-            }
+-
 -            // [CDDA-BROWSER] この else 節はアクティビティ中・睡眠中など
 -            // 「行動力を使い切っている」場面。ここが間引きの主目的。
 -            // 下の distraction 判定は mon_info_update() が更新した
 -            // new_seen_mon を読むため、実行した回だけ有効に働く。
 -            mon_info_update_throttled( !u.activity );
++#endif
++            }
++
 +            g->mon_info_update();
- 
+
              // If player is performing a task, a monster is dangerously close,
              // and monster can reach to the player or it has some sort of a ranged attack,
-@@ -998,9 +891,7 @@
+@@ -998,9 +898,7 @@
              }
          }
      }
@@ -535,9 +645,9 @@ its upstream turn-based display cadence is unchanged.
      u.process_turn();
      if( u.get_moves() < 0 && get_option<bool>( "FORCE_REDRAW" ) ) {
          ui_manager::redraw();
-@@ -1012,71 +903,79 @@
+@@ -1012,71 +910,110 @@
      }
- 
+
      const bool player_is_sleeping = u.has_effect( effect_sleep );
 -    bool wait_redraw = false;
 -    std::string wait_message;
@@ -555,6 +665,21 @@ its upstream turn-based display cadence is unchanged.
 -        if( u.activity.id() == ACT_AUTODRIVE ) {
 +    const bool wait_redraw = player_is_sleeping || u.activity.has_progress_message();
 +    if( wait_redraw ) {
++#if defined(EMSCRIPTEN)
++        static double last_progress_refresh_ms = 0.0;
++        static double last_full_refresh_ms = 0.0;
++        static std::string last_wait_message;
++        static activity_id last_wait_activity;
++        static bool last_wait_sleeping = false;
++        const bool first_refresh = g->first_redraw_since_waiting_started || !g->wait_popup ||
++                                   last_wait_activity != u.activity.id() ||
++                                   last_wait_sleeping != player_is_sleeping;
++        // Display cadence is wall-clock based, not an OR with game turns:
++        // fast simulation must not pay for hundreds of invisible full frames.
++        // Slow simulation still reports its real state at the next safe point.
++        const double now = cata_web::now_ms();
++        const bool refresh_progress = first_refresh || now - last_progress_refresh_ms >= 100.0;
++#else
 +        time_duration wait_refresh_rate = 5_minutes;
 +        if( player_is_sleeping ) {
 +            wait_refresh_rate = 30_minutes;
@@ -581,23 +706,22 @@ its upstream turn-based display cadence is unchanged.
 -            if( g->first_redraw_since_waiting_started ||
 -                calendar::once_every( wait_refresh_rate ) ) {
 +        }
-+        // Keep the upstream game-turn cadence. Build text only when it will
-+        // be displayed: corpse traversal, skill queries and key descriptions
-+        // otherwise run every turn, even during long unattended activities.
-+        bool refresh_progress = g->first_redraw_since_waiting_started ||
-+                                calendar::once_every( std::min( 1_minutes, wait_refresh_rate ) );
-+#if defined(EMSCRIPTEN)
-+        // Game-turn intervals alone can leave the top-of-screen percentage
-+        // unchanged for seconds on slow CPUs. Refresh that same popup from
-+        // actual activity state, without running or skipping simulation work.
-+        static double last_progress_refresh_ms = 0.0;
-+        static std::string last_wait_message;
-+        refresh_progress = refresh_progress || !g->wait_popup ||
-+                           cata_web::now_ms() - last_progress_refresh_ms >= 100.0;
++        const bool refresh_progress = g->first_redraw_since_waiting_started ||
++                                      calendar::once_every( std::min( 1_minutes, wait_refresh_rate ) );
 +#endif
 +        if( refresh_progress ) {
++#if defined(EMSCRIPTEN)
++            // The popup is 10Hz; the expensive world/sidebar is at most 1Hz.
++            // Driving needs moving scenery at the popup rate. This changes
++            // rendering only, never danger checks, AI, recovery or game turns.
++            const bool full_redraw = first_refresh || now - last_full_refresh_ms >= 1000.0 ||
++                                     u.activity.id() == ACT_AUTODRIVE;
++            last_wait_activity = u.activity.id();
++            last_wait_sleeping = player_is_sleeping;
++#else
 +            const bool full_redraw = g->first_redraw_since_waiting_started ||
 +                                     calendar::once_every( wait_refresh_rate );
++#endif
 +            if( full_redraw ) {
                  ui_manager::redraw();
              }
@@ -625,6 +749,17 @@ its upstream turn-based display cadence is unchanged.
 +            std::string wait_message;
 +            if( player_is_sleeping ) {
 +                wait_message = _( "Wait till you wake up…" );
++#if defined(EMSCRIPTEN)
++                // Sleep can end early or be extended. Its persisted start time
++                // gives honest elapsed game time, including after loading a save.
++                const time_duration elapsed = std::max( 0_turns,
++                                              calendar::turn - u.get_effect( effect_sleep ).get_start_time() );
++                // Human duration strings omit seconds after the first hour.
++                // Keep seconds visible, otherwise slow sleep looks frozen again.
++                const int elapsed_seconds = to_seconds<int>( elapsed );
++                wait_message += string_format( "\n+%02d:%02d:%02d", elapsed_seconds / 3600,
++                                               elapsed_seconds / 60 % 60, elapsed_seconds % 60 );
++#endif
 +            } else {
 +                const std::optional<std::string> progress = u.activity.get_progress_message( u );
 +                if( progress ) {
@@ -636,8 +771,8 @@ its upstream turn-based display cadence is unchanged.
 +            }
 +#if defined(EMSCRIPTEN)
 +            // Rebuilding an identical popup invalidates the UI and transfers
-+            // the entire software-rendered window again. Preserve all full UI
-+            // updates, but do not repaint unchanged text between them.
++            // the entire software-rendered window again. Do not repaint
++            // unchanged text between the bounded full UI updates.
 +            if( full_redraw || !g->wait_popup || wait_message != last_wait_message ) {
 +                last_wait_message = wait_message;
 +#endif
@@ -651,6 +786,12 @@ its upstream turn-based display cadence is unchanged.
 +                refresh_display();
 +                g->first_redraw_since_waiting_started = false;
 +#if defined(EMSCRIPTEN)
++                // A budgeted MessageChannel yield may do nothing just after an
++                // AI/input yield. Only actual display updates wait for a paint.
++                CATA_WEB_YIELD_PAINT();
++            }
++            if( full_redraw ) {
++                last_full_refresh_ms = cata_web::now_ms();
 +            }
 +            // Update even when no drawing was needed, otherwise every later
 +            // simulation turn would rebuild text after the first 100ms.
@@ -666,15 +807,15 @@ its upstream turn-based display cadence is unchanged.
 +    // Sleeping bypasses activity key polling. Yield even when no message is
 +    // due, without changing its cadence or skipping any simulation turns.
 +    CATA_WEB_YIELD();
- 
+
      m.invalidate_visibility_cache();
- 
+
 --- a/src/activity_actor.cpp
 +++ b/src/activity_actor.cpp
 @@ -8775,69 +8775,25 @@
      }
  }
- 
+
 -// [CDDA-BROWSER] 粉砕の進捗表示。
 -//
 -// 上流は本関数を実装しておらず、既定実装（activity_actor.cpp の
@@ -756,9 +897,8 @@ its upstream turn-based display cadence is unchanged.
 +    }
 +    return std::string();
  }
- 
- bool pulp_activity_actor::can_pulp( item &corpse, Character &you )
 
+ bool pulp_activity_actor::can_pulp( item &corpse, Character &you )
 --- a/src/player_hardcoded_effects.cpp
 +++ b/src/player_hardcoded_effects.cpp
 @@ -14,6 +14,7 @@
@@ -842,44 +982,6 @@ its upstream turn-based display cadence is unchanged.
      // Best effort only: a discarded page cannot await IndexedDB completion.
      // Also flush on return to a tab whose timers were suspended by ChromeOS.
      function flushFsSync()
---- a/src/game.cpp
-+++ b/src/game.cpp
-@@ -3654,6 +3654,14 @@
-
- bool game::save()
- {
-+#if defined(EMSCRIPTEN)
-+    // Balance on every return and exception, including save-event handlers.
-+    // Dirty notifications remain enabled; only starting IDBFS sync is delayed.
-+    on_out_of_scope fs_sync_batch_guard{ [] {
-+            EM_ASM( window.endFsSyncBatch(); );
-+        } };
-+    EM_ASM( window.beginFsSyncBatch(); );
-+#endif
-     std::chrono::seconds time_since_load =
-         std::chrono::duration_cast<std::chrono::seconds>(
-             std::chrono::steady_clock::now() - time_of_last_load );
-@@ -13493,13 +13501,13 @@
-     ui_manager::redraw();
-     refresh_display();
-
--    time_t now = std::time( nullptr ); //timestamp for start of saving procedure
--
--    //perform save
--    save();
--    //Now reset counters for autosaving, so we don't immediately autosave after a quicksave or autosave.
--    moves_since_last_save = 0;
--    last_save_timestamp = now;
-+    // A failed save must remain eligible for retry. Count the minimum real
-+    // interval from completion, so a slow successful save does not immediately
-+    // trigger another autosave when its duration exceeded that interval.
-+    if( save() ) {
-+        moves_since_last_save = 0;
-+        last_save_timestamp = std::time( nullptr );
-+    }
- }
-
- void game::quickload()
 --- a/src/filesystem.cpp
 +++ b/src/filesystem.cpp
 @@ -78,7 +78,6 @@

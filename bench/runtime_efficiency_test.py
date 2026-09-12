@@ -57,7 +57,15 @@ for before, after in [('g->cleanup_dead();', 'for( npc &guy'),
 # Progress details stay verbatim; eligibility is the same upstream predicate.
 old_progress = function(old_activity, 'std::optional<std::string> player_activity::get_progress_message(')
 new_progress = function(new_activity, 'std::optional<std::string> player_activity::get_progress_message(')
-assert old_progress[old_progress.index('    std::string extra_info;'):] == new_progress[new_progress.index('    std::string extra_info;'):]
+reading_display = new_progress[new_progress.index('#if defined(EMSCRIPTEN)'):
+                               new_progress.index('#endif', new_progress.index('#if defined(EMSCRIPTEN)')) + len('#endif\n\n')]
+assert old_progress[old_progress.index('    std::string extra_info;'):] == new_progress.replace(reading_display, '')[new_progress.index('    std::string extra_info;'):]
+# Display additions must not change reading work, XP, RNG or chapter restart.
+for signature in ['void read_activity_actor::start(', 'void read_activity_actor::do_turn(',
+                  'void read_activity_actor::finish(', 'std::string read_activity_actor::get_progress_message(']:
+    assert function(upstream('activity_actor.cpp'), signature) == function(
+        (source / 'src/activity_actor.cpp').read_text(), signature)
+
 eligibility = function(new_activity, 'bool player_activity::has_progress_message() const')
 old_checks = old_progress[old_progress.index('{') + 1:old_progress.index('    std::string extra_info;')]
 old_checks = old_checks.replace('return std::optional<std::string>();', 'return false;').replace('return std::nullopt;', 'return false;')
@@ -80,6 +88,8 @@ program = r'''
 #include <string>
 #include <vector>
 using time_duration = int;
+using activity_id = int;
+template<typename T> T to_seconds(int n) { return n; }
 constexpr int operator""_minutes(unsigned long long n) { return n * 60; }
 constexpr int operator""_turns(unsigned long long n) { return n; }
 namespace cata_web { double clock_ms = 0; double now_ms() { return clock_ms; } }
@@ -87,14 +97,21 @@ namespace calendar {
 int turn = 0;
 bool once_every(int n) { return turn % n == 0; }
 }
-static int progress_calls, key_calls, yields, redraws, full_redraws, presents;
+static int progress_calls, key_calls, yields, redraws, full_redraws, presents, paints;
+static double paint_cost = 0;
 static int popup_depth = 0, progress_step = 1;
 static std::string pause_label = "pause";
 #define CATA_WEB_YIELD() (++yields)
+#define CATA_WEB_YIELD_PAINT() (++paints, cata_web::clock_ms += paint_cost)
 const int effect_sleep = 1, ACTION_PAUSE = 2;
 const char *_(const char *s) { return s; }
 std::string press_x(int) { ++key_calls; return pause_label; }
-std::string string_format(const char *, const std::string &s) { return "\n" + s + " to interrupt"; }
+std::string string_format(const char *format, const std::string &s) {
+    return std::string(format) == "\n+%s" ? "\n+" + s : "\n" + s + " to interrupt";
+}
+std::string string_format(const char *fmt, int h, int m, int s) {
+    char buf[80]; std::snprintf(buf, sizeof(buf), fmt, h, m, s); return buf;
+}
 namespace ui_manager { void redraw() { ++redraws; if (!popup_depth) ++full_redraws; } }
 void refresh_display() { ++presents; }
 struct ui_adaptor {
@@ -135,6 +152,8 @@ struct player_activity {
 };
 struct avatar {
     player_activity activity;
+    struct effect { int start = 0; int get_start_time() const { return start; } } sleep_effect;
+    const effect &get_effect(int) const { return sleep_effect; }
     bool sleeping = false;
     bool has_effect(int) const { return sleeping; }
 };
@@ -144,6 +163,8 @@ program += 'void old_wait(avatar &u) {\n' + old_wait + '}\n'
 program += 'void new_wait(avatar &u) {\n' + new_wait + '}\n'
 program += r'''
 int main() {
+#if !defined(EMSCRIPTEN)
+    (void)paints; (void)paint_cost;
     int scenarios = 0;
     for (int type = 0; type < TYPE_COUNT; ++type) {
         for (int flags = 0; flags < 16; ++flags) {
@@ -198,74 +219,145 @@ int main() {
         }
     }
     printf("PASS: %d scenarios, upstream full-UI cadence/visible text/reset; AI order preserved\n", scenarios);
-#if defined(EMSCRIPTEN)
-    avatar u; u.activity.type = ACT_PULP;
-    game slow_game; g = &slow_game;
-    calendar::turn = 1; cata_web::clock_ms = 1000;
-    new_wait(u);
-    assert(g->wait_popup->message.find("working: 1") == 0);
-    calendar::turn = 2; cata_web::clock_ms = 1099;
-    progress_calls = 0; new_wait(u); assert(progress_calls == 0);
-    calendar::turn = 3; cata_web::clock_ms = 1100;
-    new_wait(u); assert(progress_calls == 1);
-    assert(g->wait_popup->message.find("working: 3") == 0);
-    // Slow turns refresh actual state without waiting for turn 60.
-    for (int turn = 4; turn < 60; ++turn) {
-        calendar::turn = turn; cata_web::clock_ms += 100;
-        progress_calls = 0; new_wait(u); assert(progress_calls == 1);
-        assert(g->wait_popup->message.find("working: " + std::to_string(turn)) == 0);
+#else
+    // All eligibility/interruptibility combinations are still respected on web.
+    for (int type = 0; type < TYPE_COUNT; ++type) {
+        for (int flags = 0; flags < 16; ++flags) {
+            avatar u; game state; g = &state;
+            u.activity.type = type; u.sleeping = flags & 1;
+            u.activity.verb = flags & 2 ? "" : "working";
+            u.activity.interruptible = flags & 4; u.activity.interruptable_with_kb = flags & 8;
+            calendar::turn = 1; cata_web::clock_ms += 1000;
+            new_wait(u);
+            assert(bool(g->wait_popup) == (u.sleeping || u.activity.has_progress_message()));
+            if (g->wait_popup && !u.sleeping) {
+                assert((g->wait_popup->message.find("to interrupt") != std::string::npos) ==
+                       (u.activity.interruptible && u.activity.interruptable_with_kb));
+            }
+        }
     }
+    avatar u; u.activity.type = ACT_READ;
+    game state; g = &state;
+    calendar::turn = 1; cata_web::clock_ms += 1000;
+    new_wait(u); const double started = cata_web::clock_ms;
+    paints = progress_calls = 0;
+    calendar::turn = 60; cata_web::clock_ms = started + 99;
+    new_wait(u); assert(progress_calls == 0 && paints == 0); // calendar boundary must not bypass cap
+    calendar::turn = 61; cata_web::clock_ms = started + 100;
+    new_wait(u); assert(progress_calls == 1 && paints == 1);
+    assert(g->wait_popup->message.find("working: 61") == 0);
+    // Slow CPU: every completed safe point past 100ms displays new actual state.
+    for (int t = 62; t < 90; ++t) {
+        calendar::turn = t; cata_web::clock_ms += 150;
+        progress_calls = paints = 0; new_wait(u);
+        assert(progress_calls == 1 && paints == 1);
+        assert(g->wait_popup->message.find("working: " + std::to_string(t)) == 0);
+    }
+    // Type changes, sleep entry/exit, completion, external popup close and restart are immediate.
+    u.activity.type = ACT_PULP; paints = 0; new_wait(u); assert(paints == 1);
+    u.sleep_effect.start = calendar::turn - 3600; u.sleeping = true;
+    new_wait(u); assert(g->wait_popup->message == "Wait till you wake up…\n+01:00:00");
+    calendar::turn += 5; cata_web::clock_ms += 100;
+    new_wait(u); assert(g->wait_popup->message.find("+01:00:05") != std::string::npos);
+    assert(g->wait_popup->message.find('%') == std::string::npos);
+    u.sleep_effect.start = calendar::turn + 1; cata_web::clock_ms += 100;
+    new_wait(u); assert(g->wait_popup->message.find("+00:00:00") != std::string::npos);
+    u.sleeping = false; new_wait(u); assert(g->wait_popup->message.find("working:") == 0);
     u.activity.type = ACT_NULL; new_wait(u); assert(!g->wait_popup);
     u.activity.type = ACT_READ; new_wait(u); assert(g->wait_popup);
-    u.sleeping = true; cata_web::clock_ms += 100;
-    progress_calls = 0; new_wait(u); assert(progress_calls == 0);
-    assert(g->wait_popup->message == "Wait till you wake up…");
-    puts("PASS real-time popup: 99ms no refresh, 100ms actual progress refresh, reset/restart/sleep");
-    // Count real render calls, not elapsed game or wall time. The sidebar/full
-    // UI schedule and displayed text must agree at every simulated turn.
+    g->wait_popup.reset(); paints = 0; new_wait(u); assert(paints == 1);
+    pause_label = "new key"; cata_web::clock_ms += 100; new_wait(u);
+    assert(g->wait_popup->message.find("new key") != std::string::npos);
+    // An unchanged sample causes no transfer or paint, but advances the clock.
+    progress_step = 1000000; cata_web::clock_ms += 100; new_wait(u);
+    cata_web::clock_ms += 100; paints = progress_calls = 0; new_wait(u);
+    assert(paints == 0 && progress_calls == 1);
+    cata_web::clock_ms += 1; new_wait(u); assert(progress_calls == 1);
+    // Exclude a costly paint/suspension from the next budget (no catch-up burst).
+    paint_cost = 250; g->wait_popup.reset(); new_wait(u);
+    paints = progress_calls = 0; new_wait(u); assert(paints == 0 && progress_calls == 0);
+    cata_web::clock_ms += 99; new_wait(u); assert(progress_calls == 0);
+    cata_web::clock_ms += 1; new_wait(u); assert(progress_calls == 1);
+    paint_cost = 0; progress_step = 1;
+    // Fast simulation: 8h sleep must not mean 481 transfers or 17 full frames
+    // when all 28800 turns fit in 288ms. Compare upstream calls, NOT CPU speed.
     for (bool sleeping : {false, true}) {
-        avatar stable; stable.activity.type = ACT_READ; stable.sleeping = sleeping;
+        avatar active; active.sleeping = sleeping; active.activity.type = ACT_READ;
         game before, after;
-        progress_step = 1000000;
         int old_presents = 0, new_presents = 0, old_full = 0, new_full = 0;
-        const int turns = sleeping ? 28800 : 1800;
-        for (int t = 1; t <= turns; ++t) {
-            calendar::turn = t; cata_web::clock_ms += 1;
-            g = &before; presents = full_redraws = 0; old_wait(stable);
+        cata_web::clock_ms += 10000; const double begin = cata_web::clock_ms;
+        for (int t = 1; t <= 28800; ++t) {
+            calendar::turn = t; cata_web::clock_ms = begin + t / 100.0;
+            g = &before; presents = full_redraws = 0; old_wait(active);
             old_presents += presents; old_full += full_redraws;
-            g = &after; presents = full_redraws = 0; new_wait(stable);
+            g = &after; presents = full_redraws = 0; new_wait(active);
             new_presents += presents; new_full += full_redraws;
-            assert(before.wait_popup->message == after.wait_popup->message);
         }
-        assert(old_full == new_full);
-        assert(old_presents == (sleeping ? 481 : 31));
-        assert(new_presents == (sleeping ? 17 : 7));
-        printf("PASS identical %s popup: %d -> %d presents; %d full UI updates unchanged\n",
-               sleeping ? "8h sleep" : "30min reading", old_presents, new_presents, new_full);
-        // Externally closed popup, text changes and shortcut changes must redraw.
-        g = &after; g->wait_popup.reset(); calendar::turn = turns + 1;
-        presents = 0; new_wait(stable); assert(presents == 1 && g->wait_popup);
-        stable.sleeping = false; stable.activity.verb = "changed";
-        cata_web::clock_ms += 100; presents = 0; new_wait(stable); assert(presents == 1);
-        pause_label = "new key"; cata_web::clock_ms += 100;
-        presents = 0; new_wait(stable); assert(presents == 1);
-        assert(g->wait_popup->message.find("new key") != std::string::npos);
-        // An unchanged wall-clock refresh still advances its sampling clock.
-        cata_web::clock_ms += 100; presents = progress_calls = 0; new_wait(stable);
-        assert(presents == 0 && progress_calls == 1);
-        cata_web::clock_ms += 1; new_wait(stable); assert(progress_calls == 1);
-        pause_label = "pause";
+        assert(old_presents == 481 && new_presents == 3 && new_full == 1);
+        printf("PASS fast %s model: %d -> %d transfers; %d -> %d full draws (not elapsed-time benchmark)\n",
+               sleeping ? "sleep" : "reading", old_presents, new_presents, old_full, new_full);
     }
-    progress_step = 1;
+    puts("PASS web: truthful elapsed sleep, safe-point updates, calendar cap, transitions, post-paint clock");
 #endif
 }
 '''.replace('TYPE_COUNT', str(len(ids)))
+(out / 'progress-harness.cpp').write_text(program)
 with tempfile.TemporaryDirectory(prefix='runtime-', dir=out) as tmp:
     cpp, binary = Path(tmp) / 'test.cpp', Path(tmp) / 'test'
     cpp.write_text(program)
     for defines in [[], ['-DEMSCRIPTEN']]:
         subprocess.run(['g++', '-std=c++17', '-O2', '-Wall', '-Wextra', '-Werror', *defines, str(cpp), '-o', str(binary)], check=True)
         subprocess.run([str(binary)], check=True)
+
+# Execute the actual new reading-display block, not a reimplementation.
+reading_program = r'''
+#include <algorithm>
+#include <cassert>
+#include <climits>
+#include <cstdio>
+#include <string>
+constexpr int ACT_READ = 1, ACT_CRAFT = 2;
+const char *_(const char *s) { return s; }
+std::string string_format(const char *fmt, const char *label, int a, int b) {
+    char buf[100]; std::snprintf(buf, sizeof(buf), fmt, label, a, b); return buf;
+}
+std::string display(int type, int moves_total, int moves_left, std::string extra_info) {
+''' + reading_display + r'''
+    return extra_info;
+}
+int main() {
+    for (int total : {1, 3, 100, 180000, INT_MAX}) {
+        for (int left : {INT_MIN, -1, 0, 1, total / 2, total, INT_MAX}) {
+            const std::string xp = "mechanics 1 -> 2 (37%)";
+            const auto actual = display(ACT_READ, total, left, xp);
+            const long long done = std::min<long long>(total, std::max(0LL, (long long)total - left));
+            const int pct = done * 1000 / total;
+            const auto expected = string_format("%s: %d.%d%%", "Progress", pct / 10, pct % 10);
+            assert(actual == expected + " | " + xp);
+            assert(display(ACT_READ, total, left, "") == expected);
+            assert(display(ACT_CRAFT, total, left, xp) == xp);
+        }
+    }
+    assert(display(ACT_READ, 100, 90, "") == "Progress: 10.0%");
+    assert(display(ACT_READ, 180000, 1, "") == "Progress: 99.9%");
+    assert(display(ACT_READ, 0, 0, "skill") == "skill");
+    assert(display(ACT_READ, -1, -1, "") == "");
+    int changed = 0; std::string previous;
+    for (int left = 180000; left >= 0; left -= 100) {
+        auto value = display(ACT_READ, 180000, left, "skill 37%");
+        changed += value != previous; previous = value;
+    }
+    assert(changed == 1001);
+    assert(display(ACT_READ, 180000, 180000, "skill 45%") == "Progress: 0.0% | skill 45%");
+    puts("PASS reading: 1001 values per chapter, constant XP, restart, no-skill and zero/overflow bounds");
+}
+'''
+(out / 'reading-harness.cpp').write_text(reading_program)
+with tempfile.TemporaryDirectory(prefix='reading-', dir=out) as tmp:
+    cpp, binary = Path(tmp) / 'test.cpp', Path(tmp) / 'test'
+    cpp.write_text(reading_program)
+    subprocess.run(['g++', '-std=c++17', '-DEMSCRIPTEN', '-O2', '-Wall', '-Wextra', '-Werror', str(cpp), '-o', str(binary)], check=True)
+    subprocess.run([str(binary)], check=True)
 
 # Exercise the actual scheduler functions against a deterministic clock.
 yield_source = (source / 'src/cata_web_yield.cpp').read_text()
