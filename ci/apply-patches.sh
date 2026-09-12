@@ -46,6 +46,7 @@ activity-and-ime
 input-queue
 activity-perf
 runtime-efficiency
+monster-snapshot
 gear-guide
 "
 
@@ -269,6 +270,7 @@ fi
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 python3 "$SCRIPT_DIR/../bench/runtime_efficiency_test.py" "$PWD"
 python3 "$SCRIPT_DIR/../bench/monster_scan_test.py" "$PWD"
+python3 "$SCRIPT_DIR/../bench/monster_snapshot_test.py" "$PWD"
 python3 "$SCRIPT_DIR/../bench/sleep_save_test.py" "$PWD"
 python3 "$SCRIPT_DIR/../bench/input_utf8_test.py" "$PWD"
 python3 "$SCRIPT_DIR/../bench/key_repeat_test.py" "$PWD"
@@ -277,4 +279,4 @@ node "$SCRIPT_DIR/../bench/asset_loader_test.js"
 node "$SCRIPT_DIR/../bench/ime_bridge_test.js"
 node "$SCRIPT_DIR/../bench/idbfs_sync_test.js" "$PWD"
 
-echo "[VERIFY] OK: 全 11 パッチとランタイム・IME・保存・装備ナビ回帰テストが合格"
+echo "[VERIFY] OK: 全 12 パッチとランタイム・IME・保存・装備ナビ回帰テストが合格"
