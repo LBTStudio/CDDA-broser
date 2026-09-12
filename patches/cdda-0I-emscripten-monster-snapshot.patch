@@ -1,0 +1,138 @@
+--- a/src/creature_tracker.h
++++ b/src/creature_tracker.h
+@@ -123,6 +123,11 @@
+             return monsters_list;
+         }
+ 
++        // Immutable membership/order only. Monsters remain weakly referenced;
++        // liveness and all mutable monster state are checked by the iterator.
++        using monster_snapshot = std::vector<weak_ptr_fast<monster>>;
++        shared_ptr_fast<const monster_snapshot> get_monsters_snapshot() const;
++
+         void serialize( JsonOut &jsout ) const;
+         void deserialize( const JsonArray &ja );
+ 
+@@ -146,6 +151,9 @@
+ 
+         std::list<shared_ptr_fast<npc>> active_npc; // NOLINT(cata-serialize)
+         std::vector<shared_ptr_fast<monster>> monsters_list;
++        // One cached generation; active ranges may retain older generations.
++        // Invalidate on EVERY membership change, including deserialize/clear.
++        mutable shared_ptr_fast<const monster_snapshot> monsters_snapshot_; // NOLINT(cata-serialize)
+         // NOLINTNEXTLINE(cata-serialize)
+         std::unordered_map<tripoint_abs_ms, shared_ptr_fast<monster>> monsters_by_location;
+ 
+--- a/src/creature_tracker.cpp
++++ b/src/creature_tracker.cpp
+@@ -92,9 +92,22 @@
+         return false;
+     }
+ 
++    monsters_snapshot_.reset();
+     monsters_list.emplace_back( critter_ptr );
+     monsters_by_location[critter.pos_abs()] = critter_ptr;
+     return true;
++}
++
++shared_ptr_fast<const creature_tracker::monster_snapshot>
++creature_tracker::get_monsters_snapshot() const
++{
++    if( !monsters_snapshot_ ) {
++        // Publish only after successful construction. Never mutate a published
++        // vector: nested iteration must retain its original membership/order.
++        monsters_snapshot_ = make_shared_fast<monster_snapshot>( monsters_list.begin(),
++                             monsters_list.end() );
++    }
++    return monsters_snapshot_;
+ }
+ 
+ size_t creature_tracker::size() const
+@@ -176,11 +189,13 @@
+ 
+     remove_from_location_map( critter );
+     removed_this_turn_.emplace( *iter );
++    monsters_snapshot_.reset();
+     monsters_list.erase( iter );
+ }
+ 
+ void creature_tracker::clear()
+ {
++    monsters_snapshot_.reset();
+     monsters_list.clear();
+     monsters_by_location.clear();
+     removed_this_turn_.clear();
+@@ -290,6 +305,7 @@
+         monster *const critter = iter->get();
+         if( critter->is_dead() ) {
+             remove_from_location_map( *critter );
++            monsters_snapshot_.reset();
+             iter = monsters_list.erase( iter );
+         } else {
+             ++iter;
+--- a/src/game.h
++++ b/src/game.h
+@@ -444,12 +444,12 @@
+                     private:
+                         bool valid();
+                     public:
+-                        std::vector<weak_ptr_fast<T>> &items;
+-                        typename std::vector<weak_ptr_fast<T>>::iterator iter;
++                        const std::vector<weak_ptr_fast<T>> &items;
++                        typename std::vector<weak_ptr_fast<T>>::const_iterator iter;
+                         shared_ptr_fast<T> current;
+ 
+-                        iterator( std::vector<weak_ptr_fast<T>> &i,
+-                                  const typename std::vector<weak_ptr_fast<T>>::iterator t ) : items( i ), iter( t ) {
++                        iterator( const std::vector<weak_ptr_fast<T>> &i,
++                                  const typename std::vector<weak_ptr_fast<T>>::const_iterator t ) : items( i ), iter( t ) {
+                             while( iter != items.end() && !valid() ) {
+                                 ++iter;
+                             }
+@@ -486,8 +486,21 @@
+ 
+         class monster_range : public non_dead_range<monster>
+         {
++            private:
++                // Hide the mutable base storage: this range uses an immutable
++                // weak snapshot, not a borrowed tracker vector or owning copy.
++                using non_dead_range<monster>::items;
++                using non_dead_range<monster>::push_back;
++                shared_ptr_fast<const std::vector<weak_ptr_fast<monster>>> snapshot;
++
+             public:
+                 explicit monster_range( game &game_ref );
++                iterator begin() {
++                    return iterator( *snapshot, snapshot->begin() );
++                }
++                iterator end() {
++                    return iterator( *snapshot, snapshot->end() );
++                }
+         };
+ 
+         class npc_range : public non_dead_range<npc>
+--- a/src/game.cpp
++++ b/src/game.cpp
+@@ -13630,10 +13630,9 @@
+     return true; // must be the avatar
+ }
+ 
+-game::monster_range::monster_range( game &game_ref )
+-{
+-    const auto &monsters = game_ref.critter_tracker->get_monsters_list();
+-    items.insert( items.end(), monsters.begin(), monsters.end() );
++game::monster_range::monster_range( game &game_ref ) :
++    snapshot( game_ref.critter_tracker->get_monsters_snapshot() )
++{
+ }
+ 
+ game::Creature_range::Creature_range( game &game_ref ) : u( &game_ref.u, []( Character * ) { } )
+--- a/src/savegame.cpp
++++ b/src/savegame.cpp
+@@ -1821,6 +1821,7 @@
+ 
+ void creature_tracker::deserialize( const JsonArray &ja )
+ {
++    monsters_snapshot_.reset();
+     monsters_list.clear();
+     monsters_by_location.clear();
+     for( JsonValue jv : ja ) {
