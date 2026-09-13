@@ -1,0 +1,83 @@
+diff --git a/src/active_item_cache.h b/src/active_item_cache.h
+--- a/src/active_item_cache.h
++++ b/src/active_item_cache.h
+@@ -4,6 +4,7 @@
+ 
+ #include <cstddef>
+ #include <list>
++#include <memory>
+ #include <unordered_map>
+ #include <vector>
+ 
+@@ -20,10 +21,18 @@
+     safe_reference<item> item_ref;
+     // parent invalidating would also invalidate item_ref so it's safe to use a raw pointers here
+     item *parent = nullptr;
+-    std::vector<item_pocket const *> pocket_chain;
++    item_reference() = default;
++    item_reference( point_rel_ms location, safe_reference<item> item_ref, item *parent,
++                    const std::vector<item_pocket const *> &pocket_chain );
+ 
+     float spoil_multiplier() const;
+     bool has_watertight_container() const;
++
++    private:
++        // Only the ordered pointer list is immutable. Pocket state is read live.
++        // Copies of processing snapshots share the list, not ownership of items
++        // or pockets. An empty chain needs no allocation.
++        std::shared_ptr<const std::vector<item_pocket const *>> pocket_chain_;
+ };
+ 
+ enum class special_item_type : int {
+diff --git a/src/active_item_cache.cpp b/src/active_item_cache.cpp
+--- a/src/active_item_cache.cpp
++++ b/src/active_item_cache.cpp
+@@ -9,10 +9,21 @@
+ #include "item_pocket.h"
+ #include "safe_reference.h"
+ 
++item_reference::item_reference( point_rel_ms location, safe_reference<item> item_ref,
++                                item *parent, const std::vector<item_pocket const *> &pocket_chain ) :
++    location( location ), item_ref( std::move( item_ref ) ), parent( parent ),
++    pocket_chain_( pocket_chain.empty() ? nullptr :
++                   std::make_shared<const std::vector<item_pocket const *>>( pocket_chain ) )
++{
++}
++
+ float item_reference::spoil_multiplier() const
+ {
++    if( !pocket_chain_ ) {
++        return 1.0F;
++    }
+     return std::accumulate(
+-               pocket_chain.begin(), pocket_chain.end(), 1.0F,
++               pocket_chain_->begin(), pocket_chain_->end(), 1.0F,
+     []( float a, item_pocket const * pk ) {
+         return a * pk->spoil_multiplier();
+     } );
+@@ -20,8 +31,11 @@
+ 
+ bool item_reference::has_watertight_container() const
+ {
++    if( !pocket_chain_ ) {
++        return false;
++    }
+     return std::any_of(
+-               pocket_chain.begin(), pocket_chain.end(),
++               pocket_chain_->begin(), pocket_chain_->end(),
+     []( item_pocket const * pk ) {
+         return pk->can_contain_liquid( false );
+     } );
+@@ -108,7 +122,11 @@
+     std::vector<item_reference> items_to_process;
+     items_to_process.reserve( std::accumulate( active_items.begin(), active_items.end(), std::size_t{ 0 },
+     []( size_t prev, const auto & kv ) {
+-        return prev + kv.second.size() / static_cast<size_t>( kv.first );
++        const size_t count = kv.second.size();
++        const size_t quota = count / static_cast<size_t>( kv.first );
++        // The loop below includes quota == 0: retain that upstream scheduling
++        // exactly, but reserve enough space to avoid growing a second time.
++        return prev + quota + static_cast<size_t>( quota < count );
+     } ) );
+     for( std::pair<const int, std::list<item_reference>> &kv : active_items ) {
+         // Rely on iteration logic to make sure the number is sane.
