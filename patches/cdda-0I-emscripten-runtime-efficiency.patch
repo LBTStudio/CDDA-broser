@@ -1003,3 +1003,34 @@ Synthetic work counts are NOT proof of native-equivalent game performance.
              if( !created ) {
                  // TEMPORARY until we drop VS2019 support
                  // VS2019 std::filesystem doesn't handle trailing slashes well in this
+--- a/src/monmove.cpp
++++ b/src/monmove.cpp
+@@ -432,6 +432,14 @@
+ {
+     if( mon_plan.angers_cub_threatened < 0 ) {
+         // return early, not angered by cubs being threatened
++        return;
++    }
++
++    // With neither child definition, is_baby cannot become true. Avoid the
++    // owning monster snapshot and its full scan; do not skip on zero anger,
++    // since matching children can still change distance and aggro state.
++    if( type->baby_type.baby_monster.is_null() &&
++        type->baby_type.baby_monster_group.is_null() ) {
+         return;
+     }
+ 
+--- a/src/character.cpp
++++ b/src/character.cpp
+@@ -9992,6 +9992,11 @@
+ Character::moncam_cache_t Character::get_active_moncams() const
+ {
+     moncam_cache_t ret;
++    // No camera definitions means no matches. Check on every call, without
++    // caching across turns, so adding/removing cameras takes effect at once.
++    if( get_moncams().empty() ) {
++        return ret;
++    }
+     for( monster const &mon : g->all_monsters() ) {
+         for( const std::pair<const mtype_id, int> &moncam : get_moncams() ) {
+             if( mon.type->id == moncam.first && mon.friendly != 0 &&
