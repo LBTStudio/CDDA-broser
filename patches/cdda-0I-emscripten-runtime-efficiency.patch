@@ -1,8 +1,8 @@
 CDDA 0.I: safe runtime efficiency for low-memory browsers.
 Apply after activity-perf. Supersedes F-20's unsafe danger-check throttle.
-AI/danger checks retain upstream order/frequency. Web waiting progress uses
-real reading moves and elapsed sleep time, sampled at 100ms safe points.
-World/sidebar rendering is separately bounded; native cadence is unchanged.
+AI/danger checks retain upstream order/frequency. Reading uses upstream XP
+only. Activity rendering follows upstream game-time cadence with a 100ms
+wall-clock ceiling, not a wall-clock trigger; native cadence is unchanged.
 Synthetic work counts are NOT proof of native-equivalent game performance.
 
 --- a/src/player_activity.cpp
@@ -36,28 +36,6 @@ Synthetic work counts are NOT proof of native-equivalent game performance.
          return std::nullopt;
      }
 
-@@ -213,6 +222,21 @@
-     if( actor ) {
-         extra_info = actor->get_progress_message( *this );
-     }
-+
-+#if defined(EMSCRIPTEN)
-+    // Knowledge XP is awarded at chapter boundaries, not continuously. Show
-+    // the current reading interval independently, including non-skill books.
-+    // This is not a percentage of the whole book or of the next skill level.
-+    if( type == ACT_READ && moves_total > 0 ) {
-+        const long long completed = std::clamp<long long>(
-+                                        static_cast<long long>( moves_total ) - moves_left, 0, moves_total );
-+        // Wide integer arithmetic avoids overflow and premature rounding to 100%.
-+        const int tenths = static_cast<int>( completed * 1000 / moves_total );
-+        const std::string interval = string_format( "%s: %d.%d%%", _( "Progress" ),
-+                                     tenths / 10, tenths % 10 );
-+        extra_info = extra_info.empty() ? interval : interval + " | " + extra_info;
-+    }
-+#endif
-
-     return extra_info.empty() ? string_format( _( "%s…" ),
-             get_verb().translated() ) : string_format( _( "%s: %s" ),
 --- a/src/player_activity.h
 +++ b/src/player_activity.h
 @@ -130,6 +130,8 @@
@@ -645,7 +623,7 @@ Synthetic work counts are NOT proof of native-equivalent game performance.
      u.process_turn();
      if( u.get_moves() < 0 && get_option<bool>( "FORCE_REDRAW" ) ) {
          ui_manager::redraw();
-@@ -1012,71 +910,110 @@
+@@ -1012,71 +910,121 @@
      }
 
      const bool player_is_sleeping = u.has_effect( effect_sleep );
@@ -665,21 +643,8 @@ Synthetic work counts are NOT proof of native-equivalent game performance.
 -        if( u.activity.id() == ACT_AUTODRIVE ) {
 +    const bool wait_redraw = player_is_sleeping || u.activity.has_progress_message();
 +    if( wait_redraw ) {
-+#if defined(EMSCRIPTEN)
-+        static double last_progress_refresh_ms = 0.0;
-+        static double last_full_refresh_ms = 0.0;
-+        static std::string last_wait_message;
-+        static activity_id last_wait_activity;
-+        static bool last_wait_sleeping = false;
-+        const bool first_refresh = g->first_redraw_since_waiting_started || !g->wait_popup ||
-+                                   last_wait_activity != u.activity.id() ||
-+                                   last_wait_sleeping != player_is_sleeping;
-+        // Display cadence is wall-clock based, not an OR with game turns:
-+        // fast simulation must not pay for hundreds of invisible full frames.
-+        // Slow simulation still reports its real state at the next safe point.
-+        const double now = cata_web::now_ms();
-+        const bool refresh_progress = first_refresh || now - last_progress_refresh_ms >= 100.0;
-+#else
++        // Match upstream's game-time cadence. Wall time only limits excessive
++        // display work; it must never request a frame on every slow turn.
 +        time_duration wait_refresh_rate = 5_minutes;
 +        if( player_is_sleeping ) {
 +            wait_refresh_rate = 30_minutes;
@@ -706,16 +671,41 @@ Synthetic work counts are NOT proof of native-equivalent game performance.
 -            if( g->first_redraw_since_waiting_started ||
 -                calendar::once_every( wait_refresh_rate ) ) {
 +        }
++#if defined(EMSCRIPTEN)
++        static double last_progress_refresh_ms = 0.0;
++        static double last_full_refresh_ms = 0.0;
++        static bool progress_refresh_pending = false;
++        static bool full_refresh_pending = false;
++        static std::string last_wait_message;
++        static activity_id last_wait_activity;
++        static bool last_wait_sleeping = false;
++        const bool first_refresh = g->first_redraw_since_waiting_started || !g->wait_popup ||
++                                   last_wait_activity != u.activity.id() ||
++                                   last_wait_sleeping != player_is_sleeping;
++        // Latch boundaries suppressed by the wall-clock cap, so a fast turn
++        // cannot permanently lose a requested popup or world/sidebar update.
++        progress_refresh_pending = first_refresh || progress_refresh_pending ||
++                                   calendar::once_every( std::min( 1_minutes, wait_refresh_rate ) );
++        full_refresh_pending = first_refresh || full_refresh_pending ||
++                               calendar::once_every( wait_refresh_rate );
++        const double now = cata_web::now_ms();
++        const double full_budget_ms = u.activity.id() == ACT_AUTODRIVE ? 100.0 : 1000.0;
++        const bool full_refresh_due = full_refresh_pending &&
++                                      now - last_full_refresh_ms >= full_budget_ms;
++        const bool refresh_progress = first_refresh ||
++                                      ( ( progress_refresh_pending || full_refresh_due ) &&
++                                        now - last_progress_refresh_ms >= 100.0 );
++#else
 +        const bool refresh_progress = g->first_redraw_since_waiting_started ||
 +                                      calendar::once_every( std::min( 1_minutes, wait_refresh_rate ) );
 +#endif
 +        if( refresh_progress ) {
 +#if defined(EMSCRIPTEN)
-+            // The popup is 10Hz; the expensive world/sidebar is at most 1Hz.
-+            // Driving needs moving scenery at the popup rate. This changes
-+            // rendering only, never danger checks, AI, recovery or game turns.
-+            const bool full_redraw = first_refresh || now - last_full_refresh_ms >= 1000.0 ||
-+                                     u.activity.id() == ACT_AUTODRIVE;
++            const bool full_redraw = first_refresh || full_refresh_due;
++            progress_refresh_pending = false;
++            if( full_redraw ) {
++                full_refresh_pending = false;
++            }
 +            last_wait_activity = u.activity.id();
 +            last_wait_sleeping = player_is_sleeping;
 +#else
@@ -793,8 +783,7 @@ Synthetic work counts are NOT proof of native-equivalent game performance.
 +            if( full_redraw ) {
 +                last_full_refresh_ms = cata_web::now_ms();
 +            }
-+            // Update even when no drawing was needed, otherwise every later
-+            // simulation turn would rebuild text after the first 100ms.
++            // Suspension and drawing do not consume the next render budget.
 +            last_progress_refresh_ms = cata_web::now_ms();
 +#endif
              CATA_WEB_YIELD();
