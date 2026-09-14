@@ -62,6 +62,15 @@
       <div class="sub">Who is playing? / プレイヤー名を入力してください</div>
       <input id="profile-input" maxlength="24" placeholder="player name" autocomplete="off" />
       <button id="profile-start">&#9654; Start / 開始</button>
+      <div style="margin: 14px 0; font-size: 15px; line-height: 1.7;">
+        <label for="renderer-mode">描画方式 / Graphics</label>
+        <select id="renderer-mode" style="max-width: 100%; padding: 6px;">
+          <option value="opengles2">WebGL描画</option>
+          <option value="software">互換描画（ソフトウェア）</option>
+          <option value="game">ゲーム内の設定を使用</option>
+        </select>
+        <div style="font-size: 12px; opacity: 0.8;">WebGLはWasm側のメモリ負荷を軽減します。速度は端末によって異なります。表示が乱れる場合は互換描画を選んでください。進行・難易度は変わりません。</div>
+      </div>
       <div id="profile-list"></div>
       <div id="profile-note">
         Save data is stored separately per player name, in this browser, on this device.<br />
@@ -125,6 +134,38 @@
       const profileInput = document.getElementById("profile-input");
       const profileStart = document.getElementById("profile-start");
       const profileList = document.getElementById("profile-list");
+
+      // A device-level renderer choice; never alter world options or saves.
+      function prefersWebGL(document) {
+        let gl;
+        try {
+          gl = document.createElement("canvas").getContext("webgl", {
+            failIfMajorPerformanceCaveat: true, antialias: false
+          });
+          return !!gl;
+        } catch (_) {
+          return false;
+        } finally {
+          // The probe is not the game canvas. Release its temporary GPU context.
+          if (gl) {
+            try { gl.getExtension("WEBGL_lose_context")?.loseContext(); } catch (_) {}
+          }
+        }
+      }
+      const rendererMode = document.getElementById("renderer-mode");
+      rendererMode.value = "game";
+      let savedRenderer = null;
+      try { savedRenderer = localStorage.getItem("cdda_web_renderer_v1"); } catch (_) {}
+      if (["opengles2", "software", "game"].includes(savedRenderer)) {
+        rendererMode.value = savedRenderer;
+      } else if (prefersWebGL(document)) {
+        // Do not automatically choose a software-emulated WebGL backend: it
+        // can be slower. The explicit startup choice remains available.
+        rendererMode.value = "opengles2";
+      }
+      rendererMode.addEventListener("change", () => {
+        try { localStorage.setItem("cdda_web_renderer_v1", rendererMode.value); } catch (_) {}
+      });
 
       /* Per-player save isolation: each name maps to /home/<name>/.cataclysm-dda
          inside the game's virtual FS (the game resolves HOME + "/.cataclysm-dda/").
@@ -493,6 +534,34 @@
         return true;
       }
 
+      // The software SDL backend retains large CPU-side tileset surfaces.
+      // WebGL avoids those copies; actual game/AI timing is not changed here.
+      // Apply only after IDBFS restore. Explicit "game" mode leaves options alone.
+      function applyWebRenderer(fs, configDir, mode) {
+        if (!["opengles2", "software"].includes(mode)) return false;
+        const file = configDir + "/options.json";
+        try {
+          let options = [];
+          if (fs.analyzePath(file).exists) {
+            options = JSON.parse(fs.readFile(file, { encoding: "utf8" }));
+            if (!Array.isArray(options) || options.some(o => !o || typeof o !== "object")) {
+              throw new Error("Invalid options array");
+            }
+          }
+          const renderer = options.find(o => o.name === "RENDERER");
+          if (renderer && renderer.value === mode) return false;
+          if (renderer) renderer.value = mode;
+          else options.push({ name: "RENDERER", value: mode });
+          fs.mkdirTree(configDir);
+          fs.writeFile(file, JSON.stringify(options));
+          return true;
+        } catch (error) {
+          // Do not replace malformed/unreadable saved options with defaults.
+          console.warn("Could not apply graphics choice; saved options retained.", error);
+          return false;
+        }
+      }
+
       /* The runtime mounts IDBFS over HOME/.cataclysm-dda and restores
          IndexedDB content *after* preRun; anything written there earlier
          would be shadowed by the mount.  This hook (called by the patched
@@ -500,7 +569,10 @@
          persistent config is visible.  Returning true persists changes. */
       window.CDDA_ON_IDBFS_MOUNTED = function (mountPoint) {
         const fs = Module.FS || FS;
-        return migrateJapaneseDefault(fs, mountPoint + "/config");
+        const configDir = mountPoint + "/config";
+        const languageChanged = migrateJapaneseDefault(fs, configDir);
+        const rendererChanged = applyWebRenderer(fs, configDir, rendererMode.value);
+        return languageChanged || rendererChanged;
       };
 
       /* Persistence errors stay visible until all pending writes succeed.
@@ -869,6 +941,10 @@
           hint =
             "メモリ不足の可能性があります。他のタブやアプリを閉じてから再読み込みしてください。<br />" +
             "Likely out of memory. Close other tabs/apps, then reload.";
+        }
+        if (/WebGL|renderer|rendering|display buffer|GL context/i.test(kind + " " + text)) {
+          hint = "描画の初期化または継続に失敗しました。可能ならExport Savesでバックアップし、再読み込み後の開始画面で「互換描画」を選んでください。未保存の変更は再読み込みで失われます。<br />" +
+            "Graphics failed. Export saves if possible, then choose software graphics on the start screen after reloading. Unsaved progress will be lost on reload.";
         }
         errorHint.innerHTML = hint;
         errorDetail.textContent = kind + "\n" + text;

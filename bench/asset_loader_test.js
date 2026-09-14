@@ -11,6 +11,92 @@ assert(code.includes('async function instantiateCachedWasm'));
 const wasmBytes = Uint8Array.from([0, 97, 115, 109, 1, 0, 0, 0]);
 const dataBytes = Uint8Array.from([10, 20, 30, 40]);
 
+// Exercise device defaults and explicit recovery choices using actual shell code.
+const selectionStart = html.indexOf('      function prefersWebGL(');
+const selectionCode = html.slice(selectionStart, html.indexOf('      /* Per-player save isolation:', selectionStart));
+assert(selectionStart >= 0);
+for (const [saved, available, expected] of [
+  [null, true, 'opengles2'], [null, false, 'game'], [null, 'throw', 'game'],
+  ['software', true, 'software'], ['game', true, 'game'],
+  ['opengles2', false, 'opengles2'], ['invalid', true, 'opengles2'],
+]) {
+  let probes = 0, released = 0, onChange;
+  const writes = [];
+  const select = { value: '', addEventListener(name, callback) { assert.equal(name, 'change'); onChange = callback; } };
+  vm.runInNewContext(selectionCode, {
+    localStorage: { getItem: () => saved, setItem: (...args) => writes.push(args) },
+    document: {
+      getElementById: () => select,
+      createElement(name) {
+        assert.equal(name, 'canvas'); ++probes;
+        return { getContext(type, attributes) {
+          assert.equal(type, 'webgl'); assert.equal(attributes.failIfMajorPerformanceCaveat, true);
+          if (available === 'throw') throw new Error('GPU unavailable');
+          return available ? { getExtension: () => ({ loseContext() { ++released; } }) } : null;
+        } };
+      },
+    },
+  });
+  assert.equal(select.value, expected);
+  const explicit = ['software', 'game', 'opengles2'].includes(saved);
+  assert.equal(probes, explicit ? 0 : 1);
+  assert.equal(released, !explicit && available === true ? 1 : 0);
+  select.value = 'software'; onChange();
+  assert.deepEqual(writes, [['cdda_web_renderer_v1', 'software']]);
+}
+console.log('PASS graphics default: accelerated context only, probe released, explicit choices preserved');
+
+// Execute the real post-mount renderer helper, not a duplicate implementation.
+const rendererStart = html.indexOf('      function applyWebRenderer(');
+assert(rendererStart >= 0);
+const rendererSource = html.slice(rendererStart, html.indexOf('      /* The runtime mounts IDBFS', rendererStart));
+const rendererContext = vm.createContext({ console: { warn() {} } });
+vm.runInContext(rendererSource, rendererContext);
+function rendererFixture(initial) {
+  const files = new Map(initial);
+  const writes = [];
+  const fs = {
+    analyzePath: p => ({ exists: files.has(p) }),
+    readFile: p => files.get(p),
+    mkdirTree() {},
+    writeFile(p, value) { writes.push(p); files.set(p, value); },
+  };
+  return { files, writes, fs };
+}
+{
+  const config = '/home/player/.cataclysm-dda/config';
+  const file = config + '/options.json';
+  const initial = [{ name: 'RENDERER', value: 'software' },
+    { name: 'USE_LANG', value: 'ja' }, { name: 'AUTOSAVE', value: 'true' },
+    { name: 'TILES', value: 'UltimateCataclysm', custom: 123 }];
+  const e = rendererFixture([[file, JSON.stringify(initial)], ['/home/other/options.json', 'untouched']]);
+  const apply = mode => rendererContext.applyWebRenderer(e.fs, config, mode);
+  assert.equal(apply('opengles2'), true);
+  assert.deepEqual(JSON.parse(e.files.get(file)), initial.map(o => o.name === 'RENDERER' ? { ...o, value: 'opengles2' } : o));
+  assert.equal(apply('opengles2'), false, 'unchanged choice does not dirty IDBFS');
+  assert.equal(apply('software'), true, 'compatibility recovery must work');
+  assert.equal(apply('game'), false);
+  assert.equal(apply('invalid'), false);
+  assert.deepEqual(JSON.parse(e.files.get(file)), initial);
+  assert.equal(e.files.get('/home/other/options.json'), 'untouched');
+  assert.deepEqual(e.writes, [file, file]);
+  for (const malformed of ['{broken', '{}', '[null]', '[1]']) {
+    const bad = rendererFixture([[file, malformed]]);
+    assert.equal(rendererContext.applyWebRenderer(bad.fs, config, 'opengles2'), false);
+    assert.equal(bad.files.get(file), malformed);
+    assert.deepEqual(bad.writes, []);
+  }
+  const fresh = rendererFixture([]);
+  assert.equal(rendererContext.applyWebRenderer(fresh.fs, config, 'opengles2'), true);
+  assert.deepEqual(JSON.parse(fresh.files.get(file)), [{ name: 'RENDERER', value: 'opengles2' }]);
+  const failed = rendererFixture([]);
+  failed.fs.writeFile = () => { throw new Error('quota'); };
+  assert.equal(rendererContext.applyWebRenderer(failed.fs, config, 'opengles2'), false);
+  assert(html.includes('const rendererChanged = applyWebRenderer(fs, configDir, rendererMode.value);'));
+  assert(html.includes('return languageChanged || rendererChanged;'));
+  console.log('PASS renderer: WebGL/software/game selection, no-op saves, profile isolation, malformed options and write failure');
+}
+
 function environment(options = {}) {
   const entries = new Map();
   const requests = [];

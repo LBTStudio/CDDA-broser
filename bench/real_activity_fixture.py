@@ -1,7 +1,14 @@
 #!/usr/bin/env python3
 """Generate a TEST-ONLY full-game sleep/reading page beside a downloaded bundle.
 
-Usage: python3 bench/real_activity_fixture.py BUNDLE_DIR sleep|read [ZOMBIES]
+Usage: python3 bench/real_activity_fixture.py BUNDLE_DIR sleep|read|read4 [ZOMBIES] [RENDERER]
+RENDERER: game (leave startup selection alone), software, or opengles2.
+A hostile-spotted modal can pause read4 indefinitely, even with DEBUG_CLOAK.
+The pre-interruption screenshot and perf messages must be inspected; save deltas
+and the 60-second observation window alone are NOT a throughput measurement.
+read4 starts mechanics knowledge/practical level 4 with Mechanical Mastery,
+observes for 60 real seconds, then requests interruption and captures a save.
+This is a controlled comparison, not a reproduction of an unknown user save.
 Optional ZOMBIES (0..200) enables a cloaked population comparison fixture.
 Compare explicit 0 with explicit N; the original baseline has no debug cloak.
 Never install these debug effects in the distributed game. A new perf_* profile
@@ -13,11 +20,16 @@ import sys
 from pathlib import Path
 
 bundle = Path(sys.argv[1]).resolve()
-mode = sys.argv[2]
-assert mode in ('sleep', 'read')
+scenario = sys.argv[2]
+assert scenario in ('sleep', 'read', 'read4')
+mode = 'read' if scenario == 'read4' else scenario
+initial_level = 4 if scenario == 'read4' else 0
+book_id = 'textbook_mechanics' if initial_level == 4 else 'manual_mechanics'
 population = int(sys.argv[3]) if len(sys.argv) > 3 else None
 assert population is None or 0 <= population <= 200
-variant = mode if population is None else f'{mode}_z{population}'
+renderer = sys.argv[4] if len(sys.argv) > 4 else 'game'
+assert renderer in ('game', 'software', 'opengles2')
+variant = scenario if population is None else f'{scenario}_z{population}'
 workspace = Path(__file__).resolve().parents[1]
 assert bundle.is_relative_to(workspace)
 html = (bundle / 'index.html').read_text()
@@ -46,9 +58,9 @@ if mode == 'sleep':
 else:
     common += [
         {'u_add_trait': 'PERF_TEST_LIGHT'},
-        {'math': ["u_skill('mechanics') = 0"]},
-        {'u_spawn_item': 'manual_mechanics'},
-        {'u_message': '[FIXTURE] Skill book, light and mechanics 0 prepared.'},
+        {'math': [f"u_skill('mechanics') = {initial_level}"]},
+        {'u_spawn_item': book_id},
+        {'u_message': f'[FIXTURE] {book_id}, light and mechanics {initial_level} prepared.'},
     ]
 fixture = [
     {'type': 'ter_furn_transform', 'id': 'PERF_TEST_BED', 'furniture': [
@@ -63,7 +75,21 @@ fixture = [
 script = r'''
 <script>
 (async function() {
-    const mode = MODE, variant = VARIANT, population = POPULATION;
+    const mode = MODE, variant = VARIANT, population = POPULATION, initialLevel = INITIAL_LEVEL;
+    const renderer = GRAPHICS_BACKEND;
+    let initialSave = null, readingRequestedAt = null, observationEndAt = null;
+    const readPlayerSave = () => {
+        const fs = Module.FS || FS, base = '/home/perf_' + variant + '/.cataclysm-dda/save';
+        for (const world of fs.readdir(base).filter(n => n !== '.' && n !== '..')) {
+            for (const name of fs.readdir(base + '/' + world)) {
+                if (!name.endsWith('.sav')) continue;
+                const text = fs.readFile(base + '/' + world + '/' + name, {encoding: 'utf8'});
+                // Save version is a comment on the first line.
+                return JSON.parse(text.slice(text.indexOf('{')));
+            }
+        }
+        throw new Error('No player save found');
+    };
     const pause = ms => new Promise(r => setTimeout(r, ms));
     const send = (name, body) => fetch('/capture-' + name, { method: 'POST', body }).catch(() => {});
     const shot = () => send('screen', document.querySelector('canvas').toDataURL('image/png'));
@@ -106,7 +132,9 @@ script = r'''
         let options = [];
         try { options = JSON.parse(fs.readFile(file, { encoding: 'utf8' })); } catch (_) {}
         // Isolate baseline noise/AI and use the normal renderer and tileset.
-        for (const [name, value] of Object.entries({ SPAWN_DENSITY: '0.00', CITY_SIZE: '8' })) {
+        const settings = { SPAWN_DENSITY: '0.00', CITY_SIZE: '8' };
+        if (renderer !== 'game') settings.RENDERER = renderer;
+        for (const [name, value] of Object.entries(settings)) {
             const entry = options.find(o => o.name === name);
             if (entry) entry.value = value; else options.push({ name, value });
         }
@@ -122,15 +150,45 @@ script = r'''
         key('F5'); await pause(1200);
         // The spawned skill book is the only book in the starting inventory.
         key('R'); await pause(500); key('Enter'); await pause(2500); await shot();
-        // First read identifies the book. Open it again for actual chapter work.
+        // First read identifies the book. Capture the verified level-4 state
+        // before beginning timed reading; never infer it from the setup command.
+        if (initialLevel === 4) {
+            key('F5'); await pause(1200); initialSave = readPlayerSave();
+            if (initialSave.player.skills.mechanics.knowledgeLevel !== 4) {
+                throw new Error('Level-4 fixture initialization was not confirmed in save');
+            }
+        }
+        // Open the identified book again for actual chapter work.
         key('R'); await pause(500); key('Enter'); await pause(700); key('Enter');
-        console.log('fixture:reading requested');
+        readingRequestedAt = performance.now();
+        console.log('fixture:reading requested', initialLevel);
     }
     // Populated reading takes longer than the original quiet baseline. This is
     // a bounded observation window, not a completion assertion; verify saves.
     for (let i = 0; i < 15; ++i) {
-        await pause(4000); await shot();
+        await pause(4000);
+        // Screenshots can themselves stall a software-rendered game. In read4,
+        // take none inside the observation window.
+        if (initialLevel !== 4) await shot();
         console.log('fixture:sample', mode, i, HEAPU8.length);
+    }
+    observationEndAt = performance.now();
+    // Inspect this image before interpreting elapsed time. Never dismiss danger
+    // automatically: a modal is a valid safety response, not slow simulation.
+    const beforeInterrupt = initialLevel === 4 ?
+        document.querySelector('canvas').toDataURL('image/png') : null;
+    if (initialLevel === 4) {
+        // First try a normal save. During reading/modal input F5 is ignored;
+        // after completion it gives us a verified current ACT_NULL snapshot.
+        // Blindly sending Y after completion opens the zone manager instead
+        // of answering an interruption, swallowing F5 and returning stale data.
+        key('F5'); await pause(1200);
+        const snapshot = readPlayerSave();
+        const savedComplete = snapshot.turn > initialSave.turn &&
+            snapshot.player.activity.type === 'ACT_NULL';
+        if (!savedComplete) {
+            key('.'); await pause(700); key('Y'); await pause(700);
+        }
     }
     // Debug-started sleep does not increment ordinary action save bookkeeping.
     // One normal wait after waking makes quicksave eligible. Inspect the saved
@@ -153,12 +211,26 @@ script = r'''
     } catch (e) { console.log('fixture:save snapshot unavailable', String(e)); }
     const error = document.querySelector('#error-detail')?.textContent || '';
     console.log('fixture:snapshot', Object.keys(saves), error);
-    await send('result', JSON.stringify({ mode, variant, population, saves, heap: HEAPU8.length, error }));
+    let reading = null;
+    if (initialLevel === 4) {
+        const finalSave = readPlayerSave();
+        const skill = finalSave.player.skills.mechanics;
+        reading = {initialLevel, book: 'textbook_mechanics', initialTurn: initialSave.turn,
+            finalTurn: finalSave.turn, gameSecondsBetweenSaves: finalSave.turn - initialSave.turn,
+            observationMs: observationEndAt - readingRequestedAt,
+            finalKnowledge: skill.knowledgeLevel, finalExperience: skill.knowledgeExperience,
+            reachedLevel5: skill.knowledgeLevel >= 5, finalActivity: finalSave.player.activity,
+            perfMessages: (finalSave.player_messages?.messages || []).filter(m => m.message.startsWith('[perf]')),
+            timingIncludesPossibleModalWait: true,
+            caveat: 'save delta includes menus/interruption/final wait; perf wall time ALSO includes modal waiting; inspect beforeInterrupt, not just the completion marker'};
+    }
+    await send('result', JSON.stringify({ mode, variant, population, renderer, beforeInterrupt, reading, saves, heap: HEAPU8.length, error }));
     const done = document.createElement('i'); done.id = 'fixture-finished'; document.body.appendChild(done);
 })();
 </script>
 '''.replace('MODE', json.dumps(mode)).replace('VARIANT', json.dumps(variant)).replace(
-    'POPULATION', json.dumps(population)).replace('FIXTURE', json.dumps(fixture))
+    'POPULATION', json.dumps(population)).replace('INITIAL_LEVEL', str(initial_level)).replace(
+    'GRAPHICS_BACKEND', json.dumps(renderer)).replace('FIXTURE', json.dumps(fixture))
 output = bundle / ('fixture-' + variant + '.html')
 output.write_text(html.replace('</body>', script + '</body>'))
 print(output)
