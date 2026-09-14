@@ -586,3 +586,81 @@ with tempfile.TemporaryDirectory(prefix='nearby-items-', dir=out) as tmp:
     cpp.write_text(program)
     subprocess.run(['g++', '-std=c++17', '-O2', '-Wall', '-Wextra', '-Werror', str(cpp), '-o', str(binary)], check=True)
     subprocess.run([str(binary)], check=True)
+
+# The any-bodypart effect query must still test the OUTER map, even when an
+# entry's inner map is empty. Exercise both real overloads before/after writes.
+old_creature = upstream('creature.cpp')
+new_creature = (source / 'src/creature.cpp').read_text()
+any_effect = 'bool Creature::has_effect( const efftype_id &eff_id ) const'
+part_effect = 'bool Creature::has_effect( const efftype_id &eff_id, const bodypart_id &bp ) const'
+assert function(old_creature, part_effect) == function(new_creature, part_effect)
+program = r'''
+#include <cassert>
+#include <cstdio>
+#include <map>
+#include <string>
+using efftype_id = std::string;
+static int conversions = 0;
+struct bodypart_str_id {
+    static const std::string &NULL_ID() { static const std::string s = "null"; return s; }
+};
+struct bodypart_id {
+    std::string value;
+    bodypart_id(const std::string &s) : value(s) { ++conversions; }
+    const std::string &id() const { ++conversions; return value; }
+};
+using effect_map = std::map<std::string, std::map<std::string, int>>;
+'''
+for namespace, text in [('original', old_creature), ('current', new_creature)]:
+    program += 'namespace ' + namespace + r''' {
+struct Creature {
+    effect_map *effects;
+    bool has_effect(const efftype_id &) const;
+    bool has_effect(const efftype_id &, const bodypart_id &) const;
+};
+'''
+    program += function(text, part_effect) + '\n' + function(text, any_effect) + '\n}\n'
+program += r'''
+int main() {
+    effect_map state;
+    original::Creature old{&state}; current::Creature now{&state};
+    const std::string ids[] = {"sleep", "deaf", "stunned", "missing"};
+    const std::string parts[] = {"null", "head", "torso", "unknown"};
+    unsigned checks = 0;
+    for(int mask = 0; mask < 8; ++mask) {
+        for(int shape = 0; shape < 8; ++shape) {
+            state.clear();
+            for(int e = 0; e < 3; ++e) if(mask & (1 << e)) {
+                auto &inner = state[ids[e]];
+                for(int p = 0; p < 3; ++p) if(shape & (1 << p)) inner[parts[p]] = p + 1;
+            }
+            for(const auto &id : ids) {
+                assert(old.has_effect(id) == now.has_effect(id)); ++checks;
+                for(const auto &part : parts) {
+                    const bodypart_id bp(part);
+                    assert(old.has_effect(id, bp) == now.has_effect(id, bp)); ++checks;
+                }
+                // No cached answers survive adding/removing an effect.
+                state[id]["head"] = 10;
+                assert(old.has_effect(id) == now.has_effect(id)); ++checks;
+                state.erase(id);
+                assert(old.has_effect(id) == now.has_effect(id)); ++checks;
+            }
+        }
+    }
+    state["sleep"]; // An empty inner map still means presence in upstream.
+    assert(now.has_effect("sleep"));
+    conversions = 0;
+    for(int i = 0; i < 100000; ++i) assert(old.has_effect("sleep"));
+    const int before = conversions;
+    conversions = 0;
+    for(int i = 0; i < 100000; ++i) assert(now.has_effect("sleep"));
+    assert(before == 200000 && conversions == 0);
+    std::printf("PASS effect presence: %u differential checks; 100000 queries: %d -> %d bodypart conversions (not game speedup)\n", checks, before, conversions);
+}
+'''
+with tempfile.TemporaryDirectory(prefix='effect-presence-', dir=out) as tmp:
+    cpp, binary = Path(tmp) / 'test.cpp', Path(tmp) / 'test'
+    cpp.write_text(program)
+    subprocess.run(['g++', '-std=c++17', '-O2', '-Wall', '-Wextra', '-Werror', str(cpp), '-o', str(binary)], check=True)
+    subprocess.run([str(binary)], check=True)
