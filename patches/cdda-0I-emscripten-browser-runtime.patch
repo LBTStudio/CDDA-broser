@@ -35,7 +35,7 @@ Normal activity mode adds optional pacing; fast mode never skips game turns.
  #else
              const bool full_redraw = g->first_redraw_since_waiting_started ||
                                       calendar::once_every( wait_refresh_rate );
-@@ -996,13 +1002,22 @@
+@@ -996,13 +1002,27 @@
              if( full_redraw || !g->wait_popup || wait_message != last_wait_message ) {
                  last_wait_message = wait_message;
  #endif
@@ -53,13 +53,18 @@ Normal activity mode adds optional pacing; fast mode never skips game turns.
 +                // Redraw the dirty popup and overlapping UI, not an empty
 +                // frame whose disable_uis_below hides the existing popup.
 +                ui_manager::redraw_invalidated();
++                if( first_refresh ) {
++                    // ImGui may hide the first auto-sized window frame while
++                    // measuring it. Settle layout before the sparse next update.
++                    ui_manager::redraw_invalidated();
++                }
 +#else
                  ui_manager::redraw();
 +#endif
                  refresh_display();
                  g->first_redraw_since_waiting_started = false;
  #if defined(EMSCRIPTEN)
-@@ -1018,7 +1033,15 @@
+@@ -1018,7 +1038,15 @@
  #endif
              CATA_WEB_YIELD();
          }

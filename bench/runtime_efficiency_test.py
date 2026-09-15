@@ -787,6 +787,11 @@ int main() {
     {
         ui_adaptor main_ui;
         avatar u; u.activity.type = ACT_READ; game state; g = &state;
+        // Fresh auto-sized ImGui window must be visible on the first update,
+        // not just present in the UI stack until the next game-time boundary.
+        calendar::turn = 1; cata_web::clock_ms += 1000; new_wait(u);
+        assert(ImGui::GetDrawData()->TotalVtxCount > 0);
+        g->wait_popup_reset(); g->first_redraw_since_waiting_started = true;
         // Negative control: the reused popup lies below the NEXT blocker.
         for (int turn : {1, 60}) {
             calendar::turn = turn; cata_web::clock_ms += 1000; old_wait(u);
