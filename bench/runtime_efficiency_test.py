@@ -97,7 +97,12 @@ using activity_id = int;
 template<typename T> T to_seconds(int n) { return n; }
 constexpr int operator""_minutes(unsigned long long n) { return n * 60; }
 constexpr int operator""_turns(unsigned long long n) { return n; }
-namespace cata_web { double clock_ms = 0; double now_ms() { return clock_ms; } }
+namespace cata_web {
+double clock_ms = 0; double now_ms() { return clock_ms; }
+bool fast = true; int paced_turns = 0;
+bool activity_fast() { return fast; }
+void pace_activity(bool enabled) { if (enabled) ++paced_turns; }
+}
 namespace calendar {
 int turn = 0;
 bool once_every(int n) { return turn % n == 0; }
@@ -117,7 +122,10 @@ std::string string_format(const char *format, const std::string &s) {
 std::string string_format(const char *fmt, int h, int m, int s) {
     char buf[80]; std::snprintf(buf, sizeof(buf), fmt, h, m, s); return buf;
 }
-namespace ui_manager { void redraw() { ++redraws; if (!popup_depth) ++full_redraws; } }
+namespace ui_manager {
+void redraw() { ++redraws; if (!popup_depth) ++full_redraws; }
+void redraw_invalidated() { ++redraws; assert(popup_depth == 0); }
+}
 void refresh_display() { ++presents; }
 struct ui_adaptor {
     struct disable_uis_below {};
@@ -355,7 +363,24 @@ int main() {
         assert(checksums[0] == checksums[1]); assert(elapsed[1] <= elapsed[0]);
     }
 #endif
-    puts("PASS web: native game-time cadence, no slow-turn render trigger, latched cap, immediate transitions");
+    // Toggle during any progress activity, not only reading. A mode switch
+    // refreshes immediately even without crossing the calendar boundary.
+    for (int kind : {ACT_READ, ACT_CRAFT, ACT_PULP, ACT_FIRSTAID, ACT_AUTODRIVE, ACT_NULL}) {
+        avatar active; active.activity.type = kind; game state; g = &state;
+        cata_web::fast = true; cata_web::paced_turns = 0;
+        calendar::turn = 77; cata_web::clock_ms += 10000; new_wait(active);
+        assert(cata_web::paced_turns == 0);
+        cata_web::fast = false; paints = 0; new_wait(active);
+        assert(cata_web::paced_turns == (kind != ACT_AUTODRIVE && kind != ACT_NULL));
+        if (kind != ACT_NULL) assert(paints == 1);
+        cata_web::fast = true; paints = 0; new_wait(active);
+        if (kind != ACT_NULL) assert(paints == 1);
+        active.sleeping = true; cata_web::fast = false;
+        cata_web::paced_turns = 0; new_wait(active);
+        assert(cata_web::paced_turns == (kind != ACT_AUTODRIVE));
+    }
+    cata_web::fast = true;
+    puts("PASS web: cadence, immediate mode toggles, no blocker above persistent popup, pacing eligibility");
 #endif
 }
 '''.replace('TYPE_COUNT', str(len(ids)))
@@ -384,10 +409,12 @@ std::function<void()> hook;
 double emscripten_get_now() { return clock_ms; }
 void cata_web_yield_impl() { ++calls; if (hook) hook(); }
 void cata_web_yield_paint_impl() { ++calls; }
-void cata_web_wait_input_impl(int) { ++calls; }
+int waited_ms = 0;
+void cata_web_wait_input_impl(int ms) { ++calls; waited_ms += ms; clock_ms += ms; }
 namespace cata_web {
 '''
-for sig in ['void yield_now()', 'void wait_for_input(', 'void yield_paint()', 'bool yield_if_due(']:
+program += 'double now_ms() { return emscripten_get_now(); }\n'
+for sig in ['void yield_now()', 'void wait_for_input(', 'void yield_paint()', 'bool yield_if_due(', 'void pace_activity(']:
     program += function(yield_source, sig) + '\n'
 program += r'''
 }
@@ -411,7 +438,13 @@ int main() {
     cata_web::yield_paint(); assert(!cata_web::yield_if_due(a, 16));
     cata_web::wait_for_input(16); assert(!cata_web::yield_if_due(a, 16));
     clock_ms += 4; assert(cata_web::yield_if_due(a, 4));
-    puts("PASS shared yield: cross-site budget, no starvation, post-resume clock, paint/idle, real reentry");
+    cata_web::pace_activity(false); waited_ms = 0;
+    clock_ms = 1000; cata_web::pace_activity(true); assert(waited_ms == 0);
+    clock_ms += 10; cata_web::pace_activity(true); assert(waited_ms == 41);
+    clock_ms += 100; cata_web::pace_activity(true); assert(waited_ms == 41);
+    cata_web::pace_activity(false); clock_ms += 1;
+    cata_web::pace_activity(true); assert(waited_ms == 41); // no old pacing debt
+    puts("PASS shared yield and pacing: bounded waits, slow-turn no-op, reset, reentry, post-resume clock");
 }
 '''
 with tempfile.TemporaryDirectory(prefix='scheduler-', dir=out) as tmp:
@@ -663,4 +696,131 @@ with tempfile.TemporaryDirectory(prefix='effect-presence-', dir=out) as tmp:
     cpp, binary = Path(tmp) / 'test.cpp', Path(tmp) / 'test'
     cpp.write_text(program)
     subprocess.run(['g++', '-std=c++17', '-O2', '-Wall', '-Wextra', '-Werror', str(cpp), '-o', str(binary)], check=True)
+    subprocess.run([str(binary)], check=True)
+
+# Cooperative map boundaries must preserve upstream simulation and persistence.
+for name, signatures in [
+    ('map.cpp', ['void map::load(', 'void map::shift(']),
+    ('mapbuffer.cpp', ['void mapbuffer::save(', 'void mapbuffer::save_quad(']),
+    ('overmapbuffer.cpp', ['void overmapbuffer::save()'])
+]:
+    current = (source / 'src' / name).read_text()
+    for signature in signatures:
+        candidate = function(current, signature)
+        assert tokens(candidate.replace('CATA_WEB_YIELD();', '')) == tokens(function(upstream(name), signature))
+print('PASS map load/shift/save: all original statements and order retained; cooperative yields only')
+
+# Compile actual UI dispatch against real bundled ImGui. Host SDL, geometry and
+# the popup wrapper are fixtures, so this is NOT a full-game screenshot test.
+popup_program = (out / 'progress-harness.cpp').read_text().split('int main() {')[0]
+popup_program = '#include "imgui/imgui.h"\n#include "imgui/imgui_internal.h"\n#include <functional>\n#include "cata_scope_helpers.h"\n' + popup_program
+popup_program = popup_program.replace('''namespace ui_manager {
+void redraw() { ++redraws; if (!popup_depth) ++full_redraws; }
+void redraw_invalidated() { ++redraws; assert(popup_depth == 0); }
+}''', 'namespace ui_manager { void redraw(); void redraw_invalidated(); }')
+ui_start = popup_program.index('struct ui_adaptor {')
+ui_end = popup_program.index('struct game {', ui_start)
+popup_program = popup_program[:ui_start] + r'''
+#define cata_assert(condition) assert(condition)
+struct point {};
+void restore_cursor(point) {}
+struct ui_adaptor;
+using ui_stack_t = std::vector<std::reference_wrapper<ui_adaptor>>;
+static ui_stack_t ui_stack;
+static bool test_mode = false, imgui_frame_started = false;
+static bool redraw_in_progress = false, restart_redrawing = false;
+struct client {
+    void new_frame() { ImGui::NewFrame(); }
+    void end_frame() { ImGui::Render(); }
+};
+client client_instance; client *imclient = &client_instance;
+struct ui_adaptor {
+    struct disable_uis_below {};
+    enum class cursor { none, last, custom };
+    bool disabling_uis_below = false, invalidated = true, deferred_resize = false;
+    bool is_imgui = false, is_on_top = false;
+    cursor cursor_type = cursor::none;
+    point cursor_pos;
+    std::function<void(ui_adaptor&)> screen_resized_cb, redraw_cb;
+    ui_adaptor() { ui_stack.emplace_back(*this); }
+    explicit ui_adaptor(disable_uis_below) : ui_adaptor() { disabling_uis_below = true; }
+    ~ui_adaptor() {
+        auto it = std::find_if(ui_stack.begin(), ui_stack.end(), [&](auto &entry) { return &entry.get() == this; });
+        ui_stack.erase(it);
+    }
+    void default_cursor() {}
+    void record_term_cursor() {}
+    static void redraw_invalidated();
+};
+struct static_popup {
+    ui_adaptor ui;
+    std::string message;
+    static_popup() {
+        ui.is_imgui = true;
+        ui.redraw_cb = [&](ui_adaptor&) {
+            ImGui::SetNextWindowPos({320, 0}, ImGuiCond_Always, {0.5f, 0});
+            ImGui::Begin("QUERY_POPUP", nullptr, ImGuiWindowFlags_NoTitleBar |
+                         ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_AlwaysAutoResize);
+            ImGui::TextUnformatted(message.c_str());
+            ImGui::End();
+        };
+    }
+    static_popup &on_top(bool) { return *this; }
+    void wait_message(const char *, const std::string &s) { message = s; ui.invalidated = true; }
+};
+''' + popup_program[ui_end:]
+popup_program += function((source / 'src/ui_manager.cpp').read_text(), 'void ui_adaptor::redraw_invalidated(')
+popup_program += r'''
+namespace ui_manager {
+void redraw() {
+    if (!ui_stack.empty()) ui_stack.back().get().invalidated = true;
+    ui_adaptor::redraw_invalidated();
+}
+void redraw_invalidated() { ui_adaptor::redraw_invalidated(); }
+}
+int main() {
+    ImGui::CreateContext();
+    auto &io = ImGui::GetIO(); io.IniFilename = nullptr; io.DisplaySize = {640, 480};
+    io.DeltaTime = 1.0f / 60.0f;
+    unsigned char *pixels; int w, h;
+    io.Fonts->GetTexDataAsRGBA32(&pixels, &w, &h);
+    {
+        ui_adaptor main_ui;
+        avatar u; u.activity.type = ACT_READ; game state; g = &state;
+        // Fresh auto-sized ImGui window must be visible on the first update,
+        // not just present in the UI stack until the next game-time boundary.
+        calendar::turn = 1; cata_web::clock_ms += 1000; new_wait(u);
+        assert(ImGui::GetDrawData()->TotalVtxCount > 0);
+        g->wait_popup_reset(); g->first_redraw_since_waiting_started = true;
+        // Negative control: the reused popup lies below the NEXT blocker.
+        for (int turn : {1, 60}) {
+            calendar::turn = turn; cata_web::clock_ms += 1000; old_wait(u);
+        }
+        assert(!ImGui::FindWindowByName("QUERY_POPUP")->Active);
+        g->wait_popup_reset(); g->first_redraw_since_waiting_started = true;
+        for (int turn : {1, 60, 120, 180, 300, 360}) {
+            calendar::turn = turn; cata_web::clock_ms += 1000; new_wait(u);
+            assert(ImGui::FindWindowByName("QUERY_POPUP")->Active);
+            if (turn > 1) assert(ImGui::GetDrawData()->TotalVtxCount > 0);
+        }
+        ui_manager::redraw(); assert(ImGui::FindWindowByName("QUERY_POPUP")->Active);
+        io.DisplaySize = {800, 600}; ui_manager::redraw_invalidated();
+        assert(ImGui::FindWindowByName("QUERY_POPUP")->Active);
+        u.activity.type = ACT_NULL; new_wait(u); ui_manager::redraw();
+        assert(!ImGui::FindWindowByName("QUERY_POPUP")->Active);
+        u.activity.type = ACT_CRAFT; new_wait(u); ui_manager::redraw_invalidated();
+        assert(ImGui::FindWindowByName("QUERY_POPUP")->Active);
+    }
+    ImGui::DestroyContext();
+    puts("PASS actual UI dispatcher + ImGui: old blocker hides popup; fixed reading/craft persists, resizes and resets");
+}
+'''
+with tempfile.TemporaryDirectory(prefix='popup-imgui-', dir=out) as tmp:
+    cpp, binary = Path(tmp) / 'test.cpp', Path(tmp) / 'test'
+    cpp.write_text(popup_program)
+    imgui = source / 'src/third-party/imgui'
+    subprocess.run(['g++', '-std=c++17', '-O0', '-g0', '-DEMSCRIPTEN', '-I', str(source / 'src'),
+                    '-I', str(source / 'src/third-party'), str(cpp),
+                    *[str(imgui / name) for name in ['imgui.cpp', 'imgui_draw.cpp', 'imgui_tables.cpp', 'imgui_widgets.cpp']],
+                    '-o', str(binary)], check=True)
     subprocess.run([str(binary)], check=True)

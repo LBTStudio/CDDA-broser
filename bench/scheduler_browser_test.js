@@ -64,8 +64,33 @@ int main() {
     EM_ASM({
         window.requestAnimationFrame = realRaf;
         window.cancelAnimationFrame = realCancel;
-        window.done = true;
     });
+    unsigned checksum[2] = {};
+    for (int mode = 0; mode < 2; ++mode) {
+        EM_ASM({ window.CDDA_ACTIVITY_FAST = $0 != 0; }, mode);
+        cata_web::pace_activity(false);
+        const double started = cata_web::now_ms();
+        for (int turn = 1; turn <= 12; ++turn) {
+            checksum[mode] = checksum[mode] * 33 + turn;
+            cata_web::pace_activity(!cata_web::activity_fast());
+        }
+        EM_ASM({
+            if (!window.pacingMs) window.pacingMs = [];
+            pacingMs.push($0);
+        }, cata_web::now_ms() - started);
+    }
+    if (checksum[0] != checksum[1]) return 2;
+    cata_web::pace_activity(false);
+    EM_ASM({
+        window.CDDA_ACTIVITY_FAST = false;
+        window.switchTime = performance.now();
+        setTimeout(function() {
+            window.CDDA_ACTIVITY_FAST = true;
+            window.dispatchEvent(new KeyboardEvent("keydown", {key: "Escape"}));
+        }, 120);
+    });
+    for (int turn = 0; turn < 20; ++turn) cata_web::pace_activity(!cata_web::activity_fast());
+    EM_ASM({ window.switchMs = performance.now() - switchTime; window.done = true; });
     return 0;
 }
 `);
@@ -112,15 +137,19 @@ var Module={};</script><script src="test.js"></script>` });
       latencies.push(Date.now() - start); // includes Playwright roundtrips, not game latency
     }
     await page.waitForFunction(() => window.done, undefined, { timeout: 10000 });
-    const result = await page.evaluate(() => ({ delivered, fallbackMs, idleUsedMessageChannel, paintOrder, hiddenMs, cancelledFrames }));
+    const result = await page.evaluate(() => ({ delivered, fallbackMs, idleUsedMessageChannel, paintOrder, hiddenMs, cancelledFrames, pacingMs, switchMs }));
     assert.deepEqual(errors, []);
-    assert.deepEqual(result.delivered.map(e => e.name), ['keydown', 'keyup', 'input', 'compositionend']);
-    assert.deepEqual(result.delivered.slice(2).map(e => e.data), ['日本', '包帯']);
+    assert.deepEqual(result.delivered.map(e => e.name), ['keydown', 'keyup', 'input', 'compositionend', 'keydown']);
+    assert.deepEqual(result.delivered.slice(2, 4).map(e => e.data), ['日本', '包帯']);
     assert(result.fallbackMs >= 250, 'idle wait must not hot-spin');
     assert.equal(result.idleUsedMessageChannel, false);
     assert.deepEqual(result.paintOrder, ['raf-microtask', 'resumed']);
     assert(result.hiddenMs >= 80 && result.hiddenMs < 1500);
     assert.equal(result.cancelledFrames, 1);
+    assert(result.pacingMs[0] >= 450, 'normal mode should pace twelve identical work steps');
+    assert(result.pacingMs[1] < result.pacingMs[0] / 2, 'fast mode removes pacing waits');
+    assert(result.switchMs >= 100 && result.switchMs < 600, 'live toggle/input should end pacing promptly');
+    console.log('PASS actual pacing: normal/fast identical checksum, live switch and wake input retained');
     console.log('PASS real paint: post-rAF task, hidden fallback, cancelled throttled frame');
     console.log('PASS actual scheduler ' + backend + ': input order, key/IME wake, 20 bounded idle waits, forced yield');
     console.log(JSON.stringify({ ...result, testRoundtripMs: latencies }));

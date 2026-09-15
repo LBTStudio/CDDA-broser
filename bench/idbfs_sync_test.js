@@ -62,9 +62,15 @@ function environment(options = {}) {
   const mounted = vm.runInContext('(async function() {\n' + code + '\n})()', context);
   return {
     window, document, timers, notices, errors, requests, mounted,
-    dirty() { window.setFsNeedsSync(); },
+    dirty() {
+      window.setFsNeedsSync();
+      assert.equal(window.cdda_persistence_pending, true);
+    },
     async restore(err = null) { const f = restore; restore = null; f(err); await mounted; },
-    finish(err = null) { assert(write); const f = write; write = null; f(err); },
+    finish(err = null) {
+      assert(write); const f = write; write = null; f(err);
+      if (err) assert.equal(window.cdda_persistence_pending, true);
+    },
     tick(ms) {
       assert.equal(timers.size, 1, 'at most one scheduled synchronization');
       const [id, timer] = timers.entries().next().value;
@@ -78,7 +84,100 @@ function environment(options = {}) {
   };
 }
 
+// Execute the real reconcile replacement against a deterministic transaction
+// adapter. The browser companion tests the same code with actual IndexedDB.
+function reconcileFixture(fault = '') {
+  const tasks = [], written = [], disk = new Map([['/old', 'old'], ['/same', 'same']]);
+  const before = [...disk], stamp = n => ({ timestamp: new Date(n) });
+  const src = { type: 'local', entries: { '/same': stamp(1) } };
+  for (let i = 0; i < 1000; ++i) src.entries['/new/' + String(i).padStart(4, '0')] = stamp(2);
+  const dst = { type: 'remote', entries: { '/old': stamp(1), '/same': stamp(1) } };
+  let pending = 0, peak = 0, callbacks = 0, abortDelivered = false, aborting = false;
+  let finalError, tx, delegated = 0;
+  const staged = new Map(disk);
+  function request(kind, key, entry) {
+    if (fault === 'put-throw' && written.length === 3) throw new Error(fault);
+    const req = { error: new Error('request error') };
+    ++pending; peak = Math.max(peak, pending); written.push([kind, key]);
+    tasks.push(() => {
+      --pending;
+      if (aborting) return;
+      if (fault === 'request-error' && written.length === 3 || fault === 'delete-error' && kind === 'delete') {
+        const event = { target: req, preventDefault() {} };
+        req.onerror(event); tx.onerror(event); // bubbles; must not abort/complete twice
+      } else {
+        if (kind === 'put') staged.set(key, entry);
+        else staged.delete(key);
+        req.onsuccess();
+        if (!pending && !aborting) tasks.push(() => {
+          disk.clear(); for (const [k, v] of staged) disk.set(k, v);
+          tx.oncomplete();
+        });
+      }
+    });
+    return req;
+  }
+  dst.db = { transaction() {
+    if (fault === 'transaction-throw') throw new Error(fault);
+    tx = {
+      objectStore() {
+        if (fault === 'store-throw') throw new Error(fault);
+        return { put: (entry, key) => request('put', key, entry), delete: key => request('delete', key) };
+      },
+      abort() {
+        if (aborting) throw new Error('already aborting');
+        aborting = true;
+        tasks.push(() => { abortDelivered = true; tx.onabort(); });
+      },
+    };
+    return tx;
+  } };
+  const IDBFS = {
+    DB_STORE_NAME: 'FILE_DATA',
+    reconcile() { ++delegated; },
+    loadLocalEntry(key, cb) {
+      if (fault === 'load-throw' && written.length === 3) throw new Error(fault);
+      if (fault === 'load-error' && written.length === 3) return cb(new Error(fault));
+      cb(null, key);
+    },
+  };
+  const replacement = code.slice(code.indexOf('    const originalReconcile'), code.indexOf('    let fsNeedsSync'));
+  assert(replacement.includes('IDBFS.reconcile = function'));
+  vm.runInNewContext(replacement, { IDBFS });
+  IDBFS.reconcile({ type: 'remote' }, { type: 'local' }, () => {});
+  assert.equal(delegated, 1, 'restore must retain the original implementation');
+  IDBFS.reconcile(src, dst, err => {
+    ++callbacks; finalError = err;
+    if (aborting) assert(abortDelivered, 'must wait for transaction abort before retry');
+  });
+  assert.equal(pending, fault === 'transaction-throw' || fault === 'store-throw' ? 0 : 1);
+  let steps = 0;
+  while (tasks.length) { assert(++steps < 2000); tasks.shift()(); }
+  assert.equal(callbacks, 1); assert(peak <= 1); assert.equal(pending, 0);
+  if (fault) {
+    assert(finalError); assert.deepEqual([...disk], before, 'failed transaction must not commit partial files');
+  } else {
+    assert.equal(finalError, null); assert.equal(disk.size, 1001);
+    assert(!disk.has('/old')); assert.equal(disk.get('/same'), 'same');
+    assert.equal(written.length, 1001);
+    assert.deepEqual(written.at(-1), ['delete', '/old']);
+    assert.deepEqual(written.slice(0, 1000).map(w => w[1]), Object.keys(src.entries).filter(k => k !== '/same').sort());
+    // A second identical reconcile must not open an empty transaction.
+    let emptyCalls = 0;
+    IDBFS.reconcile(src, { type: 'remote', entries: src.entries }, err => { assert.equal(err, null); ++emptyCalls; });
+    assert.equal(emptyCalls, 1);
+  }
+}
+
 const cases = [
+  ['bounded reconcile keeps order, unchanged files, one transaction and restore fallback', async () => {
+    reconcileFixture();
+  }],
+  ['reconcile aborts once and rolls back on request, load, put, delete or setup failure', async () => {
+    for (const fault of ['put-throw', 'request-error', 'delete-error', 'load-throw', 'load-error', 'transaction-throw', 'store-throw']) {
+      reconcileFixture(fault);
+    }
+  }],
   ['long nested save batches cancel timers and defer lifecycle flushes', async () => {
     const e = environment(); await e.restore(); e.dirty();
     assert.equal(e.timers.size, 1);

@@ -1,0 +1,315 @@
+CDDA 0.I: bounded persistence and cooperative map/activity runtime.
+Apply after the other patches. Preserves save schema and simulation order.
+Normal activity mode adds optional pacing; fast mode never skips game turns.
+
+--- a/src/do_turn.cpp
++++ b/src/do_turn.cpp
+@@ -912,6 +912,9 @@
+     const bool player_is_sleeping = u.has_effect( effect_sleep );
+     const bool wait_redraw = player_is_sleeping || u.activity.has_progress_message();
+     if( wait_redraw ) {
++#if defined(EMSCRIPTEN)
++        const bool fast_activity = cata_web::activity_fast();
++#endif
+         // Match upstream's game-time cadence. Wall time only limits excessive
+         // display work; it must never request a frame on every slow turn.
+         time_duration wait_refresh_rate = 5_minutes;
+@@ -930,9 +933,11 @@
+         static std::string last_wait_message;
+         static activity_id last_wait_activity;
+         static bool last_wait_sleeping = false;
++        static bool last_fast_activity = true;
+         const bool first_refresh = g->first_redraw_since_waiting_started || !g->wait_popup ||
+                                    last_wait_activity != u.activity.id() ||
+-                                   last_wait_sleeping != player_is_sleeping;
++                                   last_wait_sleeping != player_is_sleeping ||
++                                   last_fast_activity != fast_activity;
+         // Latch boundaries suppressed by the wall-clock cap, so a fast turn
+         // cannot permanently lose a requested popup or world/sidebar update.
+         progress_refresh_pending = first_refresh || progress_refresh_pending ||
+@@ -959,6 +964,7 @@
+             }
+             last_wait_activity = u.activity.id();
+             last_wait_sleeping = player_is_sleeping;
++            last_fast_activity = fast_activity;
+ #else
+             const bool full_redraw = g->first_redraw_since_waiting_started ||
+                                      calendar::once_every( wait_refresh_rate );
+@@ -996,13 +1002,27 @@
+             if( full_redraw || !g->wait_popup || wait_message != last_wait_message ) {
+                 last_wait_message = wait_message;
+ #endif
+-                // Avoid redrawing the main UI every time due to invalidation.
++#if !defined(EMSCRIPTEN)
++                // Native behavior is unchanged. On web the persistent popup is
++                // older than this blocker, so the blocker would hide it too.
+                 ui_adaptor dummy( ui_adaptor::disable_uis_below {} );
++#endif
+                 if( !g->wait_popup ) {
+                     g->wait_popup = std::make_unique<static_popup>();
+                 }
+                 g->wait_popup->on_top( true ).wait_message( "%s", wait_message );
++#if defined(EMSCRIPTEN)
++                // Redraw the dirty popup and overlapping UI, not an empty
++                // frame whose disable_uis_below hides the existing popup.
++                ui_manager::redraw_invalidated();
++                if( first_refresh ) {
++                    // ImGui may hide the first auto-sized window frame while
++                    // measuring it. Settle layout before the sparse next update.
++                    ui_manager::redraw_invalidated();
++                }
++#else
+                 ui_manager::redraw();
++#endif
+                 refresh_display();
+                 g->first_redraw_since_waiting_started = false;
+ #if defined(EMSCRIPTEN)
+@@ -1018,7 +1038,15 @@
+ #endif
+             CATA_WEB_YIELD();
+         }
++#if defined(EMSCRIPTEN)
++        // Read/craft/wait/sleep and other progress activities share this policy.
++        // Driving remains real-time input driven. No moves, RNG or AI are skipped.
++        cata_web::pace_activity( !fast_activity && u.activity.id() != ACT_AUTODRIVE );
++#endif
+     } else {
++#if defined(EMSCRIPTEN)
++        cata_web::pace_activity( false );
++#endif
+         g->wait_popup_reset();
+         g->first_redraw_since_waiting_started = true;
+     }
+--- a/src/cata_web_yield.h
++++ b/src/cata_web_yield.h
+@@ -59,6 +59,12 @@
+ // gamepads and events queued internally by SDL. Never consumes an event.
+ void wait_for_input( int timeout_ms );
+ 
++// Shell preference, not a world/save option. Default keeps unpaced simulation.
++bool activity_fast();
++// Normal mode limits long activities to roughly 20 turns/s, while input wakes
++// the wait early. Passing false clears the clock (including after completion).
++void pace_activity( bool enabled );
++
+ /**
+  * 描画フレームを 1 枚確実に挟んでから戻る（requestAnimationFrame 待ち）。
+  *
+--- a/src/cata_web_yield.cpp
++++ b/src/cata_web_yield.cpp
+@@ -130,6 +130,27 @@
+     yield_in_progress = false;
+ }
+ 
++bool activity_fast()
++{
++    return EM_ASM_INT( return window.CDDA_ACTIVITY_FAST !== false; ) != 0;
++}
++
++void pace_activity( const bool enabled )
++{
++    static double last_turn_ms = 0.0;
++    if( !enabled ) {
++        last_turn_ms = 0.0;
++        return;
++    }
++    const double now = now_ms();
++    const double remaining = 50.0 - ( now - last_turn_ms );
++    if( last_turn_ms > 0.0 && remaining > 0.0 && remaining <= 50.0 ) {
++        wait_for_input( static_cast<int>( remaining ) + 1 );
++    }
++    // Do not accumulate pacing debt across expensive turns or modal dialogs.
++    last_turn_ms = now_ms();
++}
++
+ void yield_paint()
+ {
+     if( yield_in_progress ) {
+--- a/src/map.cpp
++++ b/src/map.cpp
+@@ -1,4 +1,6 @@
+ #include "map.h"
++
++#include "cata_web_yield.h"
+ 
+ #include <algorithm>
+ #include <array>
+@@ -7852,6 +7854,7 @@
+     clear_vehicle_level_caches();
+     for( int gridx = 0; gridx < my_MAPSIZE; gridx++ ) {
+         for( int gridy = 0; gridy < my_MAPSIZE; gridy++ ) {
++            CATA_WEB_YIELD();
+             loadn( { gridx, gridy }, update_vehicle );
+             if( pump_events ) {
+                 inp_mngr.pump_events();
+@@ -7868,6 +7871,7 @@
+                 const int zmin = zlevels ? -OVERMAP_DEPTH : abs_sub.z();
+                 const int zmax = zlevels ? OVERMAP_HEIGHT : abs_sub.z();
+                 for( int gridz = zmin; gridz <= zmax; gridz++ ) {
++                    CATA_WEB_YIELD();
+                     actualize( { gridx, gridy, gridz } );
+                     if( pump_events ) {
+                         inp_mngr.pump_events();
+@@ -8014,6 +8018,9 @@
+ 
+     for( int gridx = x_start; gridx != x_stop; gridx += x_step ) {
+         for( int gridy = y_start; gridy != y_stop; gridy += y_step ) {
++            // Deliver browser events without consuming input or rendering a
++            // partially shifted map. Shared budget avoids a yield per submap.
++            CATA_WEB_YIELD();
+             if( gridx + sp.x() != x_stop && gridy + sp.y() != y_stop ) {
+                 for( int gridz = zmin; gridz <= zmax; gridz++ ) {
+                     const tripoint_rel_sm grid( gridx, gridy, gridz );
+@@ -8050,6 +8057,7 @@
+     // actualize after loading all submaps to prevent errors
+     // with entities at the edges
+     for( tripoint_rel_sm loaded_grid : loaded_grids ) {
++        CATA_WEB_YIELD();
+         actualize( loaded_grid );
+     }
+ }
+--- a/src/mapbuffer.cpp
++++ b/src/mapbuffer.cpp
+@@ -1,4 +1,6 @@
+ #include "mapbuffer.h"
++
++#include "cata_web_yield.h"
+ 
+ #include <chrono>
+ #include <cstddef>
+@@ -198,6 +200,9 @@
+     std::chrono::steady_clock::time_point last_update = std::chrono::steady_clock::now();
+ 
+     for( auto &elem : submaps ) {
++        // A completed quad is a safe suspension boundary. Do not wait for the
++        // 500ms progress-text timer before accepting browser events.
++        CATA_WEB_YIELD();
+         std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
+         if( last_update + update_interval < now ) {
+             popup.message( _( "Please wait as the map saves [%d/%d]" ),
+@@ -232,6 +237,7 @@
+         num_saved_submaps += 4;
+     }
+     for( auto &elem : submaps_to_delete ) {
++        CATA_WEB_YIELD();
+         remove_submap( elem );
+     }
+ }
+--- a/src/overmapbuffer.cpp
++++ b/src/overmapbuffer.cpp
+@@ -1,4 +1,6 @@
+ #include "overmapbuffer.h"
++
++#include "cata_web_yield.h"
+ 
+ #include <algorithm>
+ #include <cmath>
+@@ -235,6 +237,7 @@
+ {
+     for( auto &omp : overmaps ) {
+         // Note: this may throw io errors from std::ofstream
++        CATA_WEB_YIELD();
+         omp.second->save();
+     }
+ }
+--- a/src/main.cpp
++++ b/src/main.cpp
+@@ -580,6 +580,82 @@
+ EM_ASYNC_JS( void, mount_idbfs, ( const char *user_dir ), {
+     const mountPoint = UTF8ToString( user_dir );
+ 
++    // Bound structured-clone pressure to one file request at a time, rather
++    // than queueing every changed save file in one synchronous JS task.
++    // Keep the stock schema and one atomic IDB transaction per reconcile.
++    const originalReconcile = IDBFS.reconcile;
++    IDBFS.reconcile = function( src, dst, callback ) {
++        if( src.type !== 'local' || dst.type !== 'remote' ) {
++            return originalReconcile( src, dst, callback );
++        }
++        const create = Object.keys( src.entries ).filter( function( path ) {
++            const old = dst.entries[path];
++            return !old || src.entries[path].timestamp.getTime() !== old.timestamp.getTime();
++        } ).sort();
++        const remove = Object.keys( dst.entries ).filter( function( path ) {
++            return !src.entries[path];
++        } ).sort().reverse();
++        if( !create.length && !remove.length ) {
++            callback( null );
++            return;
++        }
++        let tx, store, failure = null, settled = false, nextCreate = 0, nextRemove = 0;
++        function finish( err ) {
++            if( settled ) { return; }
++            settled = true;
++            callback( err );
++        }
++        function abort( err ) {
++            if( failure || settled ) { return; }
++            failure = err || new Error( 'IDBFS transaction aborted' );
++            // Wait for onabort before permitting the retry to start.
++            try { tx.abort(); } catch( abortError ) { finish( failure ); }
++        }
++        function next() {
++            if( failure || settled ) { return; }
++            try {
++                if( nextCreate < create.length ) {
++                    const path = create[nextCreate++];
++                    IDBFS.loadLocalEntry( path, function( err, entry ) {
++                        if( err ) { abort( err ); return; }
++                        try {
++                            const request = store.put( entry, path );
++                            request.onsuccess = next;
++                            request.onerror = function( event ) {
++                                event.preventDefault();
++                                abort( request.error );
++                            };
++                        } catch( writeError ) { abort( writeError ); }
++                    } );
++                } else if( nextRemove < remove.length ) {
++                    const request = store.delete( remove[nextRemove++] );
++                    request.onsuccess = next;
++                    request.onerror = function( event ) {
++                        event.preventDefault();
++                        abort( request.error );
++                    };
++                }
++                // The last request drains naturally into oncomplete. Starting
++                // the next request directly in onsuccess keeps the tx active.
++            } catch( readError ) { abort( readError ); }
++        }
++        try {
++            tx = dst.db.transaction( [IDBFS.DB_STORE_NAME], 'readwrite' );
++            tx.oncomplete = function() { finish( failure ); };
++            tx.onabort = function() {
++                finish( failure || tx.error || new Error( 'IDBFS transaction aborted' ) );
++            };
++            tx.onerror = function( event ) {
++                event.preventDefault();
++                abort( event.target.error );
++            };
++            store = tx.objectStore( IDBFS.DB_STORE_NAME );
++            next();
++        } catch( transactionError ) {
++            if( tx ) { abort( transactionError ); } else { finish( transactionError ); }
++        }
++    };
++
+     let fsNeedsSync = false;
+     let fsSyncInFlight = false;
+     let fsSyncTimer = null;
+@@ -639,6 +715,7 @@
+                 // Writes made during sync require another pass. Do not claim
+                 // recovery until that pass has also completed successfully.
+                 if( !fsNeedsSync ) {
++                    window.cdda_persistence_pending = false;
+                     reportSyncError( false, "" );
+                 }
+             }
+@@ -655,6 +732,7 @@
+     window.setFsNeedsSync = function setFsNeedsSync()
+     {
+         fsNeedsSync = true;
++        window.cdda_persistence_pending = true;
+         scheduleFsSync();
+     };
+ 
