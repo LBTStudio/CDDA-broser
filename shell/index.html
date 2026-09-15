@@ -93,6 +93,14 @@
       <div style="margin-bottom: 10px">
         <div id="manage-mods" class="menu-button"><i class="fa-solid fa-list-check"></i><span style="margin-left: 0.7em">Manage Mods</span></div>
       </div>
+      <div style="margin-bottom: 14px; max-width: 340px; font: 14px/1.5 sans-serif;">
+        <label for="activity-speed">長時間作業 / Activity speed</label>
+        <select id="activity-speed" style="display: block; width: 100%; margin: 6px 0;">
+          <option value="fast">加速（全ターンを計算・待機なし）</option>
+          <option value="normal">通常（約20ターン/秒まで）</option>
+        </select>
+        <small>読書・製作・待機・睡眠などに適用。途中で変更できます。敵AI・危険検知・経験値は省略しません。重い場面の処理速度を保証する設定ではありません。</small>
+      </div>
       <div style="margin-bottom: 10px">
         <div id="switch-player" class="menu-button"><i class="fa-solid fa-user"></i><span style="margin-left: 0.7em">Switch Player</span></div>
       </div>
@@ -166,6 +174,22 @@
       rendererMode.addEventListener("change", () => {
         try { localStorage.setItem("cdda_web_renderer_v1", rendererMode.value); } catch (_) {}
       });
+
+      // Activity speed changes scheduling only; it is not serialized into saves.
+      const activitySpeed = document.getElementById("activity-speed");
+      let savedActivitySpeed = "fast";
+      try { savedActivitySpeed = localStorage.getItem("cdda_activity_speed_v1") || "fast"; } catch (_) {}
+      activitySpeed.value = savedActivitySpeed === "normal" ? "normal" : "fast";
+      window.CDDA_ACTIVITY_FAST = activitySpeed.value === "fast";
+      activitySpeed.addEventListener("change", () => {
+        window.CDDA_ACTIVITY_FAST = activitySpeed.value !== "normal";
+        try { localStorage.setItem("cdda_activity_speed_v1", activitySpeed.value); } catch (_) {}
+      });
+      // SDL listens above this select. Do not turn arrows/space used to change
+      // pacing into movement or an activity-interruption command.
+      for (const event of ["keydown", "keyup", "keypress"]) {
+        activitySpeed.addEventListener(event, e => e.stopPropagation());
+      }
 
       /* Per-player save isolation: each name maps to /home/<name>/.cataclysm-dda
          inside the game's virtual FS (the game resolves HOME + "/.cataclysm-dda/").
@@ -451,7 +475,7 @@
       };
       document.getElementById("switch-player").onclick = () => {
         settingsMenu.style.display = "none";
-        if (window.game_unsaved) {
+        if (window.game_unsaved || window.cdda_persistence_pending) {
           if (!confirm("Unsaved progress may be lost. Switch player anyway?\n（セーブしていない進行は失われる可能性があります）")) return;
         }
         location.reload();
@@ -965,7 +989,7 @@
       Module.onAbort = function (what) {
         showFatalError("Runtime abort", what);
       };
-      window.onbeforeunload = (e) => { if (window.game_unsaved) e.preventDefault(); };
+      window.onbeforeunload = (e) => { if (window.game_unsaved || window.cdda_persistence_pending) e.preventDefault(); };
     </script>
   </body>
 </html>

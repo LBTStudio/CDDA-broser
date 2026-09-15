@@ -49,6 +49,7 @@ runtime-efficiency
 monster-snapshot
 item-snapshot
 gear-guide
+browser-runtime
 "
 
 for name in $PATCHES; do
@@ -281,4 +282,4 @@ node "$SCRIPT_DIR/../bench/asset_loader_test.js"
 node "$SCRIPT_DIR/../bench/ime_bridge_test.js"
 node "$SCRIPT_DIR/../bench/idbfs_sync_test.js" "$PWD"
 
-echo "[VERIFY] OK: 全 13 パッチとランタイム・IME・保存・装備ナビ回帰テストが合格"
+echo "[VERIFY] OK: 全 14 パッチとランタイム・IME・保存・装備ナビ回帰テストが合格"
