@@ -97,7 +97,12 @@ using activity_id = int;
 template<typename T> T to_seconds(int n) { return n; }
 constexpr int operator""_minutes(unsigned long long n) { return n * 60; }
 constexpr int operator""_turns(unsigned long long n) { return n; }
-namespace cata_web { double clock_ms = 0; double now_ms() { return clock_ms; } }
+namespace cata_web {
+double clock_ms = 0; double now_ms() { return clock_ms; }
+bool fast = true; int paced_turns = 0;
+bool activity_fast() { return fast; }
+void pace_activity(bool enabled) { if (enabled) ++paced_turns; }
+}
 namespace calendar {
 int turn = 0;
 bool once_every(int n) { return turn % n == 0; }
@@ -117,7 +122,10 @@ std::string string_format(const char *format, const std::string &s) {
 std::string string_format(const char *fmt, int h, int m, int s) {
     char buf[80]; std::snprintf(buf, sizeof(buf), fmt, h, m, s); return buf;
 }
-namespace ui_manager { void redraw() { ++redraws; if (!popup_depth) ++full_redraws; } }
+namespace ui_manager {
+void redraw() { ++redraws; if (!popup_depth) ++full_redraws; }
+void redraw_invalidated() { ++redraws; assert(popup_depth == 0); }
+}
 void refresh_display() { ++presents; }
 struct ui_adaptor {
     struct disable_uis_below {};
@@ -355,7 +363,24 @@ int main() {
         assert(checksums[0] == checksums[1]); assert(elapsed[1] <= elapsed[0]);
     }
 #endif
-    puts("PASS web: native game-time cadence, no slow-turn render trigger, latched cap, immediate transitions");
+    // Toggle during any progress activity, not only reading. A mode switch
+    // refreshes immediately even without crossing the calendar boundary.
+    for (int kind : {ACT_READ, ACT_CRAFT, ACT_PULP, ACT_FIRSTAID, ACT_AUTODRIVE, ACT_NULL}) {
+        avatar active; active.activity.type = kind; game state; g = &state;
+        cata_web::fast = true; cata_web::paced_turns = 0;
+        calendar::turn = 77; cata_web::clock_ms += 10000; new_wait(active);
+        assert(cata_web::paced_turns == 0);
+        cata_web::fast = false; paints = 0; new_wait(active);
+        assert(cata_web::paced_turns == (kind != ACT_AUTODRIVE && kind != ACT_NULL));
+        if (kind != ACT_NULL) assert(paints == 1);
+        cata_web::fast = true; paints = 0; new_wait(active);
+        if (kind != ACT_NULL) assert(paints == 1);
+        active.sleeping = true; cata_web::fast = false;
+        cata_web::paced_turns = 0; new_wait(active);
+        assert(cata_web::paced_turns == (kind != ACT_AUTODRIVE));
+    }
+    cata_web::fast = true;
+    puts("PASS web: cadence, immediate mode toggles, no blocker above persistent popup, pacing eligibility");
 #endif
 }
 '''.replace('TYPE_COUNT', str(len(ids)))
@@ -384,10 +409,12 @@ std::function<void()> hook;
 double emscripten_get_now() { return clock_ms; }
 void cata_web_yield_impl() { ++calls; if (hook) hook(); }
 void cata_web_yield_paint_impl() { ++calls; }
-void cata_web_wait_input_impl(int) { ++calls; }
+int waited_ms = 0;
+void cata_web_wait_input_impl(int ms) { ++calls; waited_ms += ms; clock_ms += ms; }
 namespace cata_web {
 '''
-for sig in ['void yield_now()', 'void wait_for_input(', 'void yield_paint()', 'bool yield_if_due(']:
+program += 'double now_ms() { return emscripten_get_now(); }\n'
+for sig in ['void yield_now()', 'void wait_for_input(', 'void yield_paint()', 'bool yield_if_due(', 'void pace_activity(']:
     program += function(yield_source, sig) + '\n'
 program += r'''
 }
@@ -411,7 +438,13 @@ int main() {
     cata_web::yield_paint(); assert(!cata_web::yield_if_due(a, 16));
     cata_web::wait_for_input(16); assert(!cata_web::yield_if_due(a, 16));
     clock_ms += 4; assert(cata_web::yield_if_due(a, 4));
-    puts("PASS shared yield: cross-site budget, no starvation, post-resume clock, paint/idle, real reentry");
+    cata_web::pace_activity(false); waited_ms = 0;
+    clock_ms = 1000; cata_web::pace_activity(true); assert(waited_ms == 0);
+    clock_ms += 10; cata_web::pace_activity(true); assert(waited_ms == 41);
+    clock_ms += 100; cata_web::pace_activity(true); assert(waited_ms == 41);
+    cata_web::pace_activity(false); clock_ms += 1;
+    cata_web::pace_activity(true); assert(waited_ms == 41); // no old pacing debt
+    puts("PASS shared yield and pacing: bounded waits, slow-turn no-op, reset, reentry, post-resume clock");
 }
 '''
 with tempfile.TemporaryDirectory(prefix='scheduler-', dir=out) as tmp:
@@ -664,3 +697,15 @@ with tempfile.TemporaryDirectory(prefix='effect-presence-', dir=out) as tmp:
     cpp.write_text(program)
     subprocess.run(['g++', '-std=c++17', '-O2', '-Wall', '-Wextra', '-Werror', str(cpp), '-o', str(binary)], check=True)
     subprocess.run([str(binary)], check=True)
+
+# Cooperative map boundaries must preserve upstream simulation and persistence.
+for name, signatures in [
+    ('map.cpp', ['void map::load(', 'void map::shift(']),
+    ('mapbuffer.cpp', ['void mapbuffer::save(', 'void mapbuffer::save_quad(']),
+    ('overmapbuffer.cpp', ['void overmapbuffer::save()'])
+]:
+    current = (source / 'src' / name).read_text()
+    for signature in signatures:
+        candidate = function(current, signature)
+        assert tokens(candidate.replace('CATA_WEB_YIELD();', '')) == tokens(function(upstream(name), signature))
+print('PASS map load/shift/save: all original statements and order retained; cooperative yields only')

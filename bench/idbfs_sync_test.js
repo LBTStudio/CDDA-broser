@@ -62,9 +62,15 @@ function environment(options = {}) {
   const mounted = vm.runInContext('(async function() {\n' + code + '\n})()', context);
   return {
     window, document, timers, notices, errors, requests, mounted,
-    dirty() { window.setFsNeedsSync(); },
+    dirty() {
+      window.setFsNeedsSync();
+      assert.equal(window.cdda_persistence_pending, true);
+    },
     async restore(err = null) { const f = restore; restore = null; f(err); await mounted; },
-    finish(err = null) { assert(write); const f = write; write = null; f(err); },
+    finish(err = null) {
+      assert(write); const f = write; write = null; f(err);
+      if (err) assert.equal(window.cdda_persistence_pending, true);
+    },
     tick(ms) {
       assert.equal(timers.size, 1, 'at most one scheduled synchronization');
       const [id, timer] = timers.entries().next().value;
