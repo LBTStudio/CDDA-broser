@@ -721,6 +721,7 @@ void redraw_invalidated() { ++redraws; assert(popup_depth == 0); }
 ui_start = popup_program.index('struct ui_adaptor {')
 ui_end = popup_program.index('struct game {', ui_start)
 popup_program = popup_program[:ui_start] + r'''
+#define cata_assert(condition) assert(condition)
 struct point {};
 void restore_cursor(point) {}
 struct ui_adaptor;
