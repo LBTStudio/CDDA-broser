@@ -209,7 +209,7 @@ Normal activity mode adds optional pacing; fast mode never skips game turns.
  }
 --- a/src/main.cpp
 +++ b/src/main.cpp
-@@ -580,6 +580,81 @@
+@@ -580,6 +580,82 @@
  EM_ASYNC_JS( void, mount_idbfs, ( const char *user_dir ), {
      const mountPoint = UTF8ToString( user_dir );
  
@@ -239,7 +239,8 @@ Normal activity mode adds optional pacing; fast mode never skips game turns.
 +            callback( err );
 +        }
 +        function abort( err ) {
-+            failure = failure || err || new Error( 'IDBFS transaction aborted' );
++            if( failure || settled ) { return; }
++            failure = err || new Error( 'IDBFS transaction aborted' );
 +            // Wait for onabort before permitting the retry to start.
 +            try { tx.abort(); } catch( abortError ) { finish( failure ); }
 +        }
@@ -273,7 +274,6 @@ Normal activity mode adds optional pacing; fast mode never skips game turns.
 +        }
 +        try {
 +            tx = dst.db.transaction( [IDBFS.DB_STORE_NAME], 'readwrite' );
-+            store = tx.objectStore( IDBFS.DB_STORE_NAME );
 +            tx.oncomplete = function() { finish( failure ); };
 +            tx.onabort = function() {
 +                finish( failure || tx.error || new Error( 'IDBFS transaction aborted' ) );
@@ -282,6 +282,7 @@ Normal activity mode adds optional pacing; fast mode never skips game turns.
 +                event.preventDefault();
 +                abort( event.target.error );
 +            };
++            store = tx.objectStore( IDBFS.DB_STORE_NAME );
 +            next();
 +        } catch( transactionError ) {
 +            if( tx ) { abort( transactionError ); } else { finish( transactionError ); }
@@ -291,7 +292,7 @@ Normal activity mode adds optional pacing; fast mode never skips game turns.
      let fsNeedsSync = false;
      let fsSyncInFlight = false;
      let fsSyncTimer = null;
-@@ -639,6 +714,7 @@
+@@ -639,6 +715,7 @@
                  // Writes made during sync require another pass. Do not claim
                  // recovery until that pass has also completed successfully.
                  if( !fsNeedsSync ) {
@@ -299,7 +300,7 @@ Normal activity mode adds optional pacing; fast mode never skips game turns.
                      reportSyncError( false, "" );
                  }
              }
-@@ -655,6 +731,7 @@
+@@ -655,6 +732,7 @@
      window.setFsNeedsSync = function setFsNeedsSync()
      {
          fsNeedsSync = true;

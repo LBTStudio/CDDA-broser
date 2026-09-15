@@ -13,7 +13,7 @@ const dataBytes = Uint8Array.from([10, 20, 30, 40]);
 
 // Exercise device defaults and explicit recovery choices using actual shell code.
 const selectionStart = html.indexOf('      function prefersWebGL(');
-const selectionCode = html.slice(selectionStart, html.indexOf('      /* Per-player save isolation:', selectionStart));
+const selectionCode = html.slice(selectionStart, html.indexOf('      // Activity speed changes scheduling only;', selectionStart));
 assert(selectionStart >= 0);
 for (const [saved, available, expected] of [
   [null, true, 'opengles2'], [null, false, 'game'], [null, 'throw', 'game'],
@@ -45,6 +45,41 @@ for (const [saved, available, expected] of [
   assert.deepEqual(writes, [['cdda_web_renderer_v1', 'software']]);
 }
 console.log('PASS graphics default: accelerated context only, probe released, explicit choices preserved');
+
+// Run the actual live preference controls, including unavailable storage.
+const activityStart = html.indexOf('      // Activity speed changes scheduling only;');
+const activityCode = html.slice(activityStart, html.indexOf('      /* Per-player save isolation:', activityStart));
+for (const saved of [null, 'fast', 'normal', 'invalid', 'throw']) {
+  const events = new Map(), writes = [], window = {};
+  const select = { value: '', addEventListener: (name, fn) => events.set(name, fn) };
+  vm.runInNewContext(activityCode, {
+    window, document: { getElementById: () => select },
+    localStorage: {
+      getItem() { if (saved === 'throw') throw new Error('blocked'); return saved; },
+      setItem(...args) { if (saved === 'throw') throw new Error('blocked'); writes.push(args); },
+    },
+  });
+  assert.equal(window.CDDA_ACTIVITY_FAST, saved !== 'normal');
+  for (const value of ['normal', 'fast']) {
+    select.value = value; events.get('change')();
+    assert.equal(window.CDDA_ACTIVITY_FAST, value === 'fast');
+  }
+  for (const name of ['keydown', 'keyup', 'keypress']) {
+    let stopped = false;
+    events.get(name)({ stopPropagation() { stopped = true; } });
+    assert(stopped, name + ' must not leak from the preference control to SDL');
+  }
+  if (saved !== 'throw') assert.equal(writes.length, 2);
+}
+const unloadLine = html.split('\n').find(line => line.includes('window.onbeforeunload ='));
+for (const [dirty, pending] of [[false, false], [true, false], [false, true], [true, true]]) {
+  const window = { game_unsaved: dirty, cdda_persistence_pending: pending };
+  vm.runInNewContext(unloadLine, { window });
+  let warned = false;
+  window.onbeforeunload({ preventDefault() { warned = true; } });
+  assert.equal(warned, dirty || pending);
+}
+console.log('PASS live activity preference: default, persistence, unavailable storage, key isolation, pending-save exit warning');
 
 // Execute the real post-mount renderer helper, not a duplicate implementation.
 const rendererStart = html.indexOf('      function applyWebRenderer(');
