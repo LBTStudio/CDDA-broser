@@ -209,6 +209,7 @@ function environment(options = {}) {
   }
   const entries = cacheBuckets.get('cdda-assets-v2');
   const requests = [];
+  const failFirstUrls = new Set(options.failFirstUrls || []);
   let offline = false, cacheFailure = false, putCalls = 0;
   let streamCalls = 0, bufferCalls = 0, fatal = 0, receives = 0;
   let streamFailure = !!options.streamFailure;
@@ -264,6 +265,10 @@ function environment(options = {}) {
     async fetch(url, init = {}) {
       requests.push({ url, init });
       if (offline || (options.failUrls || []).includes(url)) throw new Error('offline/network failure');
+      if (failFirstUrls.has(url)) {
+        failFirstUrls.delete(url);
+        throw new Error('injected one-time network failure');
+      }
       if (options.httpError) return new Response('missing', { status: 404 });
       const etag = options.etag || 'v1';
       if (init.headers && init.headers['If-None-Match'] === etag) {
@@ -394,6 +399,26 @@ async function completeBoot(env) {
         'partial network update must not commit a mixture: ' + url);
     }
     console.log('PASS partial deployment failure: use previous coherent bundle and discard staged new files');
+
+    // A partial deployment may recover while streaming a selected older WASM.
+    // Retrying must not silently accept the newer ETag and pair it with the
+    // previous release's data and generated JS loaders.
+    const releaseDrift = environment({
+      cacheBuckets: cachedBuckets,
+      etag: 'v2',
+      failFirstUrls: ['cataclysm-tiles.wasm'],
+      streamFailure: true,
+    });
+    await completeBoot(releaseDrift);
+    assert.equal(releaseDrift.counts().receives, 0,
+      'never execute a different release’s wasm with the selected cached bundle');
+    assert.equal(releaseDrift.counts().fatal, 1,
+      'a mismatched release retry must fail closed with a visible error');
+    assert.equal(releaseDrift.api.activeAssetCacheName, completeBundle.api.activeAssetCacheName,
+      'failed fallback must leave the last known-good cache active');
+    assert(releaseDrift.errors.some(line => /different.*release|different.*asset/i.test(line)),
+      'mismatched ETag should be reported for diagnosis');
+    console.log('PASS WASM fallback release identity: reject a new ETag after partial update fallback');
 
     const previousName = completeBundle.api.activeAssetCacheName;
     const failedCacheWrite = environment({ cacheBuckets: cachedBuckets, etag: 'v2', failPutAt: 2 });
