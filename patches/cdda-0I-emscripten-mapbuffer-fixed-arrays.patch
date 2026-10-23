@@ -1,0 +1,55 @@
+CDDA 0.I: avoid per-quad heap allocations during mapbuffer saves.
+
+Every save_quad() handles exactly four submaps, but the current implementation
+builds two std::vectors and calls reserve(4) on each for every saved quad.
+Use fixed-size std::array storage and hoist the invariant overmap-to-submap
+conversion out of the four-element loop. Preserve offsets/order, serialization,
+uniform-submap handling, and deletion behavior.
+
+diff --git a/src/mapbuffer.cpp b/src/mapbuffer.cpp
+--- a/src/mapbuffer.cpp
++++ b/src/mapbuffer.cpp
+@@ -1,5 +1,6 @@
+ #include "mapbuffer.h"
+ 
++#include <array>
+ #include <chrono>
+ #include <cstddef>
+ #include <exception>
+@@ -246,20 +247,23 @@ void mapbuffer::save_quad(
+     const cata_path &dirname, const cata_path &filename, const tripoint_abs_omt &om_addr,
+     std::list<tripoint_abs_sm> &submaps_to_delete, bool delete_after_save )
+ {
+-    std::vector<point_rel_sm> offsets;
+-    std::vector<tripoint_abs_sm> submap_addrs;
+-    offsets.reserve( 4 );
+-    submap_addrs.reserve( 4 );
+-    offsets.push_back( point_rel_sm::zero );
+-    offsets.push_back( point_rel_sm::south );
+-    offsets.push_back( point_rel_sm::east );
+-    offsets.push_back( point_rel_sm::south_east );
++    const std::array<point_rel_sm, 4> offsets = {
++        point_rel_sm::zero, point_rel_sm::south, point_rel_sm::east, point_rel_sm::south_east
++    };
++    const tripoint_abs_sm base_addr = project_to<coords::sm>( om_addr );
++    std::array<tripoint_abs_sm, 4> submap_addrs = {
++        base_addr, base_addr, base_addr, base_addr
++    };
++    std::size_t submap_index = 0;
+ 
+     bool all_uniform = true;
+     bool reverted_to_uniform = false;
+@@ -280,11 +284,11 @@ void mapbuffer::save_quad(
+         file_exists = std::filesystem::exists( filename.get_unrelative_path() );
+     }
+ 
+-    for( point_rel_sm &offsets_offset : offsets ) {
+-        tripoint_abs_sm submap_addr = project_to<coords::sm>( om_addr );
++    for( const point_rel_sm &offsets_offset : offsets ) {
++        tripoint_abs_sm submap_addr = base_addr;
+         submap_addr += offsets_offset.raw(); // TODO: Make += etc. available to relative parameters as well.
+-        submap_addrs.push_back( submap_addr );
++        submap_addrs[submap_index++] = submap_addr;
+         submap *sm = submaps[submap_addr].get();
+         if( sm != nullptr ) {
+             if( !sm->is_uniform() ) {
