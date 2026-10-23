@@ -8,10 +8,14 @@ from pathlib import Path
 repo = Path(__file__).resolve().parent.parent
 script = repo / "ci" / "link-fingerprint.sh"
 
-def fingerprint(cwd: Path, manifest: Path) -> str:
+def fingerprint(cwd: Path, manifest: Path, link_opt: str | None = None) -> str:
+    env = os.environ.copy()
+    if link_opt is not None:
+        env["CDDA_LINK_OPT"] = link_opt
     result = subprocess.run(
         ["bash", str(script), str(manifest)],
         cwd=cwd,
+        env=env,
         check=True,
         capture_output=True,
         text=True,
@@ -47,4 +51,7 @@ with tempfile.TemporaryDirectory(prefix="cdda-link-fingerprint-") as temp:
     changed_flags = fingerprint(cwd, manifest)
     assert changed_flags != changed_object, (changed_object, changed_flags)
 
-print("PASS link fingerprint: missing inputs are non-reusable; identical inputs stable; object/Makefile changes invalidate cache")
+    changed_link_opt = fingerprint(cwd, manifest, link_opt="O1")
+    assert changed_link_opt != changed_flags, (changed_flags, changed_link_opt)
+
+print("PASS link fingerprint: missing inputs are non-reusable; identical inputs stable; object/Makefile/link-opt changes invalidate cache")
