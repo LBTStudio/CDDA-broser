@@ -208,7 +208,10 @@
           for (const value of stored) {
             if (typeof value !== "string") continue;
             const profile = sanitize(value);
-            if (profile && !profiles.includes(profile)) profiles.push(profile);
+            // Profile names are stored only after canonicalization. A legacy
+            // or corrupted non-canonical entry must not be remapped to a
+            // different save directory on the user's behalf.
+            if (profile && profile === value && !profiles.includes(profile)) profiles.push(profile);
           }
           return profiles;
         } catch (e) { return []; }
