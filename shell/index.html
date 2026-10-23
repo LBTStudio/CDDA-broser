@@ -265,9 +265,63 @@
       profileInput.value = getLastProfile();
       renderProfileChips();
 
-      function startGame(profile) {
+      let profileLaunchPending = false;
+      function acquireProfileTabLock(profile) {
+        if (typeof navigator === "undefined" || !navigator.locks ||
+            typeof navigator.locks.request !== "function") {
+          return Promise.resolve(null);
+        }
+        // Hold an origin-wide exclusive Web Lock for the document lifetime.
+        // Do not release it on beforeunload: the user may cancel navigation.
+        return new Promise(resolve => {
+          let settled = false;
+          try {
+            const request = navigator.locks.request(
+              "cdda-broser-save-profile:" + profile,
+              { mode: "exclusive", ifAvailable: true },
+              lock => {
+                settled = true;
+                if (!lock) {
+                  resolve(false);
+                  return;
+                }
+                resolve(true);
+                // The browser releases this lock when the tab's document goes
+                // away. A never-settling callback keeps a second tab from
+                // opening the same IndexedDB-backed save tree concurrently.
+                return new Promise(() => {});
+              });
+            Promise.resolve(request).catch(error => {
+              console.warn("Could not reserve browser save profile.", error);
+              if (!settled) {
+                settled = true;
+                resolve(null);
+              }
+            });
+          } catch (error) {
+            console.warn("Could not reserve browser save profile.", error);
+            if (!settled) {
+              settled = true;
+              resolve(null);
+            }
+          }
+        });
+      }
+
+      async function startGame(profile) {
         // Every caller, including saved-profile chips, must pass a canonical ID.
-        if (!profile || sanitize(profile) !== profile) return;
+        if (!profile || sanitize(profile) !== profile || profileLaunchPending || booted) return;
+        profileLaunchPending = true;
+        const lockResult = await acquireProfileTabLock(profile);
+        if (lockResult !== true) {
+          profileLaunchPending = false;
+          if (lockResult === false) {
+            noticeMessage("このプロフィールは別のタブで起動中です。保存データの競合を防ぐため起動しません。 / This profile is already open in another tab; close it or choose another profile.");
+          } else {
+            noticeMessage("このブラウザではセーブの二重起動を安全に防止できません。最新のChrome/Edgeで開いてください。 / Exclusive save locks are unavailable. Open the game in a current Chrome/Edge browser.");
+          }
+          return;
+        }
         if (!getProfiles().includes(profile)) setProfiles(getProfiles().concat(profile));
         setLastProfile(profile);
         window.CDDA_PROFILE = profile;
@@ -286,14 +340,14 @@
         loadingMessage.style.display = "block";
         boot();
       }
-      profileStart.onclick = () => {
+      profileStart.onclick = async () => {
         const p = sanitize(profileInput.value);
         if (!p) {
           profileInput.placeholder = "1–24 ASCII letters, numbers, _ or -";
           noticeMessage("プロフィール名は1～24文字の英数字・_・-のみ使用できます。記号を削除して別プロフィールへ割り当てることはしません。 / Use 1–24 ASCII letters, numbers, _ or -. Spaces/symbols are rejected to prevent save-profile collisions.");
           return;
         }
-        startGame(p);
+        await startGame(p);
       };
       profileInput.addEventListener("keydown", (e) => { if (e.key === "Enter") profileStart.onclick(); });
 
