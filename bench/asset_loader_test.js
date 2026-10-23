@@ -19,7 +19,7 @@ assert(loaderSource.includes('URL.revokeObjectURL(objectUrl)'));
 
 async function testPersistentScriptLoader() {
   const cacheCalls = [], appended = [], revoked = [], blobSources = new Map();
-  let nextBlob = 0, forceCacheFailure = false, context;
+  let nextBlob = 0, forceCacheFailure = false, forceBlobExecutionFailure = false, context;
   const fakeURL = {
     createObjectURL(blob) {
       const uri = 'blob:test/' + (++nextBlob);
@@ -33,6 +33,10 @@ async function testPersistentScriptLoader() {
     body: { appendChild(script) {
       appended.push(script.src);
       if (script.src.startsWith('blob:')) {
+        if (forceBlobExecutionFailure) {
+          script.onerror();
+          return;
+        }
         blobSources.get(script.src).text().then(source => {
           vm.runInContext(source, context);
           script.onload();
@@ -61,6 +65,22 @@ async function testPersistentScriptLoader() {
   assert.equal(appended.length, 2);
   assert(appended.every(src => src.startsWith('blob:')), 'cached scripts must not require a network script URL');
   assert.equal(revoked.length, 2, 'temporary Blob URLs must be released after load');
+
+  // If execution of a pinned bundle script fails, do not load the mutable URL:
+  // it could have been deployed from a newer release than the selected WASM.
+  forceBlobExecutionFailure = true;
+  const beforePinnedFallback = appended.length;
+  await assert.rejects(
+    context.loadScript('cataclysm-tiles.js', {
+      text: async () => 'globalThis.loadedScripts = (globalThis.loadedScripts || []).concat("pinned");',
+    }, false),
+    /Could not execute cached script cataclysm-tiles.js/
+  );
+  assert.equal(appended.length, beforePinnedFallback + 1);
+  assert(appended.at(-1).startsWith('blob:'), 'pinned script failure must not request the mutable URL');
+  assert.equal(appended.includes('cataclysm-tiles.js'), false);
+  assert.equal(revoked.length, 3, 'failed pinned Blob URL must also be released');
+  forceBlobExecutionFailure = false;
 
   forceCacheFailure = true;
   await context.loadScript('cataclysm-tiles.js');
