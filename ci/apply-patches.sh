@@ -50,6 +50,7 @@ monster-snapshot
 item-snapshot
 gear-guide
 browser-runtime
+mapbuffer-fixed-arrays
 "
 
 for name in $PATCHES; do
@@ -271,6 +272,7 @@ fi
 # Dependencies: Python 3, g++ (C++17), Node.js 22 (available on ubuntu-latest).
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 python3 "$SCRIPT_DIR/../bench/runtime_efficiency_test.py" "$PWD"
+python3 "$SCRIPT_DIR/../bench/mapbuffer_fixed_array_test.py" "$PWD"
 python3 "$SCRIPT_DIR/../bench/monster_scan_test.py" "$PWD"
 python3 "$SCRIPT_DIR/../bench/monster_snapshot_test.py" "$PWD"
 python3 "$SCRIPT_DIR/../bench/item_snapshot_test.py" "$PWD"
