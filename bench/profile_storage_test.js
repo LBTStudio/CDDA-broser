@@ -77,7 +77,7 @@ function scenario({
     noticeMessage: message => notices.push(message),
     console: { warn() {} },
   };
-  vm.runInNewContext('let booted = false;\n' + source, context);
+  vm.runInNewContext(source, context);
   return { profileInput, profileList, profileStart, profileScreen, loadingMessage, window, data, notices, lockState, boots: () => boots };
 }
 
