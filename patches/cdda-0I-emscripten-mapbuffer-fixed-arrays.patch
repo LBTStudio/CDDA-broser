@@ -41,7 +41,7 @@ diff --git a/src/mapbuffer.cpp b/src/mapbuffer.cpp
  
      bool all_uniform = true;
      bool reverted_to_uniform = false;
-@@ -282,11 +285,11 @@ void mapbuffer::save_quad(
+@@ -282,10 +285,10 @@ void mapbuffer::save_quad(
          file_exists = std::filesystem::exists( filename.get_unrelative_path() );
      }
  
