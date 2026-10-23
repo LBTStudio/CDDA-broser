@@ -10,7 +10,7 @@ const end = html.indexOf('      // The software SDL backend', start);
 assert(start >= 0 && end > start, 'find the actual settings migration');
 const source = html.slice(start, end);
 
-function scenario({ optionsContent, marker = false, readFailure = false } = {}) {
+function scenario({ optionsContent, marker = false, readFailure = false, failMarkerWrite = false } = {}) {
   const configDir = '/home/player/.cataclysm-dda/config';
   const optionsPath = configDir + '/options.json';
   const markerPath = configDir + '/.web-ja-default-v3';
@@ -28,6 +28,7 @@ function scenario({ optionsContent, marker = false, readFailure = false } = {}) 
       return files.get(target);
     },
     writeFile(target, value) {
+      if (failMarkerWrite && target === markerPath) throw new Error('injected marker write quota failure');
       writes.push([target, value]);
       files.set(target, value);
     },
@@ -86,6 +87,23 @@ console.log('PASS config migration: malformed and wrong-shaped options are prese
   assert.deepEqual(JSON.parse(e.files.get(e.optionsPath)), [{ name: 'USE_LANG', value: 'ja' }]);
   assert.equal(e.files.get(e.markerPath), 'v3\n');
   console.log('PASS config migration: new profiles receive the Japanese default');
+}
+
+{
+  // If options.json is successfully modified but the migration marker cannot
+  // be written (e.g. quota pressure), the callback must still report a
+  // mutation so its caller schedules persistence for the options file.
+  const original = '[{"name":"USE_LANG","value":"en"},{"name":"CUSTOM","value":"keep"}]';
+  const e = scenario({ optionsContent: original, failMarkerWrite: true });
+  assert.equal(e.run(), true, 'updated options still require IDBFS persistence when marker write fails');
+  assert.deepEqual(JSON.parse(e.files.get(e.optionsPath)), [
+    { name: 'USE_LANG', value: 'ja' },
+    { name: 'CUSTOM', value: 'keep' },
+  ]);
+  assert.equal(e.files.has(e.markerPath), false, 'failed marker write must remain retryable');
+  assert.equal(e.writes.length, 1);
+  assert.equal(e.writes[0][0], e.optionsPath);
+  console.log('PASS config migration: marker write failure still reports modified options for persistence');
 }
 
 {
