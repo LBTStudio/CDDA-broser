@@ -384,7 +384,6 @@
       let assetCacheFallbackUsed = false;
       let assetReadCache = null;
       let activeAssetCacheName = "";
-      let activeAssetBundle = null;
       const pendingAssetCacheWrites = new Map();
 
       async function cachedAssetResponse(url, label) {
@@ -481,7 +480,6 @@
             if (active) {
               activeAssetCacheName = active.name;
               assetReadCache = active.cache;
-              activeAssetBundle = active;
               return active;
             }
             try { await meta.delete(ASSET_ACTIVE_KEY); } catch (_) {}
@@ -504,7 +502,6 @@
             if (!backup) continue;
             activeAssetCacheName = backup.name;
             assetReadCache = backup.cache;
-            activeAssetBundle = backup;
             try {
               const meta = await caches.open(ASSET_META_CACHE);
               await meta.put(ASSET_ACTIVE_KEY, new Response(name, {
@@ -527,13 +524,11 @@
         if (legacy) {
           activeAssetCacheName = legacy.name;
           assetReadCache = legacy.cache;
-          activeAssetBundle = legacy;
           return legacy;
         }
 
         activeAssetCacheName = "";
         assetReadCache = null;
-        activeAssetBundle = null;
         return null;
       }
 
@@ -580,12 +575,6 @@
           activated = true;
           activeAssetCacheName = stagingName;
           assetReadCache = staging;
-          activeAssetBundle = {
-            name: stagingName,
-            cache: staging,
-            assets: Object.fromEntries(await Promise.all(BOOT_ASSET_URLS.map(async url =>
-              [url, await staging.match(url)]))),
-          };
         } catch (e) {
           // A failed put/verification/pointer update only damages this staging
           // bucket. The last known-good bucket and active pointer stay untouched.
