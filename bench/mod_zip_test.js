@@ -178,12 +178,16 @@ function makeScenario({ entries, fileName = 'bundle.zip', fileSize = 1024,
   const notices = [];
   let persistCalls = 0;
   let arrayBufferReads = 0;
+  let loadAsyncCalls = 0;
   const gameModule = { FS: fakeFs };
   const context = {
     document: { getElementById(id) { assert.equal(id, 'mod-zip-input'); return input; } },
     window: { CDDA_PROFILE: 'audit', Module: gameModule },
     Module: gameModule,
-    JSZip: { loadAsync: async buffer => zipBytes ? RealJSZip.loadAsync(buffer) : makeZip(entries) },
+    JSZip: { loadAsync: async buffer => {
+      loadAsyncCalls++;
+      return zipBytes ? RealJSZip.loadAsync(buffer) : makeZip(entries);
+    } },
     booted: true,
     fsReady: () => true,
     modRoot: () => mods,
@@ -206,7 +210,10 @@ function makeScenario({ entries, fileName = 'bundle.zip', fileSize = 1024,
     input, dirs, files, operations, notices, root, mods,
     persistCalls: () => persistCalls,
     arrayBufferReads: () => arrayBufferReads,
+    loadAsyncCalls: () => loadAsyncCalls,
     async install() {
+      const emptyZip = new Uint8Array(22);
+      emptyZip.set([0x50, 0x4b, 0x05, 0x06]);
       const file = {
         name: fileName,
         size: fileSize,
@@ -214,7 +221,7 @@ function makeScenario({ entries, fileName = 'bundle.zip', fileSize = 1024,
           arrayBufferReads++;
           return zipBytes
             ? zipBytes.buffer.slice(zipBytes.byteOffset, zipBytes.byteOffset + zipBytes.byteLength)
-            : new ArrayBuffer(0);
+            : emptyZip.buffer;
         },
       };
       await input.handler({ target: { files: [file], value: fileName } });
@@ -391,6 +398,61 @@ function makeScenario({ entries, fileName = 'bundle.zip', fileSize = 1024,
     assert.equal(e.persistCalls(), 1);
     assert(e.notices.some(message => /failed|失敗/i.test(message)));
     console.log('PASS MOD ZIP atomic overwrite: failed directory swap restores prior MOD');
+  }
+
+  // A central directory with more than the allowed number of tiny entries must
+  // be rejected before JSZip constructs an object for every entry.
+  {
+    const tooManyZip = await (async () => {
+      const zip = new RealJSZip();
+      for (let i = 0; i < 20001; ++i) {
+        zip.file('entry-' + String(i).padStart(5, '0') + '.txt', '');
+      }
+      return zip.generateAsync({ type: 'uint8array', compression: 'STORE' });
+    })();
+    const e = makeScenario({
+      entries: [],
+      fileName: 'too-many-entries.zip',
+      fileSize: tooManyZip.byteLength,
+      zipBytes: tooManyZip,
+    });
+    await e.install();
+    assert.equal(e.arrayBufferReads(), 1, 'read the bounded archive bytes for the preflight scan');
+    assert.equal(e.loadAsyncCalls(), 0, 'reject entry floods before JSZip parsing');
+    assert.equal(e.persistCalls(), 0, 'rejected archive must not touch persistent storage');
+    assert(e.notices.some(message => /20000/.test(message) && /entry|エントリ/i.test(message)),
+      'the player must see the entry-count limit');
+    console.log('PASS real ZIP preflight: excessive central-directory entries rejected before JSZip parsing');
+
+    // Under-report the EOCD count while retaining all 20,001 central-directory
+    // records. The scanner must count the records rather than trust this field.
+    const forgedCountZip = new Uint8Array(tooManyZip);
+    const forgedView = new DataView(forgedCountZip.buffer);
+    let eocd = -1;
+    for (let offset = forgedCountZip.length - 22;
+         offset >= Math.max(0, forgedCountZip.length - 22 - 0xffff); --offset) {
+      if (forgedView.getUint32(offset, true) === 0x06054b50 &&
+          offset + 22 + forgedView.getUint16(offset + 20, true) === forgedCountZip.length) {
+        eocd = offset;
+        break;
+      }
+    }
+    assert(eocd >= 0, 'find EOCD to forge the declared entry count');
+    forgedView.setUint16(eocd + 8, 1, true);
+    forgedView.setUint16(eocd + 10, 1, true);
+    const forged = makeScenario({
+      entries: [],
+      fileName: 'underreported-entry-count.zip',
+      fileSize: forgedCountZip.byteLength,
+      zipBytes: forgedCountZip,
+    });
+    await forged.install();
+    assert.equal(forged.loadAsyncCalls(), 0,
+      'actual central-directory records must be counted when the EOCD count is forged');
+    assert.equal(forged.persistCalls(), 0);
+    assert(forged.notices.some(message => /20000/.test(message)),
+      'under-reported ZIP entry count must hit the same entry limit');
+    console.log('PASS real ZIP preflight: forged EOCD count cannot hide excessive central-directory entries');
   }
 
   // Exercise the actual bundled JSZip parser and its streaming API. Forge both
