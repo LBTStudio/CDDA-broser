@@ -198,7 +198,12 @@
       const LS_LAST = "cdda_web_last_profile";
 
       function sanitize(name) {
-        return name.trim().toLowerCase().replace(/[^a-z0-9_-]/g, "").slice(0, 24);
+        if (typeof name !== "string") return "";
+        const value = name.trim();
+        // Reject ambiguous input rather than deleting characters or truncating
+        // it into a different existing profile's save directory.
+        if (!/^[a-z0-9_-]{1,24}$/i.test(value)) return "";
+        return value.toLowerCase();
       }
       function getProfiles() {
         try {
@@ -261,7 +266,8 @@
       renderProfileChips();
 
       function startGame(profile) {
-        if (!profile) return;
+        // Every caller, including saved-profile chips, must pass a canonical ID.
+        if (!profile || sanitize(profile) !== profile) return;
         if (!getProfiles().includes(profile)) setProfiles(getProfiles().concat(profile));
         setLastProfile(profile);
         window.CDDA_PROFILE = profile;
@@ -282,7 +288,11 @@
       }
       profileStart.onclick = () => {
         const p = sanitize(profileInput.value);
-        if (!p) { profileInput.placeholder = "letters/numbers only"; profileInput.value = ""; return; }
+        if (!p) {
+          profileInput.placeholder = "1–24 ASCII letters, numbers, _ or -";
+          noticeMessage("プロフィール名は1～24文字の英数字・_・-のみ使用できます。記号を削除して別プロフィールへ割り当てることはしません。 / Use 1–24 ASCII letters, numbers, _ or -. Spaces/symbols are rejected to prevent save-profile collisions.");
+          return;
+        }
         startGame(p);
       };
       profileInput.addEventListener("keydown", (e) => { if (e.key === "Enter") profileStart.onclick(); });
