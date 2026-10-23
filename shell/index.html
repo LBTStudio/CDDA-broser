@@ -619,14 +619,11 @@
             }
           } catch (e) { /* optional */ }
 
-          /* Drop cache buckets from older shell versions so a naming bump
-             never strands ~200MB of unreachable data on a small disk. */
-          try {
-            const names = await caches.keys();
-            for (const name of names) {
-              if (name.indexOf("cdda-assets-") === 0 && name !== ASSET_CACHE) await caches.delete(name);
-            }
-          } catch (e) { /* optional */ }
+          /* Do not delete rollback data before a replacement snapshot has
+             actually been committed. v1 has no completeness marker and is
+             never eligible for offline fallback. */
+          try { await caches.delete("cdda-assets-v1"); } catch (e) { /* optional */ }
+          const previouslyCompleteBundle = await readCompleteCachedBundle();
 
           /* Select the four runtime assets as one release. A failed request
              must never combine a stale cached file with a fresh file from a
@@ -654,9 +651,8 @@
             // Ignore every candidate fetched during a partial network failure.
             // Only an explicitly completed cache bundle is safe for fallback.
             pendingAssetCacheWrites.clear();
-            const previousBundle = await readCompleteCachedBundle();
-            if (previousBundle) {
-              assetResponses = BOOT_ASSET_URLS.map(url => previousBundle[url]);
+            if (previouslyCompleteBundle) {
+              assetResponses = BOOT_ASSET_URLS.map(url => previouslyCompleteBundle.assets[url]);
               useCachedAssets = true;
               usedPreviousCompleteBundle = true;
               assetTags["cataclysm-tiles.data"] =
