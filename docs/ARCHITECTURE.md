@@ -192,7 +192,7 @@ visible at a glance without opening individual logs.
 | `mod-finalize-yield` | same 50ms budget for mod interactions, per-object JSON array dispatch, finalization and verification passes (the phases that run during world creation) |
 | `world-yield` | yields in `start_game` / `overmap::generate` / `place_specials` / mapgen so the deepest post-worldgen call chain cannot hold the main thread; a throttled yield inside `input_manager::pump_events` (SDL build) turns every upstream cooperative marker — map/overmap saving, JSON verification, world serialization, submap generation — into a real browser yield, which removes the "wait or leave page" dialog during post-worldgen finalization (throttle raised 50ms→250ms: each yield is a full Asyncify stack round trip and showed up as per-turn overhead during map movement); ui_manager's unconditional post-redraw `emscripten_sleep(1)` is throttled to ~30fps pacing for the same reason (the input wait loop's `SDL_Delay(1)` already yields after each keypress redraw, so responsiveness is unaffected); carries the web IME bridge in `sdltiles.cpp` — see "Japanese IME input" below — now including string-input-context gating: `input_context` registers itself on the (previously Android-only) `input_context_stack` on EMSCRIPTEN too, and `StartTextInput()` engages the browser IME proxy only when the top-of-stack category is `STRING_INPUT` / `STRING_EDITOR` / `HELP_KEYBINDINGS` (mirroring Android's `is_string_input`), so an active Japanese IME can no longer swallow movement keys during normal play |
 | `json-cache` | the stock flexbuffer disk caches (`<base>/cache`, `<data>/cache`) live in MEMFS on the web and vanish every page load, so every start re-parsed ~60MB of core JSON during "core loading / finalization"; redirect the base/data caches to `<user_dir>/json_cache/<data-package-tag>/` (inside the IDBFS mount, persisted like saves), run them in a new `assume_immutable_root` mode (packaged files get fresh, meaningless mtimes each load, so mtime staleness checks are skipped), and version the directory by the data package's HTTP ETag (`CDDA_DATA_VERSION` env exported by the shell; falls back to the game version string) — a game update starts a fresh cache and older tag directories are removed to bound IndexedDB usage |
-| `activity-and-ime` | **must be applied last** (it touches files the other patches also touch). Two halves. (1) *Activity throughput* — the yield primitives are centralized in new `src/cata_web_yield.{h,cpp}` and every ad-hoc `emscripten_sleep` site is converted to them, so a single policy governs how often the browser is given control. Measurement showed the dominant per-turn cost during long multi-turn activities (pulping, reading, crafting) was **`g->mon_info_update()` at 0.6170ms of a 0.8600ms turn = 71.7%**; it is now throttled to once per 16 game turns via `mon_info_update_throttled( bool force )`, with `force = !u.activity` so interactive play is untouched and only unattended activities are decimated. The yield interval likewise switches 16ms/100ms depending on whether an activity is running. Measured 31% faster reading/crafting. (2) *Text input* — new `src/cata_web_text_input.{h,cpp}` plus the `input_popup`/`string_input_popup`/`string_editor_window` changes make search-type fields report themselves as text-input contexts, which is what actually lets the browser IME reach them (see "Japanese IME input" below) |
+| `activity-and-ime` | **must be applied after the earlier loader/world patches** (it shares touched source files). Adds the common browser-yield primitives and Japanese IME/text-input scopes. Historical note: this patch initially carried a 16-game-turn throttle for `mon_info_update()`, but the later `runtime-efficiency` patch explicitly removes it because the function drives safemode and danger/distraction checks. The current applied source retains all three upstream `g->mon_info_update()` call sites; CI rejects `mon_info_update_throttled` / `mon_info_update_interval_turns`. Do not reintroduce or cite the old throttle as current behavior. The activity pace control is separate: normal mode adds waiting between turns; fast mode removes that wait but neither skips simulation turns nor changes the upstream activity-render cadence. (2) *Text input* — new `src/cata_web_text_input.{h,cpp}` and the popup/context changes allow browser IME to reach in-game text fields (see "Japanese IME input" below) |
 | `idbfs-debounce` | mount IDBFS at the profile's real user dir (`$HOME/.cataclysm-dda`, resolved at runtime) instead of the hardcoded `/home/web_user`; coalesce persistence into one debounced (250ms), serialized `FS.syncfs` instead of one transaction per file mutation; force-flush on `pagehide` / `visibilitychange: hidden` so ChromeOS tab discard cannot drop the last writes; expose a `window.CDDA_ON_IDBFS_MOUNTED(mountPoint)` hook so the shell can migrate config *after* the mount (an IDBFS mount shadows anything written there during preRun); `window.setFsNeedsSync` is defined *before* the first `await` because `filesystem.cpp` invokes it on every file mutation and character creation writes files while the initial restore is still pending (calling an undefined function was the "Exception thrown, see JavaScript console" hang); a failed IndexedDB mount now degrades to MEMFS and notifies the shell via `window.CDDA_ON_IDBFS_ERROR` instead of halting the game with an uncaught rejection |
 
 ## Memory / stack policy for 4GB devices (applied to the Makefile in CI)
@@ -248,27 +248,42 @@ visible at a glance without opening individual logs.
   engine implementation (kill_tracker XP accrual, upgrade prompts, scores UI,
   `STATS_THROUGH_KILLS` external option) is still present and functional.
 
-## Persistent asset cache (shell only, no engine change)
+## Persistent asset cache (shell only, no engine save-schema change)
 
-GitHub Pages serves everything with `cache-control: max-age=600` and no
-immutable variant, so the regular HTTP cache re-downloads the ~120MB
-(gzip-transfer) wasm+data pair on nearly every visit; low-disk Chromebooks
-evict it even sooner. The shell therefore:
-- stores `cataclysm-tiles.wasm` and `cataclysm-tiles.data` in Cache Storage
-  (`cdda-assets-v1`), which has no header-driven expiry, and requests
-  `navigator.storage.persist()` so the bucket (asset cache + IDBFS saves)
-  survives disk pressure;
-- revalidates with a conditional GET against the stored ETag on every boot:
-  HTTP 304 (or a network failure = offline) boots from cache, anything else
-  refreshes the cache — new deployments are picked up automatically with a
-  one-`If-None-Match` roundtrip;
-- hands the data package to the stock loader via `Module.getPreloadedPackage`
-  (dropping its own reference so the buffer is not retained twice) and the
-  wasm via `Module.instantiateWasm` + `WebAssembly.instantiateStreaming`,
-  overlapping disk read/download with compilation;
-- falls back per-asset to the stock XHR loader whenever Cache Storage,
-  fetch-streaming, or the quota is unavailable, so the fast path can never
-  make loading less reliable than before.
+The shell treats the four boot assets as one release: `cataclysm-tiles.data`,
+`cataclysm-tiles.wasm`, `cataclysm-tiles.data.js`, and
+`cataclysm-tiles.js`. The regular HTTP cache is short-lived, so the shell
+uses Cache Storage for repeat and offline starts. The active implementation is
+**versioned, immutable bundle snapshots** rather than the old mutable
+`cdda-assets-v1` bucket:
+
+- A candidate boot fetches all four assets and conditionally revalidates them
+  using each entry's ETag. A 304 reuses that exact cached entry; a changed
+  response is staged without overwriting the active snapshot.
+- A new `cdda-assets-bundle-v3-*` bucket becomes active only after all four
+  resources have been written and verified and the completion marker exists.
+  The active pointer is kept in `cdda-assets-meta-v3`. The current and previous
+  complete snapshots are retained for rollback; a partially failed deployment
+  never mixes new files with stale cached files.
+- If any candidate resource cannot be validated, the shell falls back to the
+  previous **complete four-file snapshot**, not per-asset cache leftovers.
+  If a cached WASM stream has to be retried, the retry ETag must match the
+  selected bundle's ETag. A missing or different ETag fails closed instead of
+  pairing a newer binary with older data or generated JavaScript.
+- The WASM is handed to `Module.instantiateWasm` and
+  `WebAssembly.instantiateStreaming`; the packaged data is passed once via
+  `Module.getPreloadedPackage` and the reference is released after use.
+  Generated JavaScript loaders are also fetched from the selected bundle and
+  executed from temporary Blob URLs when their loader hooks are active.
+- Cache Storage or quota failures do not invalidate the current online boot
+  when the downloaded asset bytes are usable, and a failed cache write leaves
+  the last known-good snapshot active. `navigator.storage.persist()` is best
+  effort only: rejection is handled, but the browser is not guaranteed to
+  grant persistent-storage protection.
+
+The v1 bucket is not a valid offline bundle because it has no completeness
+marker. The upgrade path only accepts the old v2 bucket when its complete
+bundle marker and all four resources are present.
 
 `-Werror` note: EM_ASM argument interpolation (`$0`/`$1`) trips
 `-Wdollar-in-identifier-extension` under the project's `-Wpedantic -Werror`;
@@ -311,14 +326,15 @@ Bridge (world-yield patch, sdltiles.cpp + shell):
 
 Per-player save isolation:
 The game resolves its user dir as getenv("HOME") + "/.cataclysm-dda/"
-(src/path_info.cpp, init_user_dir). The shell sets ENV.HOME=/home/<profile>
-during preRun, and the `idbfs-debounce` patch makes the IDBFS mount follow
-that same HOME instead of the upstream hardcoded `/home/web_user/.cataclysm-dda`.
-Before this fix the two paths disagreed, so per-profile saves landed on volatile
-MEMFS and were silently lost on reload. Now each player name gets an independent
-subtree on the IDBFS-backed persistent filesystem (IndexedDB), config migration
-runs via `CDDA_ON_IDBFS_MOUNTED` after the mount (so it is not shadowed), and
-the profile list lives in localStorage.
+(src/path_info.cpp, init_user_dir). The shell selects a canonical profile ID
+(1–24 ASCII letters, digits, `_` or `-`) and sets `ENV.HOME=/home/<profile>`
+before CDDA initializes paths. The `idbfs-debounce` patch mounts IndexedDB at
+that same profile-specific `$HOME/.cataclysm-dda`; older code pointed at a
+fixed `/home/web_user` path, so saves were silently left in volatile MEMFS.
+Profile IDs are rejected rather than punctuation-stripped or truncated into a
+different save directory. The profile list remains in localStorage, and the
+post-mount `CDDA_ON_IDBFS_MOUNTED` hook migrates config only after the real
+IndexedDB contents are visible.
 
 Error reporting: the shell never uses blocking `alert()`. Runtime aborts,
 uncaught exceptions, unhandled rejections and WebGL context loss all render a
