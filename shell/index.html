@@ -448,7 +448,6 @@
       }
 
       async function commitAssetCacheBatch() {
-        pendingAssetCacheWrites.forEach(() => {});
         let cache = null;
         try { cache = await caches.open(ASSET_CACHE); } catch (e) { /* optional storage */ }
         if (!cache) {
@@ -641,6 +640,8 @@
             await loadScriptDirect("cataclysm-tiles.js");
           }
         } catch (error) {
+          assetCacheBatchActive = false;
+          pendingAssetCacheWrites.clear();
           booted = false;
           console.error(error);
           loadingMessage.textContent =
