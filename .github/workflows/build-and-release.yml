@@ -601,11 +601,23 @@ jobs:
 
           cp shell/index.html cdda/build/index.html
 
+          # Export Saves and Install Mod must remain usable after the CDN's
+          # short-lived HTTP cache expires or the browser is offline.
+          mkdir -p cdda/build/vendor
+          cp shell/vendor/jszip-3.10.1.min.js cdda/build/vendor/
+          cp shell/vendor/FileSaver-2.0.0.min.js cdda/build/vendor/
+          cp shell/vendor/THIRD-PARTY-LICENSES.md cdda/build/vendor/
+          test -s cdda/build/vendor/jszip-3.10.1.min.js
+          test -s cdda/build/vendor/FileSaver-2.0.0.min.js
+          test -s cdda/build/vendor/THIRD-PARTY-LICENSES.md
+
+          grep -q "vendor/jszip-3.10.1.min.js" cdda/build/index.html
+          grep -q "vendor/FileSaver-2.0.0.min.js" cdda/build/index.html
           grep -q "showLoadProgress" cdda/build/index.html
           grep -q "compositionstart" cdda/build/index.html
           grep -q "compositionupdate" cdda/build/index.html
 
-          echo "独自 index.html への差し替えを確認しました"
+          echo "独自 index.html とオフライン対応ライブラリの同梱を確認しました"
 
       - name: Stage GitHub Pages site
         run: |
