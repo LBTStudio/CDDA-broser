@@ -346,8 +346,15 @@
          ETag still picks up new deployments automatically, and every failure
          path falls back to the stock Emscripten XHR loader, so this can only
          ever make loading faster, never break it. */
-      const ASSET_CACHE = "cdda-assets-v2";
-      const ASSET_BUNDLE_COMPLETE = "__cdda_bundle_complete_v2__";
+      /* Cache immutable release snapshots in separate buckets. Updating a
+         release must never overwrite the last known-good offline bundle until
+         every new object has been written and validated. */
+      const LEGACY_ASSET_CACHE = "cdda-assets-v2";
+      const LEGACY_ASSET_BUNDLE_COMPLETE = "__cdda_bundle_complete_v2__";
+      const ASSET_BUNDLE_PREFIX = "cdda-assets-bundle-v3-";
+      const ASSET_META_CACHE = "cdda-assets-meta-v3";
+      const ASSET_ACTIVE_KEY = "__cdda_active_bundle_v3__";
+      const ASSET_BUNDLE_COMPLETE = "__cdda_bundle_complete_v3__";
       const BOOT_ASSET_URLS = [
         "cataclysm-tiles.data", "cataclysm-tiles.wasm",
         "cataclysm-tiles.data.js", "cataclysm-tiles.js",
@@ -370,17 +377,18 @@
         }
         loadingMessage.textContent = "ダウンロード中 / Downloading: " + parts.join(" ・ ");
       }
-      /* Resolved content identity per asset URL.  The game runtime keys
-         its persisted JSON parse cache on the data package's identity, so
-         a game update invalidates stale parse results wholesale. */
+      /* Resolved content identity per asset URL. The game runtime keys its
+         persisted JSON parse cache on the data package's identity. */
       const assetTags = {};
       let assetCacheBatchActive = false;
       let assetCacheFallbackUsed = false;
+      let assetReadCache = null;
+      let activeAssetCacheName = "";
+      let activeAssetBundle = null;
       const pendingAssetCacheWrites = new Map();
 
       async function cachedAssetResponse(url, label) {
-        let cache = null;
-        try { cache = await caches.open(ASSET_CACHE); } catch (e) { /* http:// or blocked storage */ }
+        const cache = assetReadCache;
         let cached = null;
         if (cache) { try { cached = await cache.match(url); } catch (e) { cached = null; } }
         const condHeaders = {};
@@ -397,7 +405,7 @@
         }
         if (cached && (!net || !net.ok)) {
           // Never mix this older file with fresh files from the same release.
-          // boot() will select the last complete four-file bundle as a unit.
+          // boot() will select the last complete four-file snapshot as a unit.
           assetTags[url] = cachedTag;
           assetCacheFallbackUsed = true;
           return cached;
@@ -432,80 +440,155 @@
           "Content-Type": net.headers.get("Content-Type") || "application/octet-stream",
         };
         if (etag) storeHeaders["x-cdda-etag"] = etag;
-        if (cache) {
-          // Stage downloads until all four generated/runtime assets are resolved.
-          // A partial cache update must not survive as a mixed game release.
-          if (assetCacheBatchActive) {
-            pendingAssetCacheWrites.set(url, { body, headers: storeHeaders });
-          } else {
-            try {
-              await cache.delete(ASSET_BUNDLE_COMPLETE);
-              await cache.put(url, new Response(body, { headers: storeHeaders }));
-            } catch (e) { console.warn("Asset cache write failed (quota?):", e); }
-          }
+        // During boot, stage the new response in memory. The active cache
+        // bucket remains immutable; commitAssetCacheBatch creates a new bucket.
+        if (assetCacheBatchActive) {
+          pendingAssetCacheWrites.set(url, { body, headers: storeHeaders });
         }
         return new Response(body, { headers: storeHeaders });
       }
 
-      async function commitAssetCacheBatch() {
+      async function readBundleFromCache(name, markerKey) {
         let cache = null;
-        try { cache = await caches.open(ASSET_CACHE); } catch (e) { /* optional storage */ }
-        if (!cache) {
-          pendingAssetCacheWrites.clear();
-          return;
-        }
-        if (pendingAssetCacheWrites.size > 0) {
-          try {
-            // Invalidate the old completion marker before the first partial write.
-            await cache.delete(ASSET_BUNDLE_COMPLETE);
-            for (const [url, item] of pendingAssetCacheWrites) {
-              await cache.put(url, new Response(item.body, { headers: item.headers }));
-            }
-          } catch (e) {
-            try { await cache.delete(ASSET_BUNDLE_COMPLETE); } catch (_) {}
-            console.warn("Asset bundle cache update failed; offline bundle disabled:", e);
-            pendingAssetCacheWrites.clear();
-            return;
-          }
-        }
-        try {
-          const responses = await Promise.all(BOOT_ASSET_URLS.map(url => cache.match(url)));
-          if (responses.every(Boolean)) {
-            await cache.put(ASSET_BUNDLE_COMPLETE, new Response("complete-v2", {
-              headers: { "Content-Type": "text/plain" },
-            }));
-          } else {
-            await cache.delete(ASSET_BUNDLE_COMPLETE);
-          }
-        } catch (e) {
-          try { await cache.delete(ASSET_BUNDLE_COMPLETE); } catch (_) {}
-          console.warn("Could not validate complete asset cache:", e);
-        } finally {
-          pendingAssetCacheWrites.clear();
-        }
-      }
-
-      async function readCompleteCachedBundle() {
-        let cache = null;
-        try { cache = await caches.open(ASSET_CACHE); } catch (e) { return null; }
+        try { cache = await caches.open(name); } catch (e) { return null; }
         if (!cache) return null;
         try {
-          const marker = await cache.match(ASSET_BUNDLE_COMPLETE);
+          const marker = await cache.match(markerKey);
           if (!marker) return null;
           const responses = await Promise.all(BOOT_ASSET_URLS.map(url => cache.match(url)));
           if (!responses.every(Boolean)) {
-            await cache.delete(ASSET_BUNDLE_COMPLETE);
+            try { await cache.delete(markerKey); } catch (_) {}
             return null;
           }
-          const bundle = {};
-          BOOT_ASSET_URLS.forEach((url, i) => { bundle[url] = responses[i]; });
-          return bundle;
+          const assets = {};
+          BOOT_ASSET_URLS.forEach((url, i) => { assets[url] = responses[i]; });
+          return { name, cache, assets };
         } catch (e) {
-          console.warn("Could not read complete cached bundle:", e);
+          console.warn("Could not validate cached asset bundle:", name, e);
           return null;
         }
       }
 
+      async function readCompleteCachedBundle() {
+        // The active pointer is written only after a versioned bucket is
+        // complete. A failed update therefore leaves the previous pointer intact.
+        try {
+          const meta = await caches.open(ASSET_META_CACHE);
+          const pointer = await meta.match(ASSET_ACTIVE_KEY);
+          if (pointer) {
+            const name = await pointer.text();
+            const active = await readBundleFromCache(name, ASSET_BUNDLE_COMPLETE);
+            if (active) {
+              activeAssetCacheName = active.name;
+              assetReadCache = active.cache;
+              activeAssetBundle = active;
+              return active;
+            }
+            try { await meta.delete(ASSET_ACTIVE_KEY); } catch (_) {}
+          }
+        } catch (e) {
+          console.warn("Could not read active asset cache pointer:", e);
+        }
+
+        // Upgrade path: v2 bundles have a completion marker but shared mutable
+        // entries. Preserve one as rollback until a new v3 snapshot is active.
+        const legacy = await readBundleFromCache(
+          LEGACY_ASSET_CACHE, LEGACY_ASSET_BUNDLE_COMPLETE );
+        if (legacy) {
+          activeAssetCacheName = legacy.name;
+          assetReadCache = legacy.cache;
+          activeAssetBundle = legacy;
+          return legacy;
+        }
+
+        activeAssetCacheName = "";
+        assetReadCache = null;
+        activeAssetBundle = null;
+        return null;
+      }
+
+      async function commitAssetCacheBatch() {
+        if (pendingAssetCacheWrites.size === 0) {
+          // Every resource was validated by a 304 against the active snapshot.
+          // There is nothing new to write, and no cache mutation is necessary.
+          return;
+        }
+
+        const previousName = activeAssetCacheName;
+        const stagingName = ASSET_BUNDLE_PREFIX +
+          Date.now().toString().padStart(13, "0") + "-" +
+          Math.random().toString(36).slice(2, 9);
+        let staging = null;
+        let activated = false;
+        try {
+          staging = await caches.open(stagingName);
+          if (!staging) throw new Error("Could not open staging cache");
+          for (const url of BOOT_ASSET_URLS) {
+            const item = pendingAssetCacheWrites.get(url);
+            let response = null;
+            if (item) {
+              response = new Response(item.body, { headers: item.headers });
+            } else if (assetReadCache) {
+              response = await assetReadCache.match(url);
+            }
+            if (!response) {
+              throw new Error("Missing " + url + " while preparing the new asset bundle");
+            }
+            await staging.put(url, response);
+          }
+
+          await staging.put(ASSET_BUNDLE_COMPLETE, new Response("complete-v3", {
+            headers: { "Content-Type": "text/plain" },
+          }));
+          const verified = await Promise.all(BOOT_ASSET_URLS.map(url => staging.match(url)));
+          if (!verified.every(Boolean)) throw new Error("Staged asset bundle did not validate");
+
+          const meta = await caches.open(ASSET_META_CACHE);
+          await meta.put(ASSET_ACTIVE_KEY, new Response(stagingName, {
+            headers: { "Content-Type": "text/plain" },
+          }));
+          activated = true;
+          activeAssetCacheName = stagingName;
+          assetReadCache = staging;
+          activeAssetBundle = {
+            name: stagingName,
+            cache: staging,
+            assets: Object.fromEntries(await Promise.all(BOOT_ASSET_URLS.map(async url =>
+              [url, await staging.match(url)]))),
+          };
+        } catch (e) {
+          // A failed put/verification/pointer update only damages this staging
+          // bucket. The last known-good bucket and active pointer stay untouched.
+          if (!activated) {
+            try { await caches.delete(stagingName); } catch (_) {}
+          }
+          console.warn("Asset bundle cache update failed; previous bundle retained:", e);
+          return;
+        } finally {
+          pendingAssetCacheWrites.clear();
+        }
+
+        // Keep the current and immediately previous immutable buckets. This
+        // bounds storage while retaining rollback for one subsequent release.
+        try {
+          const names = await caches.keys();
+          const keep = new Set([stagingName, previousName]);
+          for (const name of names) {
+            if (name.startsWith(ASSET_BUNDLE_PREFIX) && !keep.has(name)) {
+              try { await caches.delete(name); } catch (_) {}
+            }
+          }
+          // Once a v3 snapshot replaces a v3 snapshot, two versioned copies
+          // exist and the mutable v2 bucket is no longer needed for rollback.
+          if (previousName.startsWith(ASSET_BUNDLE_PREFIX)) {
+            try { await caches.delete(LEGACY_ASSET_CACHE); } catch (_) {}
+          }
+          try { await caches.delete("cdda-assets-v1"); } catch (_) {}
+        } catch (e) {
+          console.warn("Asset cache cleanup failed:", e);
+        }
+      }
+      
       async function instantiateCachedWasm(response, imports) {
         if (typeof WebAssembly.instantiateStreaming === "function" &&
             response.headers.get("Content-Type") === "application/wasm") {
