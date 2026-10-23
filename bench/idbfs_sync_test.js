@@ -313,20 +313,50 @@ const cases = [
   ['actual shell keeps failure visible and clears it only on recovery', async () => {
     const html = fs.readFileSync(path.join(__dirname, '../shell/index.html'), 'utf8');
     assert(html.includes('id="save-warning" role="status" aria-live="polite" hidden'));
-    const begin = html.indexOf('      const saveWarning =');
+    const begin = html.indexOf('      let cddaFilesystemReady = false;');
     const finish = html.indexOf('      /* ---- Mod installer:', begin);
-    assert(begin >= 0 && finish > begin);
-    const warning = { hidden: true, textContent: '' }, window = {};
-    vm.runInNewContext(html.slice(begin, finish), { window,
-      document: { getElementById: () => warning }, console: { warn() {} }, noticeMessage() {} });
-    window.CDDA_ON_IDBFS_SYNC_STATE(true, '<script>unsafe</script>');
+    const readyStart = html.indexOf('      function fsReady() {', finish);
+    const readyEnd = html.indexOf('      function requestPersist()', readyStart);
+    assert(begin >= 0 && finish > begin && readyStart > finish && readyEnd > readyStart);
+    const mountedSource = html.slice(begin, finish) + '\\n' +
+      html.slice(readyStart, readyEnd) + '\\nglobalThis.testFsReady = fsReady;';
+    const warning = { hidden: true, textContent: '' };
+    function makeContext() {
+      const window = { Module: { FS: {} } };
+      const context = {
+        window, Module: window.Module, FS: {},
+        booted: true, rendererMode: { value: 'game' },
+        migrateJapaneseDefault: () => false,
+        applyWebRenderer: () => false,
+        document: { getElementById: () => warning },
+        console: { warn() {}, error() {} }, noticeMessage() {},
+      };
+      vm.runInNewContext(mountedSource, context);
+      return context;
+    }
+    const readyContext = makeContext();
+    assert.equal(readyContext.testFsReady(), false,
+      'Module.FS existing is insufficient while IDBFS restore is still running');
+    readyContext.window.CDDA_ON_IDBFS_SYNC_STATE(true, '<script>unsafe</script>');
     assert.equal(warning.hidden, false);
     assert(warning.textContent.includes('Export Saves'));
     assert(!warning.textContent.includes('<script>'));
-    window.CDDA_ON_IDBFS_SYNC_STATE(false, '');
+    readyContext.window.CDDA_ON_IDBFS_SYNC_STATE(false, '');
     assert.equal(warning.hidden, true); assert.equal(warning.textContent, '');
-    window.CDDA_ON_IDBFS_ERROR('mount failure');
+    readyContext.window.CDDA_ON_IDBFS_MOUNTED('/home/a/.cataclysm-dda');
+    assert.equal(readyContext.testFsReady(), true,
+      'successful restore makes save and MOD filesystem operations available');
+
+    const failedContext = makeContext();
+    failedContext.window.CDDA_ON_IDBFS_ERROR('mount failure');
     assert.equal(warning.hidden, false); assert(warning.textContent.includes('Export Saves'));
+    assert.equal(failedContext.testFsReady(), true,
+      'failed IDBFS restore safely enables the volatile MEMFS fallback');
+    const exportStart = html.indexOf('document.getElementById("export-saves").onclick = async () =>');
+    const exportEnd = html.indexOf('/* Migrate the prior English default', exportStart);
+    assert(exportStart >= 0 && exportEnd > exportStart);
+    assert(html.slice(exportStart, exportEnd).includes('if (!fsReady())'),
+      'save export must be gated on the same filesystem readiness state');
   }],
 ];
 (async () => {
