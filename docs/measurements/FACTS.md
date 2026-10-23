@@ -1662,16 +1662,24 @@ wasm-ld → wasm-emscripten-finalize → wasm-opt
   ordered by job completion time**」
 - 「A maximum of 20 job summaries from steps are displayed per job」
 
-**現状の実装は壊れている**:
-`manual/build-and-release.yml` の `plan` ジョブで
-Markdown の表ヘッダ（`| 工程 | 対象 | 所要 | 成果物 |`）を書き、
-`compile`/`link`/`data`/`bundle` の各ジョブが行だけを追記していた。
+**当時の実装には問題があった（2026-10-24 の監査で再修正）**:
+以前の `manual/build-and-release.yml` は、`plan` ジョブで Markdown の表ヘッダ
+（`| 工程 | 対象 | 所要 | 成果物 |`）を書き、別ジョブと共有できない
+`GITHUB_STEP_SUMMARY` に工程行を追記する設計だった。その結果、ヘッダのない行が
+別々のジョブサマリーに分かれ、完成した表としては表示されなかった。
 
-ジョブを越えて共有されないので、
-**ヘッダの無い `| … |` 行が、しかも完了時刻順（＝不定順）に並ぶ**。
-表として描画されない。
+後のワークフローでは工程行を追記する処理自体がなくなっていたのに、
+空の表ヘッダだけが残っていた。今回、空の表を「各工程の実行ログ」案内へ置き換え、
+手動置き換え用 `manual/build-and-release.yml` を本番
+`.github/workflows/build-and-release.yml` と完全一致させ、回帰テストで同期を検証する。
 
-→ **各ジョブが自分でヘッダを含む完結したブロックを書く**しかない。
+同じ再監査では別の重大なキャッシュ問題も見つかった。リンクキャッシュの指紋を
+コンパイル前の `plan` ジョブで計算していたため、`link-fingerprint.sh` が
+`incomplete-<timestamp>` を返し、同一入力でもリンク結果キャッシュが再利用されなかった。
+指紋計算を `link` ジョブ内の全 `.o` の取得・個数検証後へ移し、実際の
+Emscripten／Binaryen を設定した後にキーを作る。入力が欠けていればリンクとキャッシュ利用を
+止める。再現テストは、不完全入力の拒否、同一入力のキー安定性、オブジェクトと Makefile
+変更でのキー無効化を確認する。
 
 ### F-22-5. 一般則（今回得た教訓）
 
