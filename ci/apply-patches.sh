@@ -284,6 +284,7 @@ node "$SCRIPT_DIR/../bench/idbfs_sync_test.js" "$PWD"
 node "$SCRIPT_DIR/../bench/profile_storage_test.js"
 node "$SCRIPT_DIR/../bench/mod_zip_test.js"
 bash "$SCRIPT_DIR/../bench/run_all_status_test.sh"
+python3 "$SCRIPT_DIR/../bench/link_cache_fingerprint_test.py"
 python3 "$SCRIPT_DIR/../bench/workflow_safety_test.py"
 
-echo "[VERIFY] OK: パッチ適用・ランタイム・IME・保存・MOD ZIP・ベンチ終了状態・公開ガードの回帰テストが合格"
+echo "[VERIFY] OK: パッチ適用・ランタイム・IME・保存・MOD ZIP・ベンチ終了状態・リンクキャッシュ・ワークフロー同期/公開ガードの回帰テストが合格"

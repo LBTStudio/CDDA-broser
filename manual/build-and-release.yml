@@ -27,7 +27,7 @@ name: Build CDDA 0.I WebAssembly
 #   ・リンク結果をキャッシュ化（入力が同じなら 4 時間省略）
 #   ・リンク最適化レベルを切り替え可能に（配信用 O2 / 検証用 O1）
 #
-# 【ジョブの依存���係】
+# 【ジョブの依存関係】
 #
 #     plan ────┬──> compile (N並列) ──> link ──┐
 #              │                                ├──> bundle ──> deploy
@@ -63,6 +63,18 @@ on:
         options:
           - "O2"
           - "O1"
+      runtime_backend:
+        description: "asyncify=公開用 / jspi=実験用・deploy_pages=false必須"
+        required: false
+        default: "asyncify"
+        type: choice
+        options:
+          - "asyncify"
+          - "jspi"
+
+env:
+  CDDA_RUNTIME_BACKEND: ${{ inputs.runtime_backend || 'asyncify' }}
+  CDDA_EMSDK_VERSION: ${{ inputs.runtime_backend == 'jspi' && '4.0.15' || '3.1.51' }}
 
 permissions:
   contents: read
@@ -85,9 +97,14 @@ jobs:
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
       cache_key: ${{ steps.plan.outputs.cache_key }}
-      link_cache_key: ${{ steps.plan.outputs.link_cache_key }}
 
     steps:
+      - name: Reject experimental JSPI deployment
+        if: ${{ inputs.runtime_backend == 'jspi' && inputs.deploy_pages != false }}
+        run: |
+          echo "::error::JSPI is experimental and must not be deployed to GitHub Pages. Set deploy_pages=false." >&2
+          exit 1
+
       - name: Checkout wrapper repository
         uses: actions/checkout@v4
 
@@ -112,11 +129,18 @@ jobs:
       - name: Setup emsdk (for wasm-opt --version)
         uses: mymindstorm/setup-emsdk@v14
         with:
-          version: 3.1.51
+          version: ${{ env.CDDA_EMSDK_VERSION }}
+
+      - name: Prime JSPI SDL dependency variants
+        if: ${{ inputs.runtime_backend == 'jspi' }}
+        run: |
+          source "$EMSDK/emsdk_env.sh"
+          embuilder build freetype harfbuzz sdl2_ttf sdl2_image
 
       # 【重要】Binaryen 差し替えを指紋計算の前に実行する
       # これがないと、116 と 132 のキャッシュが混ざる
       - name: Replace wasm-opt with Binaryen 132
+        if: ${{ inputs.runtime_backend != 'jspi' }}
         run: |
           set -euo pipefail
           source "$EMSDK/emsdk_env.sh"
@@ -133,15 +157,10 @@ jobs:
           echo "matrix=$( cat ../shard-plan/matrix.json )" >> "$GITHUB_OUTPUT"
 
           # ccache のキャッシュキーに使うハッシュ
-          cache_key="$( cat ../patches/*.patch ../ci/*.sh | sha256sum | cut -c1-16 )"
+          cache_key="$( { printf '%s\n' "$CDDA_RUNTIME_BACKEND" "$CDDA_EMSDK_VERSION"; cat ../patches/*.patch ../ci/*.sh; } | sha256sum | cut -c1-16 )"
           echo "cache_key=${cache_key}" >> "$GITHUB_OUTPUT"
           echo "キャッシュキー: ${cache_key}"
 
-          # 【重要】リンク結果のキャッシュキーを計算
-          # 入力（.o + リンク引数）が同じなら、wasm を再生成せず過去のものを再利用する
-          link_fingerprint="$( bash ../ci/link-fingerprint.sh ../shard-plan/objs-all.txt )"
-          echo "link_cache_key=${link_fingerprint}" >> "$GITHUB_OUTPUT"
-          echo "リンク結果キャッシュ: ${link_fingerprint}"
 
       - name: Upload shard plan
         uses: actions/upload-artifact@v4
@@ -166,12 +185,14 @@ jobs:
             echo "| 項目 | 値 |"
             echo "|---|---|"
             echo "| レベル | ${{ inputs.link_opt }} |"
+            echo "| Runtime | $CDDA_RUNTIME_BACKEND |"
+            echo "| Emscripten | $CDDA_EMSDK_VERSION |"
+            echo "| 注意 | JSPIは検証用成果物のみ。実ゲームの高速化率は未測定 |"
             echo "| 効果 | ${{ inputs.link_opt == 'O1' && '約 53 分（-78%）' || '約 3h14m（-20%）' }} |"
             echo ""
-            echo "## 各工程の実測"
+            echo "## 各工程の実行ログ"
             echo ""
-            echo "| 工程 | 対象 | 所要 | 成果物 |"
-            echo "|---|---|---|---|"
+            echo "各工程の所要時間・成果物は、下の計画／コンパイル／リンク／データ同梱／組み立て／公開ジョブのログを参照してください。"
           } >> "$GITHUB_STEP_SUMMARY"
 
   # ==================================================================
@@ -238,7 +259,13 @@ jobs:
       - name: Setup emsdk
         uses: mymindstorm/setup-emsdk@v14
         with:
-          version: 3.1.51
+          version: ${{ env.CDDA_EMSDK_VERSION }}
+
+      - name: Prime JSPI SDL dependency variants
+        if: ${{ inputs.runtime_backend == 'jspi' }}
+        run: |
+          source "$EMSDK/emsdk_env.sh"
+          embuilder build freetype harfbuzz sdl2_ttf sdl2_image
 
       - name: Restore ccache
         uses: actions/cache@v4
@@ -283,6 +310,7 @@ jobs:
     timeout-minutes: 90
 
     steps:
+
       - name: Checkout wrapper repository
         uses: actions/checkout@v4
 
@@ -307,7 +335,13 @@ jobs:
       - name: Setup emsdk
         uses: mymindstorm/setup-emsdk@v14
         with:
-          version: 3.1.51
+          version: ${{ env.CDDA_EMSDK_VERSION }}
+
+      - name: Prime JSPI SDL dependency variants
+        if: ${{ inputs.runtime_backend == 'jspi' }}
+        run: |
+          source "$EMSDK/emsdk_env.sh"
+          embuilder build freetype harfbuzz sdl2_ttf sdl2_image
 
       - name: Pack game data with Japanese translation
         working-directory: cdda
@@ -383,8 +417,8 @@ jobs:
           echo "見つかった .o: ${found} 個"
           echo "期待する数:    ${expected} 個"
 
-          if [ "$found" -eq 0 ]; then
-            echo "ERROR: obj/ 以下に .o が 1 個もありません。" >&2
+          if [ "$expected" -eq 0 ] || [ "$found" -ne "$expected" ]; then
+            echo "ERROR: .o の数が一致しません（検出 ${found} / 期待 ${expected}）。キャッシュ判定・リンクを中止します。" >&2
             exit 1
           fi
 
@@ -413,14 +447,34 @@ jobs:
       - name: Setup emsdk
         uses: mymindstorm/setup-emsdk@v14
         with:
-          version: 3.1.51
+          version: ${{ env.CDDA_EMSDK_VERSION }}
+
+      - name: Prime JSPI SDL dependency variants
+        if: ${{ inputs.runtime_backend == 'jspi' }}
+        run: |
+          source "$EMSDK/emsdk_env.sh"
+          embuilder build freetype harfbuzz sdl2_ttf sdl2_image
 
       # 【重要】Binaryen 差し替えを実施（指紋計算と同じ場所で）
       - name: Replace wasm-opt with Binaryen 132
+        if: ${{ inputs.runtime_backend != 'jspi' }}
         run: |
           set -euo pipefail
           source "$EMSDK/emsdk_env.sh"
           bash ./ci/setup-binaryen.sh
+
+      - name: Fingerprint complete link inputs
+        id: link_fingerprint
+        working-directory: cdda
+        run: |
+          set -euo pipefail
+          fingerprint="$( bash ../ci/link-fingerprint.sh ../shard-plan/objs-all.txt )"
+          if [[ "$fingerprint" == incomplete-* ]]; then
+            echo "::error::Link inputs are incomplete; refusing to use a cached linker artifact." >&2
+            exit 1
+          fi
+          echo "key=${fingerprint}" >> "$GITHUB_OUTPUT"
+          echo "Link fingerprint: ${fingerprint}"
 
       - name: Restore ccache
         uses: actions/cache@v4
@@ -446,7 +500,7 @@ jobs:
           path: |
             cdda/cataclysm-tiles.js
             cdda/cataclysm-tiles.wasm
-          key: wasm-link-${{ needs.plan.outputs.link_cache_key }}
+          key: wasm-link-${{ steps.link_fingerprint.outputs.key }}
 
       - name: Link WebAssembly (if not cached)
         if: steps.link_cache.outputs.cache-hit != 'true'
@@ -592,7 +646,7 @@ jobs:
   # ==================================================================
   deploy:
     name: Deploy to GitHub Pages
-    if: ${{ inputs.deploy_pages != false }}
+    if: ${{ inputs.deploy_pages != false && inputs.runtime_backend != 'jspi' }}
     needs: bundle
     runs-on: ubuntu-latest
 

@@ -97,7 +97,6 @@ jobs:
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
       cache_key: ${{ steps.plan.outputs.cache_key }}
-      link_cache_key: ${{ steps.plan.outputs.link_cache_key }}
 
     steps:
       - name: Reject experimental JSPI deployment
@@ -162,11 +161,6 @@ jobs:
           echo "cache_key=${cache_key}" >> "$GITHUB_OUTPUT"
           echo "キャッシュキー: ${cache_key}"
 
-          # 【重要】リンク結果のキャッシュキーを計算
-          # 入力（.o + リンク引数）が同じなら、wasm を再生成せず過去のものを再利用する
-          link_fingerprint="$( bash ../ci/link-fingerprint.sh ../shard-plan/objs-all.txt )"
-          echo "link_cache_key=${link_fingerprint}" >> "$GITHUB_OUTPUT"
-          echo "リンク結果キャッシュ: ${link_fingerprint}"
 
       - name: Upload shard plan
         uses: actions/upload-artifact@v4
@@ -196,10 +190,9 @@ jobs:
             echo "| 注意 | JSPIは検証用成果物のみ。実ゲームの高速化率は未測定 |"
             echo "| 効果 | ${{ inputs.link_opt == 'O1' && '約 53 分（-78%）' || '約 3h14m（-20%）' }} |"
             echo ""
-            echo "## 各工程の実測"
+            echo "## 各工程の実行ログ"
             echo ""
-            echo "| 工程 | 対象 | 所要 | 成果物 |"
-            echo "|---|---|---|---|"
+            echo "各工程の所要時間・成果物は、下の計画／コンパイル／リンク／データ同梱／組み立て／公開ジョブのログを参照してください。"
           } >> "$GITHUB_STEP_SUMMARY"
 
   # ==================================================================
@@ -424,8 +417,8 @@ jobs:
           echo "見つかった .o: ${found} 個"
           echo "期待する数:    ${expected} 個"
 
-          if [ "$found" -eq 0 ]; then
-            echo "ERROR: obj/ 以下に .o が 1 個もありません。" >&2
+          if [ "$expected" -eq 0 ] || [ "$found" -ne "$expected" ]; then
+            echo "ERROR: .o の数が一致しません（検出 ${found} / 期待 ${expected}）。キャッシュ判定・リンクを中止します。" >&2
             exit 1
           fi
 
@@ -470,6 +463,19 @@ jobs:
           source "$EMSDK/emsdk_env.sh"
           bash ./ci/setup-binaryen.sh
 
+      - name: Fingerprint complete link inputs
+        id: link_fingerprint
+        working-directory: cdda
+        run: |
+          set -euo pipefail
+          fingerprint="$( bash ../ci/link-fingerprint.sh ../shard-plan/objs-all.txt )"
+          if [[ "$fingerprint" == incomplete-* ]]; then
+            echo "::error::Link inputs are incomplete; refusing to use a cached linker artifact." >&2
+            exit 1
+          fi
+          echo "key=${fingerprint}" >> "$GITHUB_OUTPUT"
+          echo "Link fingerprint: ${fingerprint}"
+
       - name: Restore ccache
         uses: actions/cache@v4
         with:
@@ -494,7 +500,7 @@ jobs:
           path: |
             cdda/cataclysm-tiles.js
             cdda/cataclysm-tiles.wasm
-          key: wasm-link-${{ needs.plan.outputs.link_cache_key }}
+          key: wasm-link-${{ steps.link_fingerprint.outputs.key }}
 
       - name: Link WebAssembly (if not cached)
         if: steps.link_cache.outputs.cache-hit != 'true'
