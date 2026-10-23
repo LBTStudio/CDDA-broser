@@ -44,6 +44,7 @@ async function testPersistentScriptLoader() {
   };
   context = vm.createContext({
     Blob, URL: fakeURL, document,
+    Module: { getPreloadedPackage() {}, instantiateWasm() {} },
     console: { warn() {} },
     async cachedAssetResponse(url, label) {
       cacheCalls.push({ url, label });
@@ -64,7 +65,13 @@ async function testPersistentScriptLoader() {
   forceCacheFailure = true;
   await context.loadScript('cataclysm-tiles.js');
   assert.equal(appended.at(-1), 'cataclysm-tiles.js', 'retain the normal URL fallback if cache retrieval fails');
-  console.log('PASS persistent script loader: both generated JS files use Cache Storage; direct URL fallback and Blob cleanup work');
+  context.Module.instantiateWasm = undefined;
+  forceCacheFailure = false;
+  const cacheCallsBeforeStockFallback = cacheCalls.length;
+  await context.loadScript('cataclysm-tiles.js');
+  assert.equal(appended.at(-1), 'cataclysm-tiles.js', 'stock Emscripten loader must retain the original sibling-asset URL');
+  assert.equal(cacheCalls.length, cacheCallsBeforeStockFallback, 'stock loader path must not fetch a Blob script');
+  console.log('PASS persistent script loader: offline cache, direct fallback, stock sibling URLs, and Blob cleanup');
 }
 const wasmBytes = Uint8Array.from([0, 97, 115, 109, 1, 0, 0, 0]);
 const dataBytes = Uint8Array.from([10, 20, 30, 40]);
