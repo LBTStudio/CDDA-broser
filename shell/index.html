@@ -226,8 +226,12 @@
         }
       }
       function getLastProfile() {
-        try { return sanitize(localStorage.getItem(LS_LAST) || ""); }
-        catch (e) { return ""; }
+        try {
+          const stored = localStorage.getItem(LS_LAST) || "";
+          // startGame() always stores a canonical name. Do not silently map
+          // corrupted/stale data such as "../other" onto another save profile.
+          return stored && sanitize(stored) === stored ? stored : "";
+        } catch (e) { return ""; }
       }
       function setLastProfile(profile) {
         try { localStorage.setItem(LS_LAST, profile); }
