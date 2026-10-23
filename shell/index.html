@@ -778,12 +778,12 @@
           const modDirs = [];
           const zipFiles = [];
           const zipPaths = new Set();
-          let invalidPath = null;
+          let invalidPathFound = false;
           zip.forEach((relPath, entry) => {
             if (entry.dir) return;
             const safePath = safeZipPath(relPath);
             if (!safePath || zipPaths.has(safePath)) {
-              invalidPath = relPath;
+              invalidPathFound = true;
               return;
             }
             zipPaths.add(safePath);
@@ -793,7 +793,7 @@
               modDirs.push(parts.slice(0, -1).join("/"));
             }
           });
-          if (invalidPath !== null) {
+          if (invalidPathFound) {
             noticeMessage("ZIPに危険なパス、または重複する保存先があります。MODは導入していません。 / Unsafe or duplicate paths in ZIP; no mods were installed.");
             return;
           }
@@ -830,6 +830,10 @@
             handled.add(prefix);
             const target = root + "/" + dirName;
             const targetExists = fs.analyzePath(target).exists;
+            if (targetExists && !fs.isDir(fs.stat(target).mode)) {
+              errors.push(dirName + ": target path exists but is not a MOD directory");
+              continue;
+            }
             if (targetExists && !confirm('Mod "' + dirName + '" already exists. Overwrite?\n（同名のMODを上書きします）')) continue;
 
             const prefixSlash = prefix ? prefix + "/" : "";
