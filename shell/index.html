@@ -578,9 +578,10 @@
               try { await caches.delete(name); } catch (_) {}
             }
           }
-          // Once a v3 snapshot replaces a v3 snapshot, two versioned copies
-          // exist and the mutable v2 bucket is no longer needed for rollback.
-          if (previousName.startsWith(ASSET_BUNDLE_PREFIX)) {
+          // Keep v2 only when it was the previous complete bundle. If there
+          // was no marked v2 bundle, any remaining v2 entries are legacy debris
+          // and must not occupy scarce disk space indefinitely.
+          if (previousName !== LEGACY_ASSET_CACHE) {
             try { await caches.delete(LEGACY_ASSET_CACHE); } catch (_) {}
           }
           try { await caches.delete("cdda-assets-v1"); } catch (_) {}
