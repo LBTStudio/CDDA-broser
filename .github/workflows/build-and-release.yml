@@ -468,7 +468,7 @@ jobs:
         working-directory: cdda
         run: |
           set -euo pipefail
-          fingerprint="$( bash ../ci/link-fingerprint.sh ../shard-plan/objs-all.txt )"
+          fingerprint="$( CDDA_LINK_OPT="${{ inputs.link_opt }}" bash ../ci/link-fingerprint.sh ../shard-plan/objs-all.txt )"
           if [[ "$fingerprint" == incomplete-* ]]; then
             echo "::error::Link inputs are incomplete; refusing to use a cached linker artifact." >&2
             exit 1
