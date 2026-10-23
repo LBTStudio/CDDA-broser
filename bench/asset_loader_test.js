@@ -76,8 +76,10 @@ for (const [dirty, pending] of [[false, false], [true, false], [false, true], [t
   const window = { game_unsaved: dirty, cdda_persistence_pending: pending };
   vm.runInNewContext(unloadLine, { window });
   let warned = false;
-  window.onbeforeunload({ preventDefault() { warned = true; } });
+  const event = { returnValue: '', preventDefault() { warned = true; } };
+  window.onbeforeunload(event);
   assert.equal(warned, dirty || pending);
+  assert.equal(event.returnValue, dirty || pending ? true : '');
 }
 console.log('PASS live activity preference: default, persistence, unavailable storage, key isolation, pending-save exit warning');
 
@@ -195,7 +197,11 @@ function environment(options = {}) {
       } });
     },
     loadingMessage: { textContent: '' },
-    navigator: { storage: { persist() { return Promise.resolve(true); } } },
+    navigator: { storage: { persist() {
+      if (options.persistThrow) throw new Error('storage shelf unavailable');
+      if (options.persistReject) return Promise.reject(new Error('persistence denied'));
+      return Promise.resolve(true);
+    } } },
     Module: module,
     showFatalError() { ++fatal; },
     async loadScript(name) {
@@ -275,6 +281,22 @@ async function completeBoot(env) {
     await completeBoot(offlineBoot);
     assert.equal(offlineBoot.counts().receives, 1);
     console.log('PASS fully cached offline boot');
+
+    const unhandledRejections = [];
+    const onUnhandledRejection = reason => unhandledRejections.push(reason);
+    process.on('unhandledRejection', onUnhandledRejection);
+    try {
+      for (const options of [{ persistReject: true }, { persistThrow: true }]) {
+        const env = environment(options);
+        await completeBoot(env);
+        await new Promise(resolve => setTimeout(resolve, 0));
+        assert.equal(env.counts().fatal, 0, 'optional storage-persistence denial must not abort boot');
+      }
+      assert.deepEqual(unhandledRejections, [], 'optional storage-persistence failures must be handled');
+    } finally {
+      process.off('unhandledRejection', onUnhandledRejection);
+    }
+    console.log('PASS optional storage.persist rejection/throw does not become a fatal or unhandled error');
 
     for (const options of [{ noCache: true }, { brokenStream: true }, { httpError: true }]) {
       const env = environment(options);
