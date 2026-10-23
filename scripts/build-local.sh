@@ -3,6 +3,7 @@
 set -euxo pipefail
 CDDA_TAG="${CDDA_TAG:-0.I}"
 EMSDK_VERSION="${EMSDK_VERSION:-3.1.51}"
+WRAPPER_ROOT="$( cd "$( dirname "${BASH_SOURCE[0]}" )/.." && pwd )"
 WORKDIR="${WORKDIR:-$PWD/cdda-web-workdir}"
 mkdir -p "$WORKDIR" && cd "$WORKDIR"
 [ -d emsdk ] || git clone --depth 1 https://github.com/emscripten-core/emsdk.git
@@ -13,5 +14,18 @@ source ./emsdk/emsdk_env.sh
 cd Cataclysm-DDA
 make -j"$(nproc)" NATIVE=emscripten BACKTRACE=0 TILES=1 TESTS=0 RUNTESTS=0 RELEASE=1 CCACHE=0 LINTJSON=0 cataclysm-tiles.js
 bash build-scripts/prepare-web.sh
+
+# Keep the local output behavior aligned with the GitHub Pages bundle. The
+# stock upstream index lacks this project's per-profile saves and browser UI.
+cp "$WRAPPER_ROOT/shell/index.html" build/index.html
+mkdir -p build/vendor
+cp "$WRAPPER_ROOT/shell/vendor/jszip-3.10.1.min.js" build/vendor/
+cp "$WRAPPER_ROOT/shell/vendor/FileSaver-2.0.0.min.js" build/vendor/
+cp "$WRAPPER_ROOT/shell/vendor/THIRD-PARTY-LICENSES.md" build/vendor/
+test -s build/index.html
+test -s build/vendor/jszip-3.10.1.min.js
+test -s build/vendor/FileSaver-2.0.0.min.js
+test -s build/vendor/THIRD-PARTY-LICENSES.md
+
 echo "Done. Static site in: $(pwd)/build"
-echo "NOTE: replace build/index.html with this repo's shell/index.html for per-player save profiles."
+echo "Per-player saves, save export, and MOD ZIP tools use the wrapper's custom shell and same-origin vendor libraries."
