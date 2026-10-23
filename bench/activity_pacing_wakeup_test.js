@@ -29,7 +29,7 @@ const normalMode = vm.runInNewContext(expression, { wake_on_mouse_move: false })
 const defaultMode = vm.runInNewContext(expression, { wake_on_mouse_move: true });
 assert(!normalMode.includes('mousemove'), 'pacing wait must ignore pointer movement');
 assert(defaultMode.includes('mousemove'), 'ordinary UI wait must still wake on pointer movement');
-assert.deepEqual(normalMode.slice().sort(), defaultMode.filter(e => e !== 'mousemove').sort(),
+assert.deepEqual(Array.from(normalMode).sort(), Array.from(defaultMode).filter(e => e !== 'mousemove').sort(),
   'mouse move is the only event filtered for pacing');
 for (const input of ['keydown', 'keyup', 'mousedown', 'mouseup', 'wheel', 'touchstart', 'touchend', 'input', 'compositionend']) {
   assert(normalMode.includes(input), 'real user input still wakes pacing: ' + input);
