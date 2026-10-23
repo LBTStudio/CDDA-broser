@@ -1047,6 +1047,18 @@
         const file = ev.target.files && ev.target.files[0];
         ev.target.value = "";
         if (!file) return;
+        // ZIP parsing and expanded file buffers compete with the game WASM
+        // heap. Bound both the compressed archive and its declared expansion
+        // before reading any entry into MEMFS; ZIP bombs and huge local files
+        // must not be able to freeze/crash low-memory Chromebooks.
+        const MAX_MOD_ZIP_BYTES = 128 * 1024 * 1024;
+        const MAX_MOD_ZIP_EXPANDED_BYTES = 256 * 1024 * 1024;
+        const MAX_MOD_ZIP_ENTRY_BYTES = 64 * 1024 * 1024;
+        const MAX_MOD_ZIP_ENTRIES = 20000;
+        if (!Number.isSafeInteger(file.size) || file.size <= 0 || file.size > MAX_MOD_ZIP_BYTES) {
+          noticeMessage("MOD ZIPが空か、圧縮サイズ上限128 MiBを超えています。 / ZIP is empty or exceeds the 128 MiB archive limit.");
+          return;
+        }
         try {
           noticeMessage("MODを展開しています... / Unpacking mod...");
           const zip = await JSZip.loadAsync(await file.arrayBuffer());
@@ -1071,8 +1083,37 @@
           const zipFiles = [];
           const zipPaths = new Set();
           let invalidPathFound = false;
+          let resourceLimitFound = false;
+          let resourceLimitReason = "";
+          let entryCount = 0;
+          let expandedBytes = 0;
           zip.forEach((relPath, entry) => {
+            entryCount++;
+            if (entryCount > MAX_MOD_ZIP_ENTRIES) {
+              resourceLimitFound = true;
+              resourceLimitReason = "more than 20000 ZIP entries";
+              return;
+            }
             if (entry.dir) return;
+            // JSZip 3.10.1 exposes parsed sizes on its CompressedObject.
+            // Refuse unknown/malformed sizes rather than decompressing first.
+            const uncompressedBytes = entry && entry._data && entry._data.uncompressedSize;
+            if (!Number.isSafeInteger(uncompressedBytes) || uncompressedBytes < 0) {
+              resourceLimitFound = true;
+              resourceLimitReason = "an entry has an unknown or invalid expanded size";
+              return;
+            }
+            if (uncompressedBytes > MAX_MOD_ZIP_ENTRY_BYTES) {
+              resourceLimitFound = true;
+              resourceLimitReason = "a file exceeds the 64 MiB per-file expansion limit";
+              return;
+            }
+            expandedBytes += uncompressedBytes;
+            if (!Number.isSafeInteger(expandedBytes) || expandedBytes > MAX_MOD_ZIP_EXPANDED_BYTES) {
+              resourceLimitFound = true;
+              resourceLimitReason = "total expanded size exceeds 256 MiB";
+              return;
+            }
             const safePath = safeZipPath(relPath);
             if (!safePath || zipPaths.has(safePath)) {
               invalidPathFound = true;
@@ -1085,6 +1126,12 @@
               modDirs.push(parts.slice(0, -1).join("/"));
             }
           });
+          if (resourceLimitFound) {
+            noticeMessage("MOD ZIPの展開上限を超えています（" + resourceLimitReason +
+              "）。導入前に中止しました。 / ZIP resource limit exceeded (" +
+              resourceLimitReason + "); no mods were installed.");
+            return;
+          }
           if (invalidPathFound) {
             noticeMessage("ZIPに危険なパス、または重複する保存先があります。MODは導入していません。 / Unsafe or duplicate paths in ZIP; no mods were installed.");
             return;

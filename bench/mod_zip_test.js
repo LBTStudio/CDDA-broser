@@ -18,6 +18,11 @@ function makeZip(entries) {
       for (const item of entries) {
         callback(item.path, {
           dir: !!item.dir,
+          _data: {
+            uncompressedSize: Number.isSafeInteger(item.uncompressedSize)
+              ? item.uncompressedSize
+              : new TextEncoder().encode(item.content || '').byteLength,
+          },
           async: async () => {
             if (item.error) throw new Error('injected decompression failure');
             return new TextEncoder().encode(item.content || '').buffer;
@@ -28,7 +33,8 @@ function makeZip(entries) {
   };
 }
 
-function makeScenario({ entries, fileName = 'bundle.zip', initialFiles = [], failInstallRename = '' }) {
+function makeScenario({ entries, fileName = 'bundle.zip', fileSize = 1024,
+                      initialFiles = [], failInstallRename = '' }) {
   const dirs = new Set();
   const files = new Map();
   const operations = [];
@@ -143,6 +149,7 @@ function makeScenario({ entries, fileName = 'bundle.zip', initialFiles = [], fai
   const input = { addEventListener(name, callback) { assert.equal(name, 'change'); input.handler = callback; } };
   const notices = [];
   let persistCalls = 0;
+  let arrayBufferReads = 0;
   const gameModule = { FS: fakeFs };
   const context = {
     document: { getElementById(id) { assert.equal(id, 'mod-zip-input'); return input; } },
@@ -170,8 +177,13 @@ function makeScenario({ entries, fileName = 'bundle.zip', initialFiles = [], fai
   return {
     input, dirs, files, operations, notices, root, mods,
     persistCalls: () => persistCalls,
+    arrayBufferReads: () => arrayBufferReads,
     async install() {
-      const file = { name: fileName, arrayBuffer: async () => new ArrayBuffer(0) };
+      const file = {
+        name: fileName,
+        size: fileSize,
+        arrayBuffer: async () => { arrayBufferReads++; return new ArrayBuffer(0); },
+      };
       await input.handler({ target: { files: [file], value: fileName } });
     },
   };
@@ -223,6 +235,64 @@ function makeScenario({ entries, fileName = 'bundle.zip', initialFiles = [], fai
     assert.equal(e.persistCalls(), 0);
     assert(e.notices.some(message => /unsafe|安全|重複|duplicate|directory name/i.test(message)), testCase.name + ': show a safe rejection message');
     console.log('PASS MOD ZIP safety: ' + testCase.name);
+  }
+
+  // Archive and expansion limits are checked before any MOD directory is written.
+  {
+    const e = makeScenario({
+      fileName: 'too-large.zip',
+      fileSize: 128 * 1024 * 1024 + 1,
+      entries: [{ path: 'main/modinfo.json', content: '[{"type":"MOD_INFO","id":"main"}]' }],
+    });
+    await e.install();
+    assert.equal(e.arrayBufferReads(), 0, 'oversized archive must be rejected before allocating its bytes');
+    assert.equal(e.operations.length, 0);
+    assert.equal(e.persistCalls(), 0);
+    assert(e.notices.some(message => message.includes('128 MiB')));
+    console.log('PASS MOD ZIP resource limits: oversized archive rejected before reading bytes');
+  }
+
+  {
+    const entries = [
+      { path: 'main/modinfo.json', content: '[{"type":"MOD_INFO","id":"main"}]' },
+      { path: 'main/huge.bin', content: 'small fixture', uncompressedSize: 64 * 1024 * 1024 + 1 },
+    ];
+    const e = makeScenario({ entries });
+    await e.install();
+    assert.equal(e.operations.length, 0, 'oversized entry must be rejected before writing staging files');
+    assert.equal(e.persistCalls(), 0);
+    assert(e.notices.some(message => message.includes('64 MiB')));
+    console.log('PASS MOD ZIP resource limits: oversized expanded entry rejected before extraction');
+  }
+
+  {
+    const entries = [
+      { path: 'main/modinfo.json', content: '[{"type":"MOD_INFO","id":"main"}]' },
+      ...Array.from({ length: 5 }, (_, i) => ({
+        path: 'main/large-' + i + '.bin',
+        content: 'small fixture',
+        uncompressedSize: 60 * 1024 * 1024,
+      })),
+    ];
+    const e = makeScenario({ entries });
+    await e.install();
+    assert.equal(e.operations.length, 0, 'aggregate expansion over limit must be rejected before filesystem changes');
+    assert.equal(e.persistCalls(), 0);
+    assert(e.notices.some(message => message.includes('256 MiB')));
+    console.log('PASS MOD ZIP resource limits: aggregate expanded size capped before extraction');
+  }
+
+  {
+    const entries = Array.from({ length: 20001 }, (_, i) => ({
+      path: 'many/file-' + i + '.json',
+      content: '{}',
+    }));
+    const e = makeScenario({ entries });
+    await e.install();
+    assert.equal(e.operations.length, 0, 'too many ZIP entries must be rejected without filesystem mutation');
+    assert.equal(e.persistCalls(), 0);
+    assert(e.notices.some(message => message.includes('20000')));
+    console.log('PASS MOD ZIP resource limits: excessive entry count rejected');
   }
 
   {
