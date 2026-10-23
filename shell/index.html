@@ -305,7 +305,15 @@
          supplied by Module.instantiateWasm / getPreloadedPackage below.
          Keep the normal URL loader as a CSP/storage fallback. */
       async function loadScript(src) {
-        const label = src.endsWith(".data.js") ? "データローダー" : "JavaScript本体";
+        const isDataLoader = src.endsWith(".data.js");
+        const hasPreloadedPayload = isDataLoader
+          ? typeof Module !== "undefined" && typeof Module.getPreloadedPackage === "function"
+          : typeof Module !== "undefined" && typeof Module.instantiateWasm === "function";
+        // The generated loaders derive sibling paths from document.currentScript.
+        // Blob URLs are safe only when their payload overrides are installed;
+        // otherwise preserve the original URL for the stock Emscripten loader.
+        if (!hasPreloadedPayload) return loadScriptDirect(src);
+        const label = isDataLoader ? "データローダー" : "JavaScript本体";
         let objectUrl = "";
         try {
           const response = await cachedAssetResponse(src, label);
