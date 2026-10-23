@@ -972,8 +972,8 @@
         }, 6000);
       }
       document.getElementById("export-saves").onclick = async () => {
-        if (!window.Module || !Module.FS || !booted) {
-          noticeMessage("ゲーム起動後にお使いください。 / Start the game first, then export.");
+        if (!fsReady()) {
+          noticeMessage("セーブ領域の復元が終わってからエクスポートしてください。 / Wait until the save filesystem has finished loading, then export.");
           return;
         }
         try {
@@ -1067,12 +1067,20 @@
          would be shadowed by the mount.  This hook (called by the patched
          runtime right after syncfs(true)) is the first moment the real
          persistent config is visible.  Returning true persists changes. */
+      // Module.FS exists before the asynchronous IndexedDB restore finishes.
+      // Mark the save tree ready only after restore + optional config migration;
+      // if persistence is unavailable, the error hook marks MEMFS ready instead.
+      let cddaFilesystemReady = false;
       window.CDDA_ON_IDBFS_MOUNTED = function (mountPoint) {
         const fs = Module.FS || FS;
         const configDir = mountPoint + "/config";
-        const languageChanged = migrateJapaneseDefault(fs, configDir);
-        const rendererChanged = applyWebRenderer(fs, configDir, rendererMode.value);
-        return languageChanged || rendererChanged;
+        try {
+          const languageChanged = migrateJapaneseDefault(fs, configDir);
+          const rendererChanged = applyWebRenderer(fs, configDir, rendererMode.value);
+          return languageChanged || rendererChanged;
+        } finally {
+          cddaFilesystemReady = true;
+        }
       };
 
       /* Persistence errors stay visible until all pending writes succeed.
@@ -1089,6 +1097,9 @@
          pressure, private browsing, corrupted DB).  The game continues on
          in-memory storage; make that visible instead of failing silently. */
       window.CDDA_ON_IDBFS_ERROR = function (detail) {
+        // The runtime falls back to volatile MEMFS after a failed restore.
+        // It is safe to use/export that in-memory tree, although it will not persist.
+        cddaFilesystemReady = true;
         saveWarning.hidden = false;
         saveWarning.textContent = "ブラウザ保存を利用できません。再読み込み・終了前にExport Savesでバックアップしてください。 / Browser persistence unavailable; export a backup before leaving.";
         console.warn("IDBFS unavailable:", detail);
@@ -1110,7 +1121,7 @@
         return "/home/" + profile + "/.cataclysm-dda/mods";
       }
       function fsReady() {
-        return booted && window.Module && Module.FS;
+        return !!(booted && window.Module && Module.FS && cddaFilesystemReady);
       }
       function requestPersist() {
         if (typeof window.setFsNeedsSync === "function") window.setFsNeedsSync();
