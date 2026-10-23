@@ -335,7 +335,10 @@ function environment(options = {}) {
     },
     async loadScriptDirect(name) { return context.loadScript(name); },
   });
-  vm.runInContext('let booted = false;\n' + code +
+  vm.runInContext('let booted = false;\n' +
+    // The isolated cache-loader VM excludes the separate save-warning UI block.
+    // Stub its side effect here; that block has its own dedicated regression test.
+    'function requestStorageProtection() { return Promise.resolve(true); }\n' + code +
     '\nglobalThis.api = {cachedAssetResponse, instantiateCachedWasm, boot, assetTags, readCompleteCachedBundle, commitAssetCacheBatch, get activeAssetCacheName() { return activeAssetCacheName; }};', context);
   return {
     api: context.api, entries, cacheBuckets, requests, module, warnings, errors, loadingMessage, options,

@@ -800,13 +800,11 @@
           /* Ask the browser to shield our storage bucket from eviction.
              This protects the cached assets above AND the IDBFS save data.
              Denial is fine; everything still works, just less durably. */
-          try {
-            if (navigator.storage && navigator.storage.persist) {
-              // A denied/rejected persistence request is optional; it must
-              // never become an unhandled rejection that trips the fatal UI.
-              Promise.resolve(navigator.storage.persist()).catch(() => {});
-            }
-          } catch (e) { /* optional */ }
+          // This is best-effort, but a denied request matters for save durability:
+          // keep the game playable and show a persistent backup warning instead.
+          requestStorageProtection().catch(error => {
+            console.warn("Could not update persistent-storage status:", error);
+          });
 
           /* Do not delete rollback data before a replacement snapshot has
              actually been committed. v1 has no completeness marker and is
@@ -1092,13 +1090,57 @@
         }
       };
 
-      /* Persistence errors stay visible until all pending writes succeed.
-         A transient toast could disappear while the save is still at risk. */
+      /* Keep independent causes of reduced durability separate so a successful
+         sync cannot hide a denied persistent-storage request. */
       const saveWarning = document.getElementById("save-warning");
+      let cddaStorageProtectionGranted = null;
+      let cddaSyncFailure = false;
+      let cddaFilesystemUnavailable = false;
+
+      function updateSaveWarning() {
+        const messages = [];
+        if (cddaFilesystemUnavailable) {
+          messages.push("ブラウザ保存を利用できません。再読み込み・終了前にExport Savesでバックアップしてください。 / Browser persistence unavailable; export a backup before leaving.");
+        } else {
+          if (cddaSyncFailure) {
+            messages.push("セーブのブラウザ保存に失敗しました。自動再試行中です。再読み込み・終了をせず、Export Savesでバックアップしてください。 / Save sync failed; retrying. Export a backup before leaving.");
+          }
+          if (cddaStorageProtectionGranted === false) {
+            messages.push("ブラウザのストレージ保護が許可されていません。ストレージ整理でセーブが削除される可能性があります。定期的にExport Savesでバックアップしてください。 / Persistent-storage protection was not granted; browser cleanup may evict saves. Export backups regularly.");
+          }
+        }
+        saveWarning.hidden = messages.length === 0;
+        saveWarning.textContent = messages.join(" ");
+      }
+
+      window.CDDA_ON_STORAGE_PERSIST = function (granted) {
+        cddaStorageProtectionGranted = granted === true;
+        updateSaveWarning();
+      };
+
+      function requestStorageProtection() {
+        try {
+          if (navigator.storage && typeof navigator.storage.persist === "function") {
+            return Promise.resolve(navigator.storage.persist()).then(
+              granted => { window.CDDA_ON_STORAGE_PERSIST(granted === true); },
+              error => {
+                console.warn("Persistent storage protection request failed:", error);
+                window.CDDA_ON_STORAGE_PERSIST(false);
+              }
+            );
+          }
+          window.CDDA_ON_STORAGE_PERSIST(false);
+          return Promise.resolve(false);
+        } catch (error) {
+          console.warn("Persistent storage protection request failed:", error);
+          window.CDDA_ON_STORAGE_PERSIST(false);
+          return Promise.resolve(false);
+        }
+      }
+
       window.CDDA_ON_IDBFS_SYNC_STATE = function (failed, detail) {
-        saveWarning.hidden = !failed;
-        saveWarning.textContent = failed ?
-          "セーブのブラウザ保存に失敗しました。自動再試行中です。再読み込み・終了をせず、Export Savesでバックアップしてください。 / Save sync failed; retrying. Export a backup before leaving." : "";
+        cddaSyncFailure = !!failed;
+        updateSaveWarning();
         if (failed) console.warn("IDBFS sync failed:", detail);
       };
 
@@ -1109,8 +1151,8 @@
         // The runtime falls back to volatile MEMFS after a failed restore.
         // It is safe to use/export that in-memory tree, although it will not persist.
         cddaFilesystemReady = true;
-        saveWarning.hidden = false;
-        saveWarning.textContent = "ブラウザ保存を利用できません。再読み込み・終了前にExport Savesでバックアップしてください。 / Browser persistence unavailable; export a backup before leaving.";
+        cddaFilesystemUnavailable = true;
+        updateSaveWarning();
         console.warn("IDBFS unavailable:", detail);
         noticeMessage(
           "\u6ce8\u610f: \u3053\u306e\u30d6\u30e9\u30a6\u30b6\u3067\u306f\u30bb\u30fc\u30d6\u3092\u4fdd\u5b58\u3067\u304d\u307e\u305b\u3093\uff08\u518d\u8aad\u307f\u8fbc\u307f\u3067\u6d88\u3048\u307e\u3059\uff09\u3002 / " +
