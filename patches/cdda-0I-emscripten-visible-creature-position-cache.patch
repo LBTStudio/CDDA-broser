@@ -1,0 +1,35 @@
+CDDA 0.I: reuse creature positions in the visible-creature filter.
+
+The visibility check is called from the turn loop. Its predicate repeatedly
+converts the observer's absolute position and each target's position even
+though those coordinates cannot change during this synchronous query. Keep
+the same filter order and LOS call, but compute each position at most once per
+non-self candidate. The observer position is initialized lazily so an empty
+candidate set does not add a conversion.
+
+diff --git a/src/character.cpp b/src/character.cpp
+--- a/src/character.cpp
++++ b/src/character.cpp
+@@ -10624,9 +10624,17 @@ std::vector<Creature *> Character::get_visible_creatures( const int range ) const
+ {
+     const map &here = get_map();
+ 
+-    return g->get_creatures_if( [this, range, &here]( const Creature & critter ) -> bool {
+-        return this != &critter && pos_abs() != critter.pos_abs() &&
+-        rl_dist( pos_abs(), critter.pos_abs() ) <= range && sees( here, critter );
++    tripoint_abs_ms observer_pos;
++    bool observer_pos_initialized = false;
++    return g->get_creatures_if( [this, range, &here, &observer_pos,
++                                &observer_pos_initialized]( const Creature & critter ) -> bool {
++        if( this == &critter ) {
++            return false;
++        }
++        if( !observer_pos_initialized ) {
++            observer_pos = pos_abs();
++            observer_pos_initialized = true;
++        }
++        const tripoint_abs_ms critter_pos = critter.pos_abs();
++        return observer_pos != critter_pos &&
++               rl_dist( observer_pos, critter_pos ) <= range && sees( here, critter );
+     } );
+ }
