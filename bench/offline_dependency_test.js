@@ -56,6 +56,28 @@ assert(helperSource.includes('cache.put(url'));
 assert(helperSource.includes('new Blob([source]'));
 assert(helperSource.includes('URL.revokeObjectURL(objectUrl)'));
 
+function smokeTestActualVendoredLibraries() {
+  const libraryContext = vm.createContext({
+    console, Blob, URL, Response, TextEncoder, TextDecoder,
+    setTimeout, clearTimeout, setInterval, clearInterval,
+    setImmediate, clearImmediate,
+    navigator: { userAgent: 'Mozilla/5.0 Chrome/120.0' },
+    document: {
+      title: 'CDDA',
+      body: { innerText: 'CDDA', appendChild() {} },
+      createElement() { return { style: {}, click() {}, setAttribute() {} }; },
+    },
+  });
+  libraryContext.window = libraryContext;
+  libraryContext.self = libraryContext;
+  libraryContext.global = libraryContext;
+  vm.runInContext(fs.readFileSync(jszipPath, 'utf8'), libraryContext, { timeout: 5000 });
+  assert.equal(typeof libraryContext.JSZip, 'function', 'vendored JSZip must export the expected global');
+  vm.runInContext(fs.readFileSync(saverPath, 'utf8'), libraryContext, { timeout: 5000 });
+  assert.equal(typeof libraryContext.saveAs, 'function', 'vendored FileSaver must export saveAs');
+}
+smokeTestActualVendoredLibraries();
+
 async function makeEnvironment({ offline = false, cacheAvailable = true, bucket = new Map() } = {}) {
   let fetchCalls = 0;
   let objectId = 0;
@@ -63,6 +85,16 @@ async function makeEnvironment({ offline = false, cacheAvailable = true, bucket 
   const revoked = [];
   const errors = [];
   let context;
+  class FakeURL extends URL {}
+  FakeURL.createObjectURL = blob => {
+    const url = 'blob:utility/' + (++objectId);
+    objectUrls.set(url, blob);
+    return url;
+  };
+  FakeURL.revokeObjectURL = url => {
+    revoked.push(url);
+    objectUrls.delete(url);
+  };
   const cache = {
     async match(url) {
       const saved = bucket.get(url);
@@ -70,17 +102,6 @@ async function makeEnvironment({ offline = false, cacheAvailable = true, bucket 
     },
     async put(url, response) {
       bucket.set(url, { text: await response.text(), headers: [...response.headers] });
-    },
-  };
-  const fakeURL = {
-    createObjectURL(blob) {
-      const url = 'blob:utility/' + (++objectId);
-      objectUrls.set(url, blob);
-      return url;
-    },
-    revokeObjectURL(url) {
-      revoked.push(url);
-      objectUrls.delete(url);
     },
   };
   const document = {
@@ -102,7 +123,7 @@ async function makeEnvironment({ offline = false, cacheAvailable = true, bucket 
     },
   };
   context = vm.createContext({
-    Blob, Response, URL: fakeURL, document,
+    Blob, Response, URL: FakeURL, document,
     console: { warn() { }, error() { } },
     caches: {
       async open(name) {
