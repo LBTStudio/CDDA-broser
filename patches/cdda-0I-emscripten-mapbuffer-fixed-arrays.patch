@@ -16,7 +16,7 @@ diff --git a/src/mapbuffer.cpp b/src/mapbuffer.cpp
  #include <chrono>
  #include <cstddef>
  #include <exception>
-@@ -246,12 +247,12 @@ void mapbuffer::save_quad(
+@@ -246,14 +247,14 @@ void mapbuffer::save_quad(
      const cata_path &dirname, const cata_path &filename, const tripoint_abs_omt &om_addr,
      std::list<tripoint_abs_sm> &submaps_to_delete, bool delete_after_save )
  {
