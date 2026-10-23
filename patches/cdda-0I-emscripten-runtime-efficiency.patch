@@ -137,7 +137,7 @@ Synthetic work counts are NOT proof of native-equivalent game performance.
 
 +// Idle input wait: wake on real browser input, with a bounded fallback for
 +// gamepads and events queued internally by SDL. Never consumes an event.
-+void wait_for_input( int timeout_ms );
++void wait_for_input( int timeout_ms, bool wake_on_mouse_move = true );
 +
  /**
   * 描画フレームを 1 枚確実に挟んでから戻る（requestAnimationFrame 待ち）。
@@ -175,12 +175,12 @@ Synthetic work counts are NOT proof of native-equivalent game performance.
 +} );
 +
 +// Bubble after existing SDL listeners; never consume or reissue input.
-+EM_ASYNC_JS( void, cata_web_wait_input_impl, ( int timeout_ms ), {
++EM_ASYNC_JS( void, cata_web_wait_input_impl, ( int timeout_ms, int wake_on_mouse_move ), {
 +    await new Promise( function( resolve ) {
-+        var events = ["keydown", "keyup", "mousedown", "mouseup", "mousemove",
-+                      "wheel", "touchstart", "touchend", "input",
-+                      "compositionupdate", "compositionend", "focusin", "focusout",
-+                      "resize", "visibilitychange"];
++        var events = ["keydown", "keyup", "mousedown", "mouseup", "wheel",
++                      "touchstart", "touchend", "input", "compositionupdate",
++                      "compositionend", "focusin", "focusout", "resize",
++                      "visibilitychange"].concat( wake_on_mouse_move ? ["mousemove"] : [] );
 +        var finished = false;
 +        var timer;
 +        var wake = function() {
@@ -217,13 +217,13 @@ Synthetic work counts are NOT proof of native-equivalent game performance.
 +    yield_in_progress = false;
 +}
 +
-+void wait_for_input( const int timeout_ms )
++void wait_for_input( const int timeout_ms, const bool wake_on_mouse_move )
 +{
 +    if( yield_in_progress ) {
 +        return;
 +    }
 +    yield_in_progress = true;
-+    cata_web_wait_input_impl( timeout_ms );
++    cata_web_wait_input_impl( timeout_ms, wake_on_mouse_move );
 +    last_browser_yield_ms = emscripten_get_now();
      yield_in_progress = false;
  }
