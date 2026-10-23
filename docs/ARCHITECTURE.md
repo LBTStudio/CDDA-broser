@@ -332,9 +332,13 @@ before CDDA initializes paths. The `idbfs-debounce` patch mounts IndexedDB at
 that same profile-specific `$HOME/.cataclysm-dda`; older code pointed at a
 fixed `/home/web_user` path, so saves were silently left in volatile MEMFS.
 Profile IDs are rejected rather than punctuation-stripped or truncated into a
-different save directory. The profile list remains in localStorage, and the
-post-mount `CDDA_ON_IDBFS_MOUNTED` hook migrates config only after the real
-IndexedDB contents are visible.
+different save directory. An origin-wide exclusive Web Lock prevents two tabs
+from opening the same profile concurrently; different profile IDs can still
+run in separate tabs. If Web Locks are unavailable, the shell refuses to
+launch the game rather than risk two tabs racing their IndexedDB writes. The
+profile list remains in localStorage, and the post-mount
+`CDDA_ON_IDBFS_MOUNTED` hook migrates config only after the real IndexedDB
+contents are visible.
 
 Error reporting: the shell never uses blocking `alert()`. Runtime aborts,
 uncaught exceptions, unhandled rejections and WebGL context loss all render a
