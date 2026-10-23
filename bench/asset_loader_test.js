@@ -334,8 +334,8 @@ async function completeBoot(env) {
   Response.prototype.clone = () => { throw new Error('Unexpected Response.clone retains fallback bytes'); };
   try {
     const cold = environment();
+    await completeBoot(cold);
     let response = await cold.api.cachedAssetResponse('cataclysm-tiles.wasm', 'wasm');
-    assert.equal(cold.entries.size, 1);
     assert.equal(cold.api.assetTags['cataclysm-tiles.wasm'], 'v1');
     assert.deepEqual(new Uint8Array(await response.arrayBuffer()), wasmBytes);
     response = await cold.api.cachedAssetResponse('cataclysm-tiles.wasm', 'wasm');
@@ -345,8 +345,8 @@ async function completeBoot(env) {
     response = await cold.api.cachedAssetResponse('cataclysm-tiles.wasm', 'wasm');
     const instance = await cold.api.instantiateCachedWasm(response, {});
     assert(instance.instance instanceof WebAssembly.Instance);
-    assert.equal(cold.counts().streamCalls, 1);
-    console.log('PASS cold cache / 304 / offline cache / exact bytes / no cloning');
+    assert(cold.currentBucket().has('__cdda_bundle_complete_v3__'));
+    console.log('PASS immutable bundle / 304 / offline cache / exact bytes / no cloning');
 
     for (const options of [{}, { noCache: true }, { quota: true }, { noTransform: true },
                            { badMime: true }, { noStreaming: true }, { streamFailure: true }]) {
@@ -367,15 +367,16 @@ async function completeBoot(env) {
     }
     const completeBundle = environment();
     await completeBoot(completeBundle);
-    const offlineBoot = environment({ cacheEntries: completeBundle.entries });
+    const cachedBuckets = completeBundle.snapshotCacheBuckets();
+    const offlineBoot = environment({ cacheBuckets: cachedBuckets });
     offlineBoot.offline();
     await completeBoot(offlineBoot);
     assert.equal(offlineBoot.counts().receives, 1);
-    assert(offlineBoot.entries.has('__cdda_bundle_complete_v2__'));
+    assert(offlineBoot.currentBucket().has('__cdda_bundle_complete_v3__'));
     console.log('PASS fully cached four-file offline boot');
 
     const partialUpdate = environment({
-      cacheEntries: completeBundle.entries,
+      cacheBuckets: cachedBuckets,
       etag: 'v2',
       failUrls: ['cataclysm-tiles.wasm'],
     });
@@ -384,12 +385,35 @@ async function completeBoot(env) {
       'one failed asset must select the previous complete bundle, not new data plus old wasm');
     for (const url of ['cataclysm-tiles.data', 'cataclysm-tiles.wasm',
                        'cataclysm-tiles.data.js', 'cataclysm-tiles.js']) {
-      const stored = partialUpdate.entries.get(url);
+      const stored = partialUpdate.currentBucket().get(url);
       assert(stored, 'complete old bundle keeps ' + url);
       assert.equal(stored.headers.find(([key]) => key.toLowerCase() === 'x-cdda-etag')?.[1], 'v1',
         'partial network update must not commit a mixture: ' + url);
     }
     console.log('PASS partial deployment failure: use previous coherent bundle and discard staged new files');
+
+    const previousName = completeBundle.api.activeAssetCacheName;
+    const failedCacheWrite = environment({ cacheBuckets: cachedBuckets, etag: 'v2', failPutAt: 2 });
+    await completeBoot(failedCacheWrite);
+    assert.equal(failedCacheWrite.counts().receives, 1,
+      'the current online boot can use downloaded bytes even when persistent cache update fails');
+    assert.equal(failedCacheWrite.api.activeAssetCacheName, previousName,
+      'failed cache writes must not switch the active bundle pointer');
+    const meta = failedCacheWrite.cacheBuckets.get('cdda-assets-meta-v3');
+    const pointer = await new Response(meta.get('__cdda_active_bundle_v3__').blob,
+      { headers: meta.get('__cdda_active_bundle_v3__').headers }).text();
+    assert.equal(pointer, previousName, 'previous complete bundle remains active');
+    assert(failedCacheWrite.currentBucket().has('__cdda_bundle_complete_v3__'));
+    for (const url of ['cataclysm-tiles.data', 'cataclysm-tiles.wasm',
+                       'cataclysm-tiles.data.js', 'cataclysm-tiles.js']) {
+      assert.equal(failedCacheWrite.currentBucket().get(url).headers
+        .find(([key]) => key.toLowerCase() === 'x-cdda-etag')?.[1], 'v1',
+        'cache write failure must not partially overwrite ' + url);
+    }
+    assert(![...failedCacheWrite.cacheBuckets.keys()].some(name =>
+      name.startsWith('cdda-assets-bundle-v3-') && name !== previousName),
+      'incomplete staging bucket must be removed');
+    console.log('PASS cache quota/write failure: last complete snapshot and pointer stay intact');
 
     const unhandledRejections = [];
     const onUnhandledRejection = reason => unhandledRejections.push(reason);
