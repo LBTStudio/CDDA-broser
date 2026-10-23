@@ -10,7 +10,7 @@ rehashing and verify order, counts, positions and item pointers remain equal.
 diff --git a/src/game.cpp b/src/game.cpp
 --- a/src/game.cpp
 +++ b/src/game.cpp
-@@ -8314,17 +8314,17 @@
+@@ -8313,17 +8313,17 @@
 -static void add_item_recursive( std::vector<std::string> &item_order,
 -                                std::map<std::string, map_item_stack> &temp_items, const item *it,
 +static void add_item_recursive( std::vector<map_item_stack *> &stack_order,
