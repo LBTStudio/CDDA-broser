@@ -10,6 +10,14 @@ const start = html.indexOf('document.getElementById("mod-zip-input").addEventLis
 const end = html.indexOf('/* ---- Japanese (IME) input bridge', start);
 assert(start >= 0 && end > start, 'find actual MOD installer handler');
 const source = html.slice(start, end);
+const readerStart = source.indexOf('async function readZipEntryBounded(entry, expansionState) {');
+const readerEnd = source.indexOf('// Count central-directory records before JSZip parses them into an object graph.', readerStart);
+assert(readerStart >= 0 && readerEnd > readerStart, 'find bounded streaming reader');
+const readerSource = source.slice(readerStart, readerEnd);
+assert(readerSource.includes('new Uint8Array(declaredBytes)'), 'allocate one final buffer from validated size metadata');
+assert(readerSource.includes('output.set(chunk, fileBytes)'), 'copy chunks directly into the final buffer');
+assert(!readerSource.includes('chunks.push(new Uint8Array(chunk))'), 'do not retain a second copy of every output chunk');
+assert(!readerSource.includes('for (const chunk of chunks)'), 'do not flatten a chunk list into a second full-size buffer');
 
 const root = '/home/audit/.cataclysm-dda';
 const mods = root + '/mods';
@@ -174,6 +182,18 @@ function makeScenario({ entries, fileName = 'bundle.zip', fileSize = 1024,
     },
   };
 
+  const memoryStats = { copiedChunkBytes: 0, finalBufferBytes: 0, finalBufferCount: 0 };
+  class CountingUint8Array extends Uint8Array {
+    constructor(value, ...args) {
+      super(value, ...args);
+      if (typeof value === 'number') {
+        memoryStats.finalBufferBytes += value;
+        memoryStats.finalBufferCount++;
+      } else if (ArrayBuffer.isView(value) && !(value instanceof DataView)) {
+        memoryStats.copiedChunkBytes += this.byteLength;
+      }
+    }
+  }
   const input = { addEventListener(name, callback) { assert.equal(name, 'change'); input.handler = callback; } };
   const notices = [];
   let persistCalls = 0;
@@ -181,6 +201,7 @@ function makeScenario({ entries, fileName = 'bundle.zip', fileSize = 1024,
   let loadAsyncCalls = 0;
   const gameModule = { FS: fakeFs };
   const context = {
+    Uint8Array: CountingUint8Array,
     document: { getElementById(id) { assert.equal(id, 'mod-zip-input'); return input; } },
     window: { CDDA_PROFILE: 'audit', Module: gameModule },
     Module: gameModule,
@@ -207,7 +228,7 @@ function makeScenario({ entries, fileName = 'bundle.zip', fileSize = 1024,
   };
   vm.runInNewContext(source, context);
   return {
-    input, dirs, files, operations, notices, root, mods,
+    input, dirs, files, operations, notices, root, mods, memoryStats,
     persistCalls: () => persistCalls,
     arrayBufferReads: () => arrayBufferReads,
     loadAsyncCalls: () => loadAsyncCalls,
@@ -252,6 +273,11 @@ function makeScenario({ entries, fileName = 'bundle.zip', fileSize = 1024,
     assert.equal(e.files.get(child + 'child.json'), entries[4].content);
     assert.equal(e.files.get(child + 'deep/asset.json'), entries[5].content);
     assert.equal(e.persistCalls(), 1);
+    assert.equal(e.memoryStats.copiedChunkBytes, 0,
+      'expanded stream chunks are copied directly into one final buffer');
+    assert.equal(e.memoryStats.finalBufferCount, 6,
+      'one contiguous expansion buffer is allocated per extracted file');
+    assert(e.memoryStats.finalBufferBytes > 0);
     assert(e.notices.some(message => message.includes('Installed')));
     assert(![...e.files.keys()].some(p => p.includes('/.mod-installer-staging/')));
     console.log('PASS MOD ZIP: nested MOD roots install independently without duplicate payload');
@@ -344,6 +370,8 @@ function makeScenario({ entries, fileName = 'bundle.zip', fileSize = 1024,
     assert.equal(e.persistCalls(), 1, 'staging cleanup is marked for persistence');
     assert(e.notices.some(message => message.includes('64 MiB')),
       'actual streamed size must trigger a user-visible resource-limit error');
+    assert.equal(e.memoryStats.copiedChunkBytes, 0,
+      'forged size metadata must not cause per-chunk duplicate allocations');
     console.log('PASS MOD ZIP safety: forged declared size cannot bypass actual stream expansion cap');
   }
 
@@ -398,6 +426,28 @@ function makeScenario({ entries, fileName = 'bundle.zip', fileSize = 1024,
     assert.equal(e.persistCalls(), 1);
     assert(e.notices.some(message => /failed|失敗/i.test(message)));
     console.log('PASS MOD ZIP atomic overwrite: failed directory swap restores prior MOD');
+  }
+
+  {
+    const oldInfo = '[{"type":"MOD_INFO","id":"main-old"}]';
+    const target = mods + '/main';
+    const e = makeScenario({
+      entries: [
+        { path: 'main/modinfo.json', content: '[{"type":"MOD_INFO","id":"main-new"}]' },
+        { path: 'main/data.json', content: 'short', uncompressedSize: 100 },
+      ],
+      initialFiles: [[target + '/modinfo.json', oldInfo], [target + '/old.txt', 'preserve']],
+    });
+    await e.install();
+    assert.equal(e.files.get(target + '/modinfo.json'), oldInfo,
+      'an actual stream shorter than its declared size must not install a partial MOD');
+    assert.equal(e.files.get(target + '/old.txt'), 'preserve');
+    assert(![...e.files.keys()].some(p => p.includes('/.mod-installer-staging/')),
+      'declared-size mismatch must clean staging');
+    assert.equal(e.persistCalls(), 1);
+    assert(e.notices.some(message => /failed|失敗/i.test(message)));
+    assert.equal(e.memoryStats.copiedChunkBytes, 0);
+    console.log('PASS MOD ZIP memory/safety: under-expansion mismatch is rejected without a second full-size copy');
   }
 
   // A central directory with more than the allowed number of tiny entries must
