@@ -304,7 +304,7 @@
          from a temporary Blob URL. Their remaining binary/package lookups are
          supplied by Module.instantiateWasm / getPreloadedPackage below.
          Keep the normal URL loader as a CSP/storage fallback. */
-      async function loadScript(src) {
+      async function loadScript(src, responseOverride = null, strictCachedBundle = false) {
         const isDataLoader = src.endsWith(".data.js");
         const hasPreloadedPayload = isDataLoader
           ? typeof Module !== "undefined" && typeof Module.getPreloadedPackage === "function"
@@ -316,7 +316,7 @@
         const label = isDataLoader ? "データローダー" : "JavaScript本体";
         let objectUrl = "";
         try {
-          const response = await cachedAssetResponse(src, label);
+          const response = responseOverride || await cachedAssetResponse(src, label);
           const source = await response.text();
           objectUrl = URL.createObjectURL(new Blob([source], { type: "text/javascript" }));
           await new Promise((resolve, reject) => {
@@ -327,6 +327,7 @@
             document.body.appendChild(script);
           });
         } catch (error) {
+          if (strictCachedBundle) throw error;
           console.warn("Cached script path unavailable; trying normal script request:", src, error);
           await loadScriptDirect(src);
         } finally {
@@ -345,7 +346,12 @@
          ETag still picks up new deployments automatically, and every failure
          path falls back to the stock Emscripten XHR loader, so this can only
          ever make loading faster, never break it. */
-      const ASSET_CACHE = "cdda-assets-v1";
+      const ASSET_CACHE = "cdda-assets-v2";
+      const ASSET_BUNDLE_COMPLETE = "__cdda_bundle_complete_v2__";
+      const BOOT_ASSET_URLS = [
+        "cataclysm-tiles.data", "cataclysm-tiles.wasm",
+        "cataclysm-tiles.data.js", "cataclysm-tiles.js",
+      ];
       const assetProgress = {};
       function showLoadProgress(label, loaded, total) {
         assetProgress[label] = { loaded: loaded, total: total };
@@ -368,6 +374,10 @@
          its persisted JSON parse cache on the data package's identity, so
          a game update invalidates stale parse results wholesale. */
       const assetTags = {};
+      let assetCacheBatchActive = false;
+      let assetCacheFallbackUsed = false;
+      const pendingAssetCacheWrites = new Map();
+
       async function cachedAssetResponse(url, label) {
         let cache = null;
         try { cache = await caches.open(ASSET_CACHE); } catch (e) { /* http:// or blocked storage */ }
@@ -381,8 +391,17 @@
         }
         let net = null;
         try { net = await fetch(url, { headers: condHeaders, cache: "no-cache" }); } catch (e) { net = null; }
-        if (cached && net && net.status === 304) { assetTags[url] = cachedTag; return cached; }  // still current
-        if (cached && (!net || !net.ok)) { assetTags[url] = cachedTag; return cached; }          // offline: play from cache
+        if (cached && net && net.status === 304) {
+          assetTags[url] = cachedTag;
+          return cached;
+        }
+        if (cached && (!net || !net.ok)) {
+          // Never mix this older file with fresh files from the same release.
+          // boot() will select the last complete four-file bundle as a unit.
+          assetTags[url] = cachedTag;
+          assetCacheFallbackUsed = true;
+          return cached;
+        }
         if (!net || !net.ok) throw new Error("Could not download " + url);
         const total = Number(net.headers.get("Content-Length")) || 0;
         const etag = net.headers.get("ETag") || "";
@@ -414,10 +433,77 @@
         };
         if (etag) storeHeaders["x-cdda-etag"] = etag;
         if (cache) {
-          // Blob is immutable and replayable; no Response tee/clone is needed.
-          try { await cache.put(url, new Response(body, { headers: storeHeaders })); } catch (e) { console.warn("Asset cache write failed (quota?):", e); }
+          // Stage downloads until all four generated/runtime assets are resolved.
+          // A partial cache update must not survive as a mixed game release.
+          if (assetCacheBatchActive) {
+            pendingAssetCacheWrites.set(url, { body, headers: storeHeaders });
+          } else {
+            try {
+              await cache.delete(ASSET_BUNDLE_COMPLETE);
+              await cache.put(url, new Response(body, { headers: storeHeaders }));
+            } catch (e) { console.warn("Asset cache write failed (quota?):", e); }
+          }
         }
         return new Response(body, { headers: storeHeaders });
+      }
+
+      async function commitAssetCacheBatch() {
+        let cache = null;
+        try { cache = await caches.open(ASSET_CACHE); } catch (e) { /* optional storage */ }
+        if (!cache) {
+          pendingAssetCacheWrites.clear();
+          return;
+        }
+        if (pendingAssetCacheWrites.size > 0) {
+          try {
+            // Invalidate the old completion marker before the first partial write.
+            await cache.delete(ASSET_BUNDLE_COMPLETE);
+            for (const [url, item] of pendingAssetCacheWrites) {
+              await cache.put(url, new Response(item.body, { headers: item.headers }));
+            }
+          } catch (e) {
+            try { await cache.delete(ASSET_BUNDLE_COMPLETE); } catch (_) {}
+            console.warn("Asset bundle cache update failed; offline bundle disabled:", e);
+            pendingAssetCacheWrites.clear();
+            return;
+          }
+        }
+        try {
+          const responses = await Promise.all(BOOT_ASSET_URLS.map(url => cache.match(url)));
+          if (responses.every(Boolean)) {
+            await cache.put(ASSET_BUNDLE_COMPLETE, new Response("complete-v2", {
+              headers: { "Content-Type": "text/plain" },
+            }));
+          } else {
+            await cache.delete(ASSET_BUNDLE_COMPLETE);
+          }
+        } catch (e) {
+          try { await cache.delete(ASSET_BUNDLE_COMPLETE); } catch (_) {}
+          console.warn("Could not validate complete asset cache:", e);
+        } finally {
+          pendingAssetCacheWrites.clear();
+        }
+      }
+
+      async function readCompleteCachedBundle() {
+        let cache = null;
+        try { cache = await caches.open(ASSET_CACHE); } catch (e) { return null; }
+        if (!cache) return null;
+        try {
+          const marker = await cache.match(ASSET_BUNDLE_COMPLETE);
+          if (!marker) return null;
+          const responses = await Promise.all(BOOT_ASSET_URLS.map(url => cache.match(url)));
+          if (!responses.every(Boolean)) {
+            await cache.delete(ASSET_BUNDLE_COMPLETE);
+            return null;
+          }
+          const bundle = {};
+          BOOT_ASSET_URLS.forEach((url, i) => { bundle[url] = responses[i]; });
+          return bundle;
+        } catch (e) {
+          console.warn("Could not read complete cached bundle:", e);
+          return null;
+        }
       }
 
       async function instantiateCachedWasm(response, imports) {
@@ -459,29 +545,63 @@
             }
           } catch (e) { /* optional */ }
 
-          /* Fetch both large assets in parallel through the persistent
-             cache.  Either failing independently falls back to the stock
-             loader for that asset. */
-          const dataPromise = cachedAssetResponse("cataclysm-tiles.data", "データ")
-            .then((r) => r.arrayBuffer())
-            .catch((e) => { console.warn("Data cache path unavailable; stock XHR loader will run:", e); return null; });
-          const wasmPromise = cachedAssetResponse("cataclysm-tiles.wasm", "本体")
-            .catch((e) => { console.warn("Wasm cache path unavailable; stock loader will run:", e); return null; });
-          let dataBuf = await dataPromise;
-          let wasmResp = await wasmPromise;
+          /* Select the four runtime assets as one release. A failed request
+             must never combine a stale cached file with a fresh file from a
+             newer deployment. Cache writes remain staged until every resource
+             has either validated (200/304) successfully. */
+          assetCacheBatchActive = true;
+          assetCacheFallbackUsed = false;
+          pendingAssetCacheWrites.clear();
+          const candidateResults = await Promise.all([
+            cachedAssetResponse("cataclysm-tiles.data", "データ")
+              .catch(error => { console.warn("Data cache path unavailable:", error); return null; }),
+            cachedAssetResponse("cataclysm-tiles.wasm", "本体")
+              .catch(error => { console.warn("Wasm cache path unavailable:", error); return null; }),
+            cachedAssetResponse("cataclysm-tiles.data.js", "データローダー")
+              .catch(error => { console.warn("Data loader cache path unavailable:", error); return null; }),
+            cachedAssetResponse("cataclysm-tiles.js", "JavaScript本体")
+              .catch(error => { console.warn("JavaScript cache path unavailable:", error); return null; }),
+          ]);
 
-          if (dataBuf) {
+          let assetResponses = candidateResults;
+          let useCachedAssets = assetResponses.every(Boolean) && !assetCacheFallbackUsed;
+          let usedPreviousCompleteBundle = false;
+
+          if (!useCachedAssets) {
+            // Ignore every candidate fetched during a partial network failure.
+            // Only an explicitly completed cache bundle is safe for fallback.
+            pendingAssetCacheWrites.clear();
+            const previousBundle = await readCompleteCachedBundle();
+            if (previousBundle) {
+              assetResponses = BOOT_ASSET_URLS.map(url => previousBundle[url]);
+              useCachedAssets = true;
+              usedPreviousCompleteBundle = true;
+              assetTags["cataclysm-tiles.data"] =
+                assetResponses[0].headers.get("x-cdda-etag") || "";
+            } else {
+              assetResponses = [null, null, null, null];
+              useCachedAssets = false;
+            }
+          } else {
+            await commitAssetCacheBatch();
+          }
+
+          assetCacheBatchActive = false;
+          pendingAssetCacheWrites.clear();
+
+          let dataBuf = null;
+          let wasmResp = null;
+          if (useCachedAssets) {
+            dataBuf = await assetResponses[0].arrayBuffer();
+            wasmResp = assetResponses[1];
             /* file_packager's generated loader asks this hook for the
-               package before falling back to its own XHR.  Hand the buffer
-               over exactly once and drop our reference so the ~85MB is not
-               retained twice. */
+               package before falling back to its own XHR. Hand over the
+               buffer once and release our reference after consumption. */
             Module.getPreloadedPackage = function () {
               const buf = dataBuf;
               dataBuf = null;
               return buf;
             };
-          }
-          if (wasmResp) {
             Module.instantiateWasm = function (imports, receiveInstance) {
               (async () => {
                 try {
@@ -507,14 +627,21 @@
               })();
               return {};
             };
+            /* The data pack must register preRun before the game runtime starts. */
+            await loadScript("cataclysm-tiles.data.js", assetResponses[2], usedPreviousCompleteBundle);
+            await loadScript("cataclysm-tiles.js", assetResponses[3], usedPreviousCompleteBundle);
+          } else {
+            // No coherent persistent bundle exists. Let the stock loader fetch
+            // all resources by their original URL, or show its regular failure
+            // if the browser is genuinely offline.
+            delete Module.getPreloadedPackage;
+            delete Module.instantiateWasm;
+            await loadScriptDirect("cataclysm-tiles.data.js");
+            await loadScriptDirect("cataclysm-tiles.js");
           }
-
-          /* The data pack registers its preRun callback.  It must finish
-             evaluating before the game runtime starts, otherwise CDDA scans
-             lang/mo before the Japanese MO catalog exists in its virtual FS. */
-          await loadScript("cataclysm-tiles.data.js");
-          await loadScript("cataclysm-tiles.js");
         } catch (error) {
+          assetCacheBatchActive = false;
+          pendingAssetCacheWrites.clear();
           booted = false;
           console.error(error);
           loadingMessage.textContent =
