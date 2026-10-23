@@ -23,6 +23,33 @@ function makeZip(entries) {
               ? item.uncompressedSize
               : new TextEncoder().encode(item.content || '').byteLength,
           },
+          internalStream(type) {
+            assert.equal(type, 'uint8array');
+            const handlers = {};
+            let paused = false;
+            const stream = {
+              on(name, callback) { handlers[name] = callback; return stream; },
+              pause() { paused = true; return stream; },
+              resume() {
+                if (item.error) {
+                  if (handlers.error) handlers.error(new Error('injected decompression failure'));
+                  return stream;
+                }
+                const encoded = new TextEncoder().encode(item.content || '');
+                const length = Number.isSafeInteger(item.actualLength) ? item.actualLength : encoded.byteLength;
+                for (let offset = 0; offset < length && !paused; offset += 1024 * 1024) {
+                  const chunkSize = Math.min(1024 * 1024, length - offset);
+                  const chunk = Number.isSafeInteger(item.actualLength)
+                    ? new Uint8Array(chunkSize)
+                    : encoded.subarray(offset, offset + chunkSize);
+                  if (handlers.data) handlers.data(chunk);
+                }
+                if (!paused && handlers.end) handlers.end();
+                return stream;
+              },
+            };
+            return stream;
+          },
           async: async () => {
             if (item.error) throw new Error('injected decompression failure');
             return new TextEncoder().encode(item.content || '').buffer;
@@ -276,10 +303,35 @@ function makeScenario({ entries, fileName = 'bundle.zip', fileSize = 1024,
     ];
     const e = makeScenario({ entries });
     await e.install();
-    assert.equal(e.operations.length, 0, 'aggregate expansion over limit must be rejected before filesystem changes');
+    assert.equal(e.operations.length, 0, 'aggregate declared expansion over limit must be rejected before filesystem changes');
     assert.equal(e.persistCalls(), 0);
     assert(e.notices.some(message => message.includes('256 MiB')));
-    console.log('PASS MOD ZIP resource limits: aggregate expanded size capped before extraction');
+    console.log('PASS MOD ZIP resource limits: aggregate declared expansion capped before extraction');
+  }
+
+  // Central-directory sizes can be forged. The live streaming path must stop
+  // once real output crosses the per-entry limit, even when metadata says 1 B.
+  {
+    const oldInfo = '[{"type":"MOD_INFO","id":"main-old"}]';
+    const target = mods + '/main';
+    const e = makeScenario({
+      entries: [
+        { path: 'main/modinfo.json', content: '[{"type":"MOD_INFO","id":"main-new"}]' },
+        { path: 'main/huge.bin', content: 'x', uncompressedSize: 1, actualLength: 64 * 1024 * 1024 + 1 },
+      ],
+      initialFiles: [[target + '/modinfo.json', oldInfo], [target + '/old.txt', 'preserve']],
+    });
+    await e.install();
+    assert.equal(e.files.get(target + '/modinfo.json'), oldInfo,
+      'metadata under-reporting must not replace a pre-existing MOD');
+    assert.equal(e.files.get(target + '/old.txt'), 'preserve');
+    assert(![...e.files.keys()].some(p => p.includes('/.mod-installer-staging/')),
+      'failed bounded decompression must clean the staging tree');
+    assert.equal(e.files.has(target + '/huge.bin'), false);
+    assert.equal(e.persistCalls(), 1, 'staging cleanup is marked for persistence');
+    assert(e.notices.some(message => message.includes('64 MiB')),
+      'actual streamed size must trigger a user-visible resource-limit error');
+    console.log('PASS MOD ZIP safety: forged declared size cannot bypass actual stream expansion cap');
   }
 
   {
