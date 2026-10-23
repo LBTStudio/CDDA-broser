@@ -1,0 +1,38 @@
+name: CDDA Web Runtime Regression
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cdda-runtime-regression-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  regression:
+    name: Patch and runtime regression tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout wrapper repository
+        uses: actions/checkout@v4
+
+      - name: Checkout upstream CDDA 0.I
+        uses: actions/checkout@v4
+        with:
+          repository: CleverRaven/Cataclysm-DDA
+          ref: 0.I
+          path: cdda
+          fetch-depth: 1
+
+      - name: Apply web patches and run regression suite
+        working-directory: cdda
+        run: bash ../ci/apply-patches.sh ../patches
