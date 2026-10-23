@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const html = fs.readFileSync(path.join(__dirname, '../shell/index.html'), 'utf8');
-const code = html.slice(html.indexOf('      const ASSET_CACHE ='),
+const code = html.slice(html.indexOf('      const LEGACY_ASSET_CACHE ='),
   html.indexOf('      window.addEventListener("menuready"'));
 assert(code.includes('async function instantiateCachedWasm'));
 
