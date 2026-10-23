@@ -318,8 +318,8 @@ const cases = [
     const readyStart = html.indexOf('      function fsReady() {', finish);
     const readyEnd = html.indexOf('      function requestPersist()', readyStart);
     assert(begin >= 0 && finish > begin && readyStart > finish && readyEnd > readyStart);
-    const mountedSource = html.slice(begin, finish) + '\\n' +
-      html.slice(readyStart, readyEnd) + '\\nglobalThis.testFsReady = fsReady;';
+    const mountedSource = html.slice(begin, finish) + '\n' +
+      html.slice(readyStart, readyEnd) + '\nglobalThis.testFsReady = fsReady;';
     const warning = { hidden: true, textContent: '' };
     function makeContext() {
       const window = { Module: { FS: {} } };
