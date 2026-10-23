@@ -57,4 +57,17 @@ assert "CI rejects" in architecture and "mon_info_update_throttled" in architect
 assert "exclusive Web Lock" in architecture
 assert "F-20 [旧案・撤回済み]" in facts
 assert "this throttling proposal was retracted" in facts
-print("PASS docs consistency: immutable cache, current danger-check cadence, profile tab locks, retired optimization clearly labelled")
+# Current guidance must not present historical draft PRs as outstanding work or
+# promise a fixed cold-build time / obsolete download size to first-time users.
+readme = (root / "README.md").read_text(encoding="utf-8")
+quickstart = (root / "README-はじめにお読みください.md").read_text(encoding="utf-8")
+for stale in ("[Draft PR #22]", "[Draft PR #21]", "[Draft PR #20]", "[Draft PR #19]"):
+    assert stale not in readme, f"README still presents merged PR as a draft: {stale}"
+assert "PR #22 は2026年9月14日にmainへマージ済み" in readme
+assert "JSPIは公開用バックエンドではなく" in readme
+assert "runtime_backend=asyncify" in readme and "deploy_pages=true" in readme
+assert "40〜60分" not in quickstart
+assert "約 120MB 前後" in quickstart
+assert "同じIDを複数タブで同時に起動できません" in quickstart
+assert "最初から" not in quickstart
+print("PASS docs consistency: immutable cache, current danger-check cadence, profile tab locks, release flow, user setup guidance, and retired optimization clearly labelled")
