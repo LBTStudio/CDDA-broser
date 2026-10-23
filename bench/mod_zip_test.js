@@ -178,12 +178,16 @@ function makeScenario({ entries, fileName = 'bundle.zip', fileSize = 1024,
   const notices = [];
   let persistCalls = 0;
   let arrayBufferReads = 0;
+  let loadAsyncCalls = 0;
   const gameModule = { FS: fakeFs };
   const context = {
     document: { getElementById(id) { assert.equal(id, 'mod-zip-input'); return input; } },
     window: { CDDA_PROFILE: 'audit', Module: gameModule },
     Module: gameModule,
-    JSZip: { loadAsync: async buffer => zipBytes ? RealJSZip.loadAsync(buffer) : makeZip(entries) },
+    JSZip: { loadAsync: async buffer => {
+      loadAsyncCalls++;
+      return zipBytes ? RealJSZip.loadAsync(buffer) : makeZip(entries);
+    } },
     booted: true,
     fsReady: () => true,
     modRoot: () => mods,
@@ -206,6 +210,7 @@ function makeScenario({ entries, fileName = 'bundle.zip', fileSize = 1024,
     input, dirs, files, operations, notices, root, mods,
     persistCalls: () => persistCalls,
     arrayBufferReads: () => arrayBufferReads,
+    loadAsyncCalls: () => loadAsyncCalls,
     async install() {
       const file = {
         name: fileName,
@@ -391,6 +396,31 @@ function makeScenario({ entries, fileName = 'bundle.zip', fileSize = 1024,
     assert.equal(e.persistCalls(), 1);
     assert(e.notices.some(message => /failed|失敗/i.test(message)));
     console.log('PASS MOD ZIP atomic overwrite: failed directory swap restores prior MOD');
+  }
+
+  // A central directory with more than the allowed number of tiny entries must
+  // be rejected before JSZip constructs an object for every entry.
+  {
+    const tooManyZip = await (async () => {
+      const zip = new RealJSZip();
+      for (let i = 0; i < 20001; ++i) {
+        zip.file('entry-' + String(i).padStart(5, '0') + '.txt', '');
+      }
+      return zip.generateAsync({ type: 'uint8array', compression: 'STORE' });
+    })();
+    const e = makeScenario({
+      entries: [],
+      fileName: 'too-many-entries.zip',
+      fileSize: tooManyZip.byteLength,
+      zipBytes: tooManyZip,
+    });
+    await e.install();
+    assert.equal(e.arrayBufferReads(), 1, 'read the bounded archive bytes for the preflight scan');
+    assert.equal(e.loadAsyncCalls(), 0, 'reject entry floods before JSZip parsing');
+    assert.equal(e.persistCalls(), 0, 'rejected archive must not touch persistent storage');
+    assert(e.notices.some(message => /20000/.test(message) && /entry|エントリ/i.test(message)),
+      'the player must see the entry-count limit');
+    console.log('PASS real ZIP preflight: excessive central-directory entries rejected before JSZip parsing');
   }
 
   // Exercise the actual bundled JSZip parser and its streaming API. Forge both
