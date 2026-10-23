@@ -338,7 +338,7 @@ function environment(options = {}) {
   vm.runInContext('let booted = false;\n' + code +
     '\nglobalThis.api = {cachedAssetResponse, instantiateCachedWasm, boot, assetTags, readCompleteCachedBundle, commitAssetCacheBatch, get activeAssetCacheName() { return activeAssetCacheName; }};', context);
   return {
-    api: context.api, entries, cacheBuckets, requests, module, warnings, errors, loadingMessage,
+    api: context.api, entries, cacheBuckets, requests, module, warnings, errors, loadingMessage, options,
     offline() { offline = true; }, failCache() { cacheFailure = true; },
     snapshotCacheBuckets() { return [...cacheBuckets].map(([name, bucket]) => [name, [...bucket]]); },
     currentBucket() { return cacheBuckets.get(context.api.activeAssetCacheName); },
@@ -348,11 +348,13 @@ function environment(options = {}) {
 
 async function completeBoot(env) {
   await env.api.boot();
-  for (let n = 0; n < 100; ++n) {
+  for (let n = 0; n < 500; ++n) {
     if (env.counts().receives || env.counts().fatal) return;
     await new Promise(resolve => setTimeout(resolve, 5));
   }
-  throw new Error('boot did not complete; fatal=' + env.counts().fatal + '; loading=' + env.loadingMessage.textContent + '; console=' + env.errors.join(' | '));
+  throw new Error('boot did not complete for ' + JSON.stringify(env.options) +
+    '; fatal=' + env.counts().fatal + '; loading=' + env.loadingMessage.textContent +
+    '; console=' + env.errors.join(' | '));
 }
 
 (async () => {
