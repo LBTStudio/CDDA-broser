@@ -986,7 +986,8 @@
           function recurse(fs_path, zip_path) {
             const entries = Module.FS.readdir(fs_path).filter(isRealDir);
             for (const entry of entries) {
-              const efs = fs_path + "/" + entry, ezp = zip_path + "/" + entry;
+              const efs = fs_path + "/" + entry;
+              const ezp = zip_path ? zip_path + "/" + entry : entry;
               const stat = FS.stat(efs);
               if (FS.isDir(stat.mode)) recurse(efs, ezp);
               else if (FS.isFile(stat.mode)) zip.file(ezp, FS.readFile(efs, { encoding: "binary" }));
