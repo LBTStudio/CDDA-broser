@@ -73,7 +73,7 @@ function scenario({ profileValue = null, lastValue = null, storageThrows = false
 }
 {
   const e = scenario({
-    profileValue: JSON.stringify(['Player One', 'Valid', 7, '../evil', 'PLAYER_ONE']),
+    profileValue: JSON.stringify(['playerone', 'valid', 7, '../evil', 'PLAYER_ONE', 'playerone']),
   });
   assert.deepEqual(e.profileList.children.map(chip => chip.textContent), ['playerone', 'valid']);
 }
