@@ -9,7 +9,7 @@ uniform-submap handling, and deletion behavior.
 diff --git a/src/mapbuffer.cpp b/src/mapbuffer.cpp
 --- a/src/mapbuffer.cpp
 +++ b/src/mapbuffer.cpp
-@@ -1,6 +1,7 @@
+@@ -1,7 +1,8 @@
  #include "mapbuffer.h"
  
  #include "cata_web_yield.h"
@@ -41,7 +41,7 @@ diff --git a/src/mapbuffer.cpp b/src/mapbuffer.cpp
  
      bool all_uniform = true;
      bool reverted_to_uniform = false;
-@@ -282,8 +285,8 @@ void mapbuffer::save_quad(
+@@ -282,11 +285,11 @@ void mapbuffer::save_quad(
          file_exists = std::filesystem::exists( filename.get_unrelative_path() );
      }
  
