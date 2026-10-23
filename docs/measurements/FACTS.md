@@ -845,7 +845,7 @@ CDDA は `-Wpedantic -Werror` でビルドするため、`-Werror` クリーン�
 
 ---
 
-## F-20 読書・製作など長時間アクティビティが遅い真因は `mon_info_update()` の無制限呼び出し
+## F-20 [旧案・撤回済み] 読書・製作など長時間アクティビティの負荷分析
 
 > **Current implementation status (updated 2026-10-24): this throttling proposal was retracted.** The `mon_info_update_throttled()` wrapper, 16-turn interval and the candidate's claimed performance figures below are historical records, not current behavior. The throttle can delay safemode, enemy detection and activity-interruption queries. The later `cdda-0I-emscripten-runtime-efficiency.patch` removes the wrapper and restores all three upstream `g->mon_info_update()` call sites; `ci/apply-patches.sh` fails if the throttle returns. The `0.8600 ms/turn` / `0.6170 ms` values were synthetic-benchmark estimates, not measurements of the real function (see F-29). Do not use this section's old implementation or numbers as the basis for current changes.
 
