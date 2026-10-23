@@ -610,6 +610,11 @@
       }
       
       async function instantiateCachedWasm(response, imports) {
+        // Every boot asset must remain from the same selected release. A stream
+        // compile failure consumes its body, so a retry must verify the ETag
+        // before accepting the re-fetched wasm; otherwise a deployment that
+        // races startup could mix a new wasm with the selected data/JS files.
+        const expectedTag = response.headers.get("x-cdda-etag") || "";
         if (typeof WebAssembly.instantiateStreaming === "function" &&
             response.headers.get("Content-Type") === "application/wasm") {
           try {
@@ -617,8 +622,14 @@
             // queues the entire wasm body and can retain it throughout play.
             return await WebAssembly.instantiateStreaming(response, imports);
           } catch (e) {
-            // Streaming may have consumed the body. Reacquire ONLY on failure.
-            response = await cachedAssetResponse("cataclysm-tiles.wasm", "本体");
+            // Streaming may have consumed the body. Reacquire ONLY on failure,
+            // and only if it is still the exact wasm release selected at boot.
+            const retry = await cachedAssetResponse("cataclysm-tiles.wasm", "本体");
+            const retryTag = retry.headers.get("x-cdda-etag") || "";
+            if (!expectedTag || retryTag !== expectedTag) {
+              throw new Error("Refusing to mix WebAssembly from a different or unidentified asset release");
+            }
+            response = retry;
           }
         }
         return WebAssembly.instantiate(await response.arrayBuffer(), imports);
@@ -693,6 +704,7 @@
           if (useCachedAssets) {
             dataBuf = await assetResponses[0].arrayBuffer();
             wasmResp = assetResponses[1];
+            const selectedWasmTag = wasmResp.headers.get("x-cdda-etag") || "";
             /* file_packager's generated loader asks this hook for the
                package before falling back to its own XHR. Hand over the
                buffer once and release our reference after consumption. */
@@ -709,10 +721,20 @@
                   const out = await instantiateCachedWasm(response, imports);
                   receiveInstance(out.instance, out.module);
                 } catch (e) {
-                  /* Last resort: bypass the cache entirely. */
+                  /* Last resort: retry only the same asset release. Fetching
+                     an arbitrary current URL here could pair a newer wasm with
+                     older cached data/JS after a partial deployment or offline
+                     fallback. Without a stable ETag, fail closed. */
                   try {
+                    if (!selectedWasmTag) {
+                      throw new Error("Cannot safely retry WebAssembly without a release ETag");
+                    }
                     const response = await fetch("cataclysm-tiles.wasm", { cache: "reload" });
                     if (!response.ok) throw new Error("Could not download WebAssembly");
+                    const fetchedTag = response.headers.get("ETag") || "";
+                    if (fetchedTag !== selectedWasmTag) {
+                      throw new Error("Refusing WebAssembly from a different asset release");
+                    }
                     const out = await WebAssembly.instantiate(await response.arrayBuffer(), imports);
                     receiveInstance(out.instance, out.module);
                   } catch (e2) {
