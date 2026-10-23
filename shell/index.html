@@ -1287,18 +1287,27 @@
         // incrementally before buffering a whole file or writing it to MEMFS.
         async function readZipEntryBounded(entry, expansionState) {
           return new Promise((resolve, reject) => {
-            const chunks = [];
+            const declaredBytes = entry && entry._data && entry._data.uncompressedSize;
+            let output = null;
             let fileBytes = 0;
             let settled = false;
             let stream;
             const fail = error => {
               if (settled) return;
               settled = true;
-              try { stream.pause(); } catch (e) { /* best effort stop */ }
-              chunks.length = 0;
+              try { if (stream) stream.pause(); } catch (e) { /* best effort stop */ }
+              // Drop the sole expanded-file buffer immediately on all failures.
+              output = null;
               reject(error instanceof Error ? error : new Error(String(error)));
             };
             try {
+              if (!Number.isSafeInteger(declaredBytes) || declaredBytes < 0 ||
+                  declaredBytes > MAX_MOD_ZIP_ENTRY_BYTES) {
+                throw new Error("MOD ZIP entry has an invalid declared expansion size");
+              }
+              // Allocate the final byte buffer once. The previous chunk-list +
+              // flattening pass temporarily kept two copies of up to 64 MiB.
+              output = new Uint8Array(declaredBytes);
               stream = entry.internalStream("uint8array");
               stream.on("data", chunk => {
                 if (settled) return;
@@ -1312,31 +1321,34 @@
                   fail(new Error("MOD file actual expansion exceeds the 64 MiB per-file limit"));
                   return;
                 }
+                if (nextFileBytes > declaredBytes) {
+                  fail(new Error("MOD file actual expansion exceeds its declared size; the 64 MiB per-file limit remains enforced"));
+                  return;
+                }
                 if (!Number.isSafeInteger(nextExpandedBytes) ||
                     nextExpandedBytes > MAX_MOD_ZIP_EXPANDED_BYTES) {
                   fail(new Error("MOD ZIP actual expansion exceeds the 256 MiB total limit"));
                   return;
                 }
+                try {
+                  // Copy synchronously into the final buffer; never retain stream chunks.
+                  output.set(chunk, fileBytes);
+                } catch (error) {
+                  fail(error);
+                  return;
+                }
                 fileBytes = nextFileBytes;
                 expansionState.totalBytes = nextExpandedBytes;
-                // Copy each chunk: the ZIP stream may recycle its backing buffer.
-                chunks.push(new Uint8Array(chunk));
               }).on("error", fail).on("end", () => {
                 if (settled) return;
-                settled = true;
-                try {
-                  const output = new Uint8Array(fileBytes);
-                  let offset = 0;
-                  for (const chunk of chunks) {
-                    output.set(chunk, offset);
-                    offset += chunk.byteLength;
-                  }
-                  chunks.length = 0;
-                  resolve(output);
-                } catch (error) {
-                  chunks.length = 0;
-                  reject(error);
+                if (fileBytes !== declaredBytes) {
+                  fail(new Error("MOD file actual expansion does not match its declared size"));
+                  return;
                 }
+                settled = true;
+                const result = output;
+                output = null;
+                resolve(result);
               });
               stream.resume();
             } catch (error) {
