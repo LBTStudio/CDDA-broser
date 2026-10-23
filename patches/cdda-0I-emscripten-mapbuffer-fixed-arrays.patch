@@ -12,8 +12,8 @@ diff --git a/src/mapbuffer.cpp b/src/mapbuffer.cpp
 @@ -1,6 +1,7 @@
  #include "mapbuffer.h"
  
-+#include "cata_web_yield.h"
-+
+ #include "cata_web_yield.h"
+ 
 +#include <array>
  #include <chrono>
  #include <cstddef>
