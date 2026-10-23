@@ -1287,13 +1287,127 @@
           });
         }
 
+        // Count central-directory records before JSZip parses them into an object graph.
+        // The post-parse entry limit alone is too late for ZIPs with millions of tiny entries.
+        function preflightZipEntryCount(buffer, maxEntries) {
+          const bytes = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
+          const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+          const length = bytes.byteLength;
+          const signatureAt = (offset, signature) =>
+            offset >= 0 && offset + 4 <= length && view.getUint32(offset, true) === signature;
+          const readU64 = offset => {
+            if (offset < 0 || offset + 8 > length) throw new Error("Truncated ZIP64 field");
+            const value = view.getUint32(offset + 4, true) * 0x100000000 +
+              view.getUint32(offset, true);
+            if (!Number.isSafeInteger(value)) throw new Error("ZIP64 offset or size is too large");
+            return value;
+          };
+
+          // EOCD may be followed by up to 65535 bytes of comment.
+          let eocd = -1;
+          const firstCandidate = Math.max(0, length - 22 - 0xffff);
+          for (let offset = length - 22; offset >= firstCandidate; --offset) {
+            if (signatureAt(offset, 0x06054b50) &&
+                offset + 22 + view.getUint16(offset + 20, true) === length) {
+              eocd = offset;
+              break;
+            }
+          }
+          if (eocd < 0) throw new Error("Invalid ZIP: end-of-central-directory record not found");
+          if (view.getUint16(eocd + 4, true) !== 0 ||
+              view.getUint16(eocd + 6, true) !== 0) {
+            throw new Error("Multi-disk ZIP archives are not supported");
+          }
+
+          let declaredOnDisk = view.getUint16(eocd + 8, true);
+          let declaredTotal = view.getUint16(eocd + 10, true);
+          let centralSize = view.getUint32(eocd + 12, true);
+          let centralOffset = view.getUint32(eocd + 16, true);
+          let centralEnd = eocd;
+          const locator = eocd - 20;
+          const hasZip64Locator = signatureAt(locator, 0x07064b50);
+
+          if (hasZip64Locator) {
+            if (view.getUint32(locator + 4, true) !== 0 ||
+                view.getUint32(locator + 16, true) !== 1) {
+              throw new Error("Multi-disk ZIP64 archives are not supported");
+            }
+            const zip64Offset = readU64(locator + 8);
+            if (!signatureAt(zip64Offset, 0x06064b50) || zip64Offset + 56 > length) {
+              throw new Error("Invalid ZIP64 end-of-central-directory record");
+            }
+            const recordSize = readU64(zip64Offset + 4);
+            if (recordSize < 44 || zip64Offset + 12 + recordSize !== locator) {
+              throw new Error("Invalid ZIP64 end-of-central-directory length");
+            }
+            if (view.getUint32(zip64Offset + 16, true) !== 0 ||
+                view.getUint32(zip64Offset + 20, true) !== 0) {
+              throw new Error("Multi-disk ZIP64 archives are not supported");
+            }
+            const entriesOnDisk64 = readU64(zip64Offset + 24);
+            declaredTotal = readU64(zip64Offset + 32);
+            if (entriesOnDisk64 !== declaredTotal) {
+              throw new Error("Inconsistent ZIP64 entry count");
+            }
+            centralSize = readU64(zip64Offset + 40);
+            centralOffset = readU64(zip64Offset + 48);
+            declaredOnDisk = entriesOnDisk64;
+            centralEnd = zip64Offset;
+          } else if (declaredOnDisk === 0xffff || declaredTotal === 0xffff ||
+                     centralSize === 0xffffffff || centralOffset === 0xffffffff) {
+            // A saturated entry count alone already exceeds our safe limit.
+            if (declaredOnDisk === 0xffff && declaredTotal === 0xffff) {
+              return { tooMany: true, count: 0xffff };
+            }
+            throw new Error("ZIP64 archive is missing its locator");
+          }
+
+          if (declaredOnDisk !== declaredTotal) throw new Error("Inconsistent ZIP entry counts");
+          if (!Number.isSafeInteger(centralSize) || centralSize < 0 ||
+              !Number.isSafeInteger(centralOffset) || centralOffset < 0 ||
+              centralSize > centralEnd) {
+            throw new Error("Invalid ZIP central-directory bounds");
+          }
+          // Derive the physical start from the checked end and size, so prepended
+          // self-extracting data does not make a declared offset trusted input.
+          const actualCentralOffset = centralEnd - centralSize;
+          if (actualCentralOffset < 0) throw new Error("Invalid ZIP central-directory offset");
+          if (declaredTotal > maxEntries) return { tooMany: true, count: declaredTotal };
+
+          let offset = actualCentralOffset;
+          let actualCount = 0;
+          while (offset < centralEnd) {
+            if (offset + 46 > centralEnd || !signatureAt(offset, 0x02014b50)) {
+              throw new Error("Invalid ZIP central-directory entry");
+            }
+            const nameLength = view.getUint16(offset + 28, true);
+            const extraLength = view.getUint16(offset + 30, true);
+            const commentLength = view.getUint16(offset + 32, true);
+            const next = offset + 46 + nameLength + extraLength + commentLength;
+            if (next > centralEnd) throw new Error("Truncated ZIP central-directory entry");
+            actualCount++;
+            if (actualCount > maxEntries) return { tooMany: true, count: actualCount };
+            offset = next;
+          }
+          if (offset !== centralEnd || actualCount !== declaredTotal) {
+            throw new Error("ZIP central-directory entry count does not match its records");
+          }
+          return { tooMany: false, count: actualCount };
+        }
+
         if (!Number.isSafeInteger(file.size) || file.size <= 0 || file.size > MAX_MOD_ZIP_BYTES) {
           noticeMessage("MOD ZIPが空か、圧縮サイズ上限128 MiBを超えています。 / ZIP is empty or exceeds the 128 MiB archive limit.");
           return;
         }
         try {
           noticeMessage("MODを展開しています... / Unpacking mod...");
-          const zip = await JSZip.loadAsync(await file.arrayBuffer());
+          const archiveBytes = await file.arrayBuffer();
+          const entryPreflight = preflightZipEntryCount(archiveBytes, MAX_MOD_ZIP_ENTRIES);
+          if (entryPreflight.tooMany) {
+            noticeMessage("MOD ZIPのエントリ数が上限20000件を超えています。 / ZIP entry count exceeds the 20000-entry limit.");
+            return;
+          }
+          const zip = await JSZip.loadAsync(archiveBytes);
           // Canonicalize harmless ./ segments, but reject absolute paths,
           // parent traversal, backslashes and ambiguous duplicate destinations.
           function safeZipPath(value) {
