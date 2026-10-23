@@ -103,12 +103,11 @@ run_browser_bench() {
     fi
 
     echo "== RUN   $name (timeout ${timeout_ms}ms)"
-    if node run-bench-all.js "http://localhost:$PORT/$name.html" "$timeout_ms" \
-            > "$OUT_DIR/$name.log" 2>&1; then
-        :
-    fi
-    # DONE が出ていれば成功扱い。TIMEOUT なら失敗。
-    if grep -q "DONE" "$OUT_DIR/$name.log"; then
+    run_status=0
+    node run-bench-all.js "http://localhost:$PORT/$name.html" "$timeout_ms" \
+        > "$OUT_DIR/$name.log" 2>&1 || run_status=$?
+    # Both the runner exit status and the explicit completion marker must pass.
+    if [ "$run_status" -eq 0 ] && grep -q "DONE" "$OUT_DIR/$name.log"; then
         echo "   OK -> $OUT_DIR/$name.log"
         ok=$(( ok + 1 ))
     else
