@@ -407,7 +407,11 @@
              This protects the cached assets above AND the IDBFS save data.
              Denial is fine; everything still works, just less durably. */
           try {
-            if (navigator.storage && navigator.storage.persist) navigator.storage.persist();
+            if (navigator.storage && navigator.storage.persist) {
+              // A denied/rejected persistence request is optional; it must
+              // never become an unhandled rejection that trips the fatal UI.
+              Promise.resolve(navigator.storage.persist()).catch(() => {});
+            }
           } catch (e) { /* optional */ }
 
           /* Drop cache buckets from older shell versions so a naming bump
@@ -1155,7 +1159,7 @@
       Module.onAbort = function (what) {
         showFatalError("Runtime abort", what);
       };
-      window.onbeforeunload = (e) => { if (window.game_unsaved || window.cdda_persistence_pending) e.preventDefault(); };
+      window.onbeforeunload = (e) => { if (window.game_unsaved || window.cdda_persistence_pending) { e.preventDefault(); e.returnValue = true; } };
     </script>
   </body>
 </html>
