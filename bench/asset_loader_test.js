@@ -415,6 +415,32 @@ async function completeBoot(env) {
       'incomplete staging bucket must be removed');
     console.log('PASS cache quota/write failure: last complete snapshot and pointer stay intact');
 
+    // If a browser evicts/corrupts one entry in the active cache bucket, the
+    // previous immutable snapshot should still boot offline and repair the pointer.
+    const firstRelease = environment();
+    await completeBoot(firstRelease);
+    const firstReleaseName = firstRelease.api.activeAssetCacheName;
+    const secondRelease = environment({
+      cacheBuckets: firstRelease.snapshotCacheBuckets(),
+      etag: 'v2',
+    });
+    await completeBoot(secondRelease);
+    const secondReleaseName = secondRelease.api.activeAssetCacheName;
+    assert.notEqual(secondReleaseName, firstReleaseName);
+    const damagedBuckets = secondRelease.snapshotCacheBuckets().map(([name, entries]) => [
+      name,
+      name === secondReleaseName
+        ? entries.filter(([key]) => key !== 'cataclysm-tiles.wasm')
+        : entries,
+    ]);
+    const recovered = environment({ cacheBuckets: damagedBuckets });
+    recovered.offline();
+    await completeBoot(recovered);
+    assert.equal(recovered.counts().receives, 1);
+    assert.equal(recovered.api.activeAssetCacheName, firstReleaseName,
+      'damaged active bundle must roll back to the previous complete snapshot');
+    console.log('PASS damaged active bundle: prior immutable snapshot boots offline and active pointer is repaired');
+
     const unhandledRejections = [];
     const onUnhandledRejection = reason => unhandledRejections.push(reason);
     process.on('unhandledRejection', onUnhandledRejection);
