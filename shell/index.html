@@ -50,8 +50,7 @@
     </style>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.2.1/css/all.min.css" integrity="sha512-MV7K8+y+gLIBoVD59lQIYicR65iaqukzvf/nwasF0nqhPay5w/9lJmVM2hMDcnK1OnMGCdVK+iQrJ7lzPJQd1w==" crossorigin="anonymous" referrerpolicy="no-referrer" />
     <script defer src="https://cdnjs.cloudflare.com/ajax/libs/screenfull.js/5.2.0/screenfull.min.js" integrity="sha512-GoG2/bE6QSPKSrjuoII6iPL2ODnwUJvFgysFYLTW2ltpx6G5nj+mYvhPq5rLPZby0rdMFU2fo4BMlWND7+QZ5g==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
-    <script defer src="vendor/jszip-3.10.1.min.js"></script>
-    <script defer src="vendor/FileSaver-2.0.0.min.js"></script>
+    <!-- Save/MOD utility scripts are loaded from persistent Cache Storage on demand. -->
     <link rel="shortcut icon" href="favicon.ico" />
     <meta property="og:title" content="Cataclysm: Dark Days Ahead" />
     <meta property="og:description" content="A port of Cataclysm: Dark Days Ahead for the browser." />
@@ -635,9 +634,101 @@
         return WebAssembly.instantiate(await response.arrayBuffer(), imports);
       }
 
+      /* JSZip/FileSaver power user-initiated save export and MOD installation.
+         Cache them separately from the atomic game bundle so they remain usable
+         after the browser's ordinary HTTP cache expires. Versioned file names
+         make a cached script immutable; a new library version gets a new URL. */
+      const UTILITY_SCRIPT_CACHE = "cdda-utility-scripts-v1";
+      const utilityTextLoads = new Map();
+      const utilityLibraryLoads = new Map();
+      const utilityScriptUrls = [
+        "vendor/jszip-3.10.1.min.js",
+        "vendor/FileSaver-2.0.0.min.js",
+      ];
+
+      function getUtilityScriptText(src) {
+        const url = new URL(src, document.baseURI).href;
+        if (utilityTextLoads.has(url)) return utilityTextLoads.get(url);
+        const task = (async () => {
+          let cache = null;
+          try { cache = await caches.open(UTILITY_SCRIPT_CACHE); } catch (e) { /* optional storage */ }
+          if (cache) {
+            try {
+              const cached = await cache.match(url);
+              if (cached) return await cached.text();
+            } catch (e) { console.warn("Could not read cached utility script:", src, e); }
+          }
+
+          let response;
+          try {
+            response = await fetch(url, { cache: "no-cache" });
+          } catch (error) {
+            throw new Error("Utility script is unavailable offline and has no persistent copy: " + src);
+          }
+          if (!response || !response.ok) {
+            throw new Error("Could not download utility script: " + src);
+          }
+          const source = await response.text();
+          if (cache) {
+            try {
+              await cache.put(url, new Response(source, {
+                headers: { "Content-Type": "text/javascript" },
+              }));
+            } catch (e) {
+              console.warn("Could not persist utility script (quota?):", src, e);
+            }
+          }
+          return source;
+        })();
+        utilityTextLoads.set(url, task);
+        task.finally(() => {
+          if (utilityTextLoads.get(url) === task) utilityTextLoads.delete(url);
+        }).catch(() => {});
+        return task;
+      }
+
+      async function ensureUtilityLibrary(src, globalName) {
+        if (typeof window[globalName] !== "undefined") return;
+        if (utilityLibraryLoads.has(src)) return utilityLibraryLoads.get(src);
+        const task = (async () => {
+          const source = await getUtilityScriptText(src);
+          const objectUrl = URL.createObjectURL(new Blob([source], { type: "text/javascript" }));
+          try {
+            await new Promise((resolve, reject) => {
+              const script = document.createElement("script");
+              script.src = objectUrl;
+              script.onload = resolve;
+              script.onerror = () => reject(new Error("Could not execute cached utility script: " + src));
+              document.body.appendChild(script);
+            });
+          } finally {
+            URL.revokeObjectURL(objectUrl);
+          }
+          if (typeof window[globalName] === "undefined") {
+            throw new Error("Utility script did not define " + globalName + ": " + src);
+          }
+        })();
+        utilityLibraryLoads.set(src, task);
+        try {
+          await task;
+        } finally {
+          if (utilityLibraryLoads.get(src) === task) utilityLibraryLoads.delete(src);
+        }
+      }
+
+      async function precacheUtilityScripts() {
+        await Promise.all(utilityScriptUrls.map(async src => {
+          try { await getUtilityScriptText(src); }
+          catch (e) { console.warn("Utility script pre-cache skipped:", src, e); }
+        }));
+      }
+
       async function boot() {
         if (booted) return;
         booted = true;
+        // Warm persistent copies without making startup depend on these optional
+        // utilities. First-time offline visits still get the explicit UI error.
+        precacheUtilityScripts().catch(error => console.warn("Utility pre-cache failed:", error));
         try {
           /* Ask the browser to shield our storage bucket from eviction.
              This protects the cached assets above AND the IDBFS save data.
@@ -814,17 +905,15 @@
         }, 6000);
       }
       document.getElementById("export-saves").onclick = async () => {
-        // Guard the CDN dependencies and the pre-boot state so a menu click
-        // can never surface as a fatal-looking uncaught error.
-        if (typeof JSZip === "undefined" || typeof saveAs === "undefined") {
-          noticeMessage("エクスポート用ライブラリを読み込めていません。接続を確認して再読み込みしてください。 / Export libraries did not load. Reload and try again.");
-          return;
-        }
         if (!window.Module || !Module.FS || !booted) {
           noticeMessage("ゲーム起動後にお使いください。 / Start the game first, then export.");
           return;
         }
         try {
+          await Promise.all([
+            ensureUtilityLibrary("vendor/jszip-3.10.1.min.js", "JSZip"),
+            ensureUtilityLibrary("vendor/FileSaver-2.0.0.min.js", "saveAs"),
+          ]);
           const zip = new JSZip();
           function isRealDir(p) { return p !== "." && p !== ".."; }
           function recurse(fs_path, zip_path) {
@@ -1031,17 +1120,18 @@
         renderModList();
         document.getElementById("mod-overlay").style.display = "block";
       };
-      document.getElementById("install-mod").onclick = () => {
+      document.getElementById("install-mod").onclick = async () => {
         settingsMenu.style.display = "none";
-        if (typeof JSZip === "undefined") {
-          noticeMessage("ZIP展開ライブラリを読み込めていません。接続を確認して再読み込みしてください。 / Zip library did not load. Reload and try again.");
-          return;
-        }
         if (!fsReady()) {
           noticeMessage("ゲーム起動後にお使いください。 / Start the game first, then install mods.");
           return;
         }
-        document.getElementById("mod-zip-input").click();
+        try {
+          await ensureUtilityLibrary("vendor/jszip-3.10.1.min.js", "JSZip");
+          document.getElementById("mod-zip-input").click();
+        } catch (error) {
+          noticeMessage("ZIP展開ライブラリを利用できません。オンラインで一度読み込むか、ブラウザ保存領域を確認してください。 / ZIP library unavailable; connect once to cache it or check browser storage.");
+        }
       };
       document.getElementById("mod-zip-input").addEventListener("change", async (ev) => {
         const file = ev.target.files && ev.target.files[0];
