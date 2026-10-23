@@ -16,7 +16,7 @@ diff --git a/src/mapbuffer.cpp b/src/mapbuffer.cpp
  #include <chrono>
  #include <cstddef>
  #include <exception>
-@@ -246,10 +247,10 @@ void mapbuffer::save_quad(
+@@ -246,12 +247,12 @@ void mapbuffer::save_quad(
      const cata_path &dirname, const cata_path &filename, const tripoint_abs_omt &om_addr,
      std::list<tripoint_abs_sm> &submaps_to_delete, bool delete_after_save )
  {
@@ -39,7 +39,7 @@ diff --git a/src/mapbuffer.cpp b/src/mapbuffer.cpp
  
      bool all_uniform = true;
      bool reverted_to_uniform = false;
-@@ -282,5 +285,5 @@ void mapbuffer::save_quad(
+@@ -282,8 +285,8 @@ void mapbuffer::save_quad(
          file_exists = std::filesystem::exists( filename.get_unrelative_path() );
      }
  
