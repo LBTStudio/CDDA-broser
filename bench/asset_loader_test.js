@@ -287,6 +287,7 @@ function environment(options = {}) {
         assert.equal(Object.keys(result).length, 0);
       }
     },
+    async loadScriptDirect(name) { return context.loadScript(name); },
   });
   vm.runInContext('let booted = false;\n' + code +
     '\nglobalThis.api = {cachedAssetResponse, instantiateCachedWasm, boot, assetTags};', context);
@@ -337,20 +338,38 @@ async function completeBoot(env) {
       assert.equal(env.module.getPreloadedPackage(), null);
       if (options.streamFailure) {
         assert.equal(env.counts().bufferCalls, 1);
-        assert.equal(env.requests.length, 3); // retry only on actual failure
+        assert.equal(env.requests.length, 5); // four bundle requests plus one wasm retry
       } else {
-        assert.equal(env.requests.length, 2); // one request per large asset
+        assert.equal(env.requests.length, 4); // data, wasm, and both generated scripts
       }
       if (options.badMime || options.noStreaming) assert.equal(env.counts().streamCalls, 0);
       console.log('PASS boot / release hooks / fallback', JSON.stringify(options));
     }
-    const offlineBoot = environment();
-    await offlineBoot.api.cachedAssetResponse('cataclysm-tiles.data', 'data');
-    await offlineBoot.api.cachedAssetResponse('cataclysm-tiles.wasm', 'wasm');
+    const completeBundle = environment();
+    await completeBoot(completeBundle);
+    const offlineBoot = environment({ cacheEntries: completeBundle.entries });
     offlineBoot.offline();
     await completeBoot(offlineBoot);
     assert.equal(offlineBoot.counts().receives, 1);
-    console.log('PASS fully cached offline boot');
+    assert(offlineBoot.entries.has('__cdda_bundle_complete_v2__'));
+    console.log('PASS fully cached four-file offline boot');
+
+    const partialUpdate = environment({
+      cacheEntries: completeBundle.entries,
+      etag: 'v2',
+      failUrls: ['cataclysm-tiles.wasm'],
+    });
+    await completeBoot(partialUpdate);
+    assert.equal(partialUpdate.api.assetTags['cataclysm-tiles.data'], 'v1',
+      'one failed asset must select the previous complete bundle, not new data plus old wasm');
+    for (const url of ['cataclysm-tiles.data', 'cataclysm-tiles.wasm',
+                       'cataclysm-tiles.data.js', 'cataclysm-tiles.js']) {
+      const stored = partialUpdate.entries.get(url);
+      assert(stored, 'complete old bundle keeps ' + url);
+      assert.equal(stored.headers.find(([key]) => key.toLowerCase() === 'x-cdda-etag')?.[1], 'v1',
+        'partial network update must not commit a mixture: ' + url);
+    }
+    console.log('PASS partial deployment failure: use previous coherent bundle and discard staged new files');
 
     const unhandledRejections = [];
     const onUnhandledRejection = reason => unhandledRejections.push(reason);
