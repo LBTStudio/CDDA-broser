@@ -200,7 +200,7 @@ function rendererFixture(initial) {
 }
 
 function environment(options = {}) {
-  const entries = new Map();
+  const entries = new Map(options.cacheEntries || []);
   const requests = [];
   let offline = false, cacheFailure = false;
   let streamCalls = 0, bufferCalls = 0, fatal = 0, receives = 0;
@@ -216,6 +216,7 @@ function environment(options = {}) {
       if (cacheFailure || options.quota) throw new Error('quota');
       entries.set(url, { blob: await response.blob(), headers: [...response.headers] });
     },
+    async delete(url) { return entries.delete(url); },
   };
   const context = vm.createContext({
     console: { warn: (...args) => warnings.push(args), error: () => {} },
@@ -241,13 +242,15 @@ function environment(options = {}) {
     },
     async fetch(url, init = {}) {
       requests.push({ url, init });
-      if (offline) throw new Error('offline');
+      if (offline || (options.failUrls || []).includes(url)) throw new Error('offline/network failure');
       if (options.httpError) return new Response('missing', { status: 404 });
-      if (init.headers && init.headers['If-None-Match'] === 'v1') {
+      const etag = options.etag || 'v1';
+      if (init.headers && init.headers['If-None-Match'] === etag) {
         return new Response(null, { status: 304 });
       }
       const isWasm = url.endsWith('.wasm');
-      const bytes = options.invalidWasm && isWasm ? dataBytes : isWasm ? wasmBytes : dataBytes;
+      const bytes = options.invalidWasm && isWasm ? dataBytes :
+        isWasm ? (options.wasmBytes || wasmBytes) : (options.dataBytes || dataBytes);
       let offset = 0;
       const body = new ReadableStream({
         pull(controller) {
@@ -257,8 +260,9 @@ function environment(options = {}) {
         },
       });
       return new Response(body, { headers: {
-        ETag: 'v1', 'Content-Length': String(bytes.length),
-        'Content-Type': isWasm && !options.badMime ? 'application/wasm' : 'application/octet-stream',
+        ETag: etag, 'Content-Length': String(bytes.length),
+        'Content-Type': isWasm && !options.badMime ? 'application/wasm' :
+          url.endsWith('.js') ? 'application/javascript' : 'application/octet-stream',
       } });
     },
     loadingMessage: { textContent: '' },
