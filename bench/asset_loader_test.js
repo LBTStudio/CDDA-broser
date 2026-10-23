@@ -8,6 +8,64 @@ const html = fs.readFileSync(path.join(__dirname, '../shell/index.html'), 'utf8'
 const code = html.slice(html.indexOf('      const ASSET_CACHE ='),
   html.indexOf('      window.addEventListener("menuready"'));
 assert(code.includes('async function instantiateCachedWasm'));
+
+const loaderStart = html.indexOf('      function loadScriptDirect(src) {');
+const loaderEnd = html.indexOf('      /* ---- Persistent asset cache', loaderStart);
+assert(loaderStart >= 0 && loaderEnd > loaderStart, 'find persistent generated-script loader');
+const loaderSource = html.slice(loaderStart, loaderEnd);
+assert(loaderSource.includes('cachedAssetResponse(src, label)'));
+assert(loaderSource.includes('URL.createObjectURL(new Blob([source]'));
+assert(loaderSource.includes('URL.revokeObjectURL(objectUrl)'));
+
+async function testPersistentScriptLoader() {
+  const cacheCalls = [], appended = [], revoked = [], blobSources = new Map();
+  let nextBlob = 0, forceCacheFailure = false, context;
+  const fakeURL = {
+    createObjectURL(blob) {
+      const uri = 'blob:test/' + (++nextBlob);
+      blobSources.set(uri, blob);
+      return uri;
+    },
+    revokeObjectURL(uri) { revoked.push(uri); blobSources.delete(uri); },
+  };
+  const document = {
+    createElement(tag) { assert.equal(tag, 'script'); return { src: '', onload: null, onerror: null }; },
+    body: { appendChild(script) {
+      appended.push(script.src);
+      if (script.src.startsWith('blob:')) {
+        blobSources.get(script.src).text().then(source => {
+          vm.runInContext(source, context);
+          script.onload();
+        }).catch(() => script.onerror());
+      } else {
+        script.onload(); // emulate a successful regular HTTP script request
+      }
+    } },
+  };
+  context = vm.createContext({
+    Blob, URL: fakeURL, document,
+    console: { warn() {} },
+    async cachedAssetResponse(url, label) {
+      cacheCalls.push({ url, label });
+      if (forceCacheFailure) throw new Error('offline cache miss');
+      return { text: async () => 'globalThis.loadedScripts = (globalThis.loadedScripts || []).concat(' + JSON.stringify(url) + ');' };
+    },
+  });
+  vm.runInContext(loaderSource, context);
+  await context.loadScript('cataclysm-tiles.data.js');
+  await context.loadScript('cataclysm-tiles.js');
+  assert.deepEqual(Array.from(context.loadedScripts), ['cataclysm-tiles.data.js', 'cataclysm-tiles.js']);
+  assert.deepEqual(cacheCalls.map(x => x.url), ['cataclysm-tiles.data.js', 'cataclysm-tiles.js']);
+  assert.deepEqual(cacheCalls.map(x => x.label), ['データローダー', 'JavaScript本体']);
+  assert.equal(appended.length, 2);
+  assert(appended.every(src => src.startsWith('blob:')), 'cached scripts must not require a network script URL');
+  assert.equal(revoked.length, 2, 'temporary Blob URLs must be released after load');
+
+  forceCacheFailure = true;
+  await context.loadScript('cataclysm-tiles.js');
+  assert.equal(appended.at(-1), 'cataclysm-tiles.js', 'retain the normal URL fallback if cache retrieval fails');
+  console.log('PASS persistent script loader: both generated JS files use Cache Storage; direct URL fallback and Blob cleanup work');
+}
 const wasmBytes = Uint8Array.from([0, 97, 115, 109, 1, 0, 0, 0]);
 const dataBytes = Uint8Array.from([10, 20, 30, 40]);
 
