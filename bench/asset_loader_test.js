@@ -296,6 +296,7 @@ async function completeBoot(env) {
 }
 
 (async () => {
+  await testPersistentScriptLoader();
   // Fail if production reintroduces Response.clone/tee for caching or wasm.
   const clone = Response.prototype.clone;
   Response.prototype.clone = () => { throw new Error('Unexpected Response.clone retains fallback bytes'); };
