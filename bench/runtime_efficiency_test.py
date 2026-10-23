@@ -744,8 +744,9 @@ for name, signatures in [
         submap_addr += offsets_offset.raw(); // TODO: Make += etc. available to relative parameters as well.
         submap_addrs.push_back( submap_addr );
 """
-            assert fixed_setup in candidate and fixed_loop in candidate, \\
+            assert (fixed_setup in candidate and fixed_loop in candidate), (
                 "mapbuffer fixed-array change is missing or unexpectedly edited"
+            )
             candidate = candidate.replace(fixed_setup, upstream_setup, 1)
             candidate = candidate.replace(fixed_loop, upstream_loop, 1)
         assert tokens(candidate.replace('CATA_WEB_YIELD();', '')) == tokens(function(upstream(name), signature))
