@@ -712,6 +712,43 @@ for name, signatures in [
     current = (source / 'src' / name).read_text()
     for signature in signatures:
         candidate = function(current, signature)
+        if name == "mapbuffer.cpp" and signature == "void mapbuffer::save_quad(":
+            # PR #50 intentionally replaces only fixed four-element temporary
+            # vectors with arrays. Normalize that separately tested change
+            # before comparing all remaining save logic with upstream.
+            fixed_setup = """    const std::array<point_rel_sm, 4> offsets = {
+        point_rel_sm::zero, point_rel_sm::south, point_rel_sm::east, point_rel_sm::south_east
+    };
+    const tripoint_abs_sm base_addr = project_to<coords::sm>( om_addr );
+    std::array<tripoint_abs_sm, 4> submap_addrs = {
+        base_addr, base_addr, base_addr, base_addr
+    };
+    std::size_t submap_index = 0;
+"""
+            upstream_setup = """    std::vector<point_rel_sm> offsets;
+    std::vector<tripoint_abs_sm> submap_addrs;
+    offsets.reserve( 4 );
+    submap_addrs.reserve( 4 );
+    offsets.push_back( point_rel_sm::zero );
+    offsets.push_back( point_rel_sm::south );
+    offsets.push_back( point_rel_sm::east );
+    offsets.push_back( point_rel_sm::south_east );
+"""
+            fixed_loop = """    for( const point_rel_sm &offsets_offset : offsets ) {
+        tripoint_abs_sm submap_addr = base_addr;
+        submap_addr += offsets_offset.raw(); // TODO: Make += etc. available to relative parameters as well.
+        submap_addrs[submap_index++] = submap_addr;
+"""
+            upstream_loop = """    for( point_rel_sm &offsets_offset : offsets ) {
+        tripoint_abs_sm submap_addr = project_to<coords::sm>( om_addr );
+        submap_addr += offsets_offset.raw(); // TODO: Make += etc. available to relative parameters as well.
+        submap_addrs.push_back( submap_addr );
+"""
+            assert (fixed_setup in candidate and fixed_loop in candidate), (
+                "mapbuffer fixed-array change is missing or unexpectedly edited"
+            )
+            candidate = candidate.replace(fixed_setup, upstream_setup, 1)
+            candidate = candidate.replace(fixed_loop, upstream_loop, 1)
         assert tokens(candidate.replace('CATA_WEB_YIELD();', '')) == tokens(function(upstream(name), signature))
 print('PASS map load/shift/save: all original statements and order retained; cooperative yields only')
 
