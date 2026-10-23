@@ -43,7 +43,7 @@ diff --git a/src/game.cpp b/src/game.cpp
  
 -                add_item_recursive( item_order, temp_items, &elem, relative_pos );
 +                add_item_recursive( stack_order, temp_items, &elem, relative_pos );
-@@ -8358,6 +8358,6 @@
+@@ -8358,7 +8358,7 @@
 -    ret.reserve( item_order.size() );
 -    for( auto &elem : item_order ) {
 -        ret.push_back( std::move( temp_items.at( elem ) ) );
