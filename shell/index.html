@@ -758,66 +758,189 @@
         try {
           noticeMessage("MODを展開しています... / Unpacking mod...");
           const zip = await JSZip.loadAsync(await file.arrayBuffer());
-          // Find every modinfo.json; each parent directory is one mod.
-          // Handles zips with a top-level folder, without one, and
-          // multi-mod bundles alike.
+          // Canonicalize harmless ./ segments, but reject absolute paths,
+          // parent traversal, backslashes and ambiguous duplicate destinations.
+          function safeZipPath(value) {
+            if (typeof value !== "string" || !value || value.startsWith("/") ||
+                value.includes("\\") || /^[A-Za-z]:/.test(value)) return null;
+            const parts = [];
+            for (const part of value.split("/")) {
+              if (!part || part === ".") continue;
+              if (part === ".." || /[\u0000-\u001f]/.test(part)) return null;
+              parts.push(part);
+            }
+            if (!parts.length) return null;
+            if (parts[parts.length - 1].toLowerCase() === "modinfo.json") {
+              parts[parts.length - 1] = "modinfo.json";
+            }
+            return parts.join("/");
+          }
           const modDirs = [];
+          const zipFiles = [];
+          const zipPaths = new Set();
+          let invalidPath = null;
           zip.forEach((relPath, entry) => {
             if (entry.dir) return;
-            const parts = relPath.split("/");
-            if (parts[parts.length - 1].toLowerCase() === "modinfo.json") {
+            const safePath = safeZipPath(relPath);
+            if (!safePath || zipPaths.has(safePath)) {
+              invalidPath = relPath;
+              return;
+            }
+            zipPaths.add(safePath);
+            zipFiles.push([safePath, entry]);
+            const parts = safePath.split("/");
+            if (parts[parts.length - 1] === "modinfo.json") {
               modDirs.push(parts.slice(0, -1).join("/"));
             }
           });
+          if (invalidPath !== null) {
+            noticeMessage("ZIPに危険なパス、または重複する保存先があります。MODは導入していません。 / Unsafe or duplicate paths in ZIP; no mods were installed.");
+            return;
+          }
           if (modDirs.length === 0) {
             noticeMessage("modinfo.json が見つかりません。CDDA用MODのzipか確認してください。 / No modinfo.json found in this zip.");
             return;
           }
           // Deepest-first so nested duplicates resolve to the closest mod dir.
           modDirs.sort((a, b) => b.length - a.length);
+          const root = modRoot();
+          const profileRoot = root.slice(0, root.lastIndexOf("/"));
+          const stagingRoot = profileRoot + "/.mod-installer-staging";
+          const specs = [];
+          const targetNames = new Set();
+          for (const prefix of modDirs) {
+            const sourceName = prefix ? prefix.split("/").pop() : file.name.replace(/\.zip$/i, "");
+            const dirName = sourceName.replace(/[^A-Za-z0-9 ._-]/g, "_").trim() || "mod";
+            if (dirName === "." || dirName === ".." || targetNames.has(dirName)) {
+              noticeMessage("MOD名が安全でないか、導入先が重複しています。ZIPを確認してください。 / Unsafe or duplicate MOD directory name; no mods were installed.");
+              return;
+            }
+            targetNames.add(dirName);
+            specs.push({ prefix, dirName });
+          }
+
           const fs = Module.FS;
           let installed = 0;
+          let storageTouched = false;
           const installedNames = [];
+          const errors = [];
           const handled = new Set();
-          for (const prefix of modDirs) {
+          for (const { prefix, dirName } of specs) {
             if ([...handled].some((h) => prefix.startsWith(h + "/") || prefix === h)) continue;
             handled.add(prefix);
-            // Mod directory name: last path segment, or the zip name for root-level mods.
-            const dirName = (prefix ? prefix.split("/").pop() : file.name.replace(/\.zip$/i, ""))
-              .replace(/[^A-Za-z0-9 ._-]/g, "_").trim() || "mod";
-            const target = modRoot() + "/" + dirName;
-            if (fs.analyzePath(target).exists) {
-              if (!confirm('Mod "' + dirName + '" already exists. Overwrite?\n（同名のMODを上書きします）')) continue;
-              removeDirRecursive(fs, target);
-            }
-            fs.mkdirTree(target);
+            const target = root + "/" + dirName;
+            const targetExists = fs.analyzePath(target).exists;
+            if (targetExists && !confirm('Mod "' + dirName + '" already exists. Overwrite?\n（同名のMODを上書きします）')) continue;
+
             const prefixSlash = prefix ? prefix + "/" : "";
             // Nested MOD_INFO roots are installed independently below their
             // own ID. Do not copy their payload into the parent's directory too.
             const nestedModRoots = [...handled].filter((h) =>
               h && (prefix === "" || h.startsWith(prefix + "/")));
-            const files = [];
-            zip.forEach((relPath, entry) => {
-              if (!entry.dir && relPath.startsWith(prefixSlash) &&
-                  !nestedModRoots.some((h) => relPath.startsWith(h + "/"))) {
-                files.push([relPath, entry]);
+            const files = zipFiles.filter(([relPath]) =>
+              relPath.startsWith(prefixSlash) &&
+              !nestedModRoots.some((h) => relPath.startsWith(h + "/")));
+            let transactionRoot = "";
+            let stage = "";
+            let backup = "";
+            let backupMoved = false;
+            let recoveryFailed = false;
+            try {
+              const token = Date.now().toString(36) + "-" + Math.random().toString(36).slice(2);
+              transactionRoot = stagingRoot + "/" + token;
+              let suffix = 0;
+              while (fs.analyzePath(transactionRoot).exists) {
+                transactionRoot = stagingRoot + "/" + token + "-" + (++suffix);
               }
-            });
-            for (const [relPath, entry] of files) {
-              const rel = relPath.slice(prefixSlash.length);
-              if (!rel || rel.includes("..")) continue;
-              const dest = target + "/" + rel;
-              const parent = dest.slice(0, dest.lastIndexOf("/"));
-              fs.mkdirTree(parent);
-              fs.writeFile(dest, new Uint8Array(await entry.async("arraybuffer")));
+              stage = transactionRoot + "/new";
+              backup = transactionRoot + "/previous";
+              storageTouched = true;
+              fs.mkdirTree(stage);
+              for (const [relPath, entry] of files) {
+                const rel = relPath.slice(prefixSlash.length);
+                const components = rel.split("/");
+                if (!rel || rel.startsWith("/") ||
+                    components.some((part) => !part || part === "." || part === "..")) {
+                  throw new Error("Unsafe path inside MOD payload");
+                }
+                const dest = stage + "/" + rel;
+                const parent = dest.slice(0, dest.lastIndexOf("/"));
+                fs.mkdirTree(parent);
+                fs.writeFile(dest, new Uint8Array(await entry.async("arraybuffer")));
+              }
+              if (!fs.analyzePath(stage + "/modinfo.json").exists) {
+                throw new Error("modinfo.json missing from staged MOD");
+              }
+              const modInfo = JSON.parse(fs.readFile(stage + "/modinfo.json", { encoding: "utf8" }));
+              if (!Array.isArray(modInfo) ||
+                  !modInfo.some((item) => item && item.type === "MOD_INFO" &&
+                    typeof item.id === "string" && item.id.trim())) {
+                throw new Error("Invalid MOD_INFO in modinfo.json");
+              }
+
+              if (targetExists) {
+                fs.rename(target, backup);
+                backupMoved = true;
+              }
+              try {
+                fs.rename(stage, target);
+              } catch (installError) {
+                if (backupMoved) {
+                  try {
+                    fs.rename(backup, target);
+                    backupMoved = false;
+                  } catch (restoreError) {
+                    recoveryFailed = true;
+                    throw new Error("Install failed; previous MOD preserved at " + backup +
+                      " (restore error: " + restoreError + ")");
+                  }
+                }
+                throw installError;
+              }
+
+              installed++;
+              installedNames.push(dirName);
+              if (backupMoved) {
+                try {
+                  removeDirRecursive(fs, backup);
+                  backupMoved = false;
+                } catch (cleanupError) {
+                  errors.push(dirName + ": new version installed, but prior backup remains at " +
+                    backup + " (" + cleanupError + ")");
+                  console.warn("Could not remove previous MOD backup:", backup, cleanupError);
+                }
+              }
+            } catch (error) {
+              errors.push(dirName + ": " + (error && error.message ? error.message : error));
+              console.error("MOD install failed for " + dirName + ":", error);
+            } finally {
+              try {
+                if (stage && fs.analyzePath(stage).exists) {
+                  removeDirRecursive(fs, stage);
+                }
+              } catch (cleanupError) {
+                errors.push(dirName + ": temporary files remain at " + stage);
+                console.warn("Could not clean MOD staging directory:", stage, cleanupError);
+              }
+              if (transactionRoot && !backupMoved && !recoveryFailed) {
+                try {
+                  if (fs.analyzePath(transactionRoot).exists) removeDirRecursive(fs, transactionRoot);
+                } catch (cleanupError) {
+                  errors.push(dirName + ": temporary directory remains at " + transactionRoot);
+                  console.warn("Could not clean MOD transaction directory:", transactionRoot, cleanupError);
+                }
+              }
             }
-            installed++;
-            installedNames.push(dirName);
           }
-          if (installed > 0) {
-            requestPersist();
+          if (storageTouched) requestPersist();
+          if (installed > 0 && errors.length === 0) {
             noticeMessage("MODを導入しました: " + installedNames.join(", ") +
               " — 再読み込み後、ワールド作成/編集画面のMOD一覧に表示されます。 / Installed. Reload, then enable it in the world's mod list.");
+          } else if (installed > 0) {
+            noticeMessage("導入: " + installedNames.join(", ") + "。一部の処理で問題が発生しました: " +
+              errors.join(" | ") + " / Some installation steps failed; see the console for details.");
+          } else if (errors.length > 0) {
+            noticeMessage("MODの導入に失敗しました: " + errors.join(" | ") + " / Mod installation failed.");
           }
         } catch (error) {
           console.error("Mod install failed:", error);
