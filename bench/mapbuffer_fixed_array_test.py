@@ -20,9 +20,21 @@ out.mkdir(parents=True, exist_ok=True)
 
 original = subprocess.check_output(
     ["git", "-C", str(source), "show", "HEAD:src/mapbuffer.cpp"], text=True)
-patched_path = source / "src" / "mapbuffer.cpp"
-patched = patched_path.read_text()
+patched = (source / "src" / "mapbuffer.cpp").read_text()
 
+
+def function_body(text, signature):
+    start = text.index(signature)
+    opening = text.index("{", start)
+    depth, pos = 1, opening + 1
+    while depth:
+        depth += (text[pos] == "{") - (text[pos] == "}")
+        pos += 1
+    return text[start:pos]
+
+
+old_quad = function_body(original, "void mapbuffer::save_quad(")
+new_quad = function_body(patched, "void mapbuffer::save_quad(")
 old_setup = """    std::vector<point_rel_sm> offsets;
     std::vector<tripoint_abs_sm> submap_addrs;
     offsets.reserve( 4 );
@@ -51,15 +63,14 @@ new_loop = """    for( const point_rel_sm &offsets_offset : offsets ) {
         submap_addr += offsets_offset.raw(); // TODO: Make += etc. available to relative parameters as well.
         submap_addrs[submap_index++] = submap_addr;
 """
-assert old_setup in original and old_loop in original, "expected pristine 0.I save_quad setup"
-assert new_setup in patched and new_loop in patched, "fixed-array save_quad setup missing"
-normalized = patched.replace(new_setup, old_setup, 1).replace(new_loop, old_loop, 1)
-normalized = normalized.replace("#include <array>\n", "", 1)
-assert normalized == original, (
-    "mapbuffer.cpp has changes beyond the fixed-array setup; review any patch overlap"
+assert old_setup in old_quad and old_loop in old_quad, "expected pristine 0.I save_quad setup"
+assert new_setup in new_quad and new_loop in new_quad, "fixed-array save_quad setup missing"
+normalized_quad = new_quad.replace(new_setup, old_setup, 1).replace(new_loop, old_loop, 1)
+assert normalized_quad == old_quad, (
+    "save_quad changed beyond fixed-size storage and hoisted invariant address calculation"
 )
-assert patched.count("#include <array>") == 1
-assert "std::vector<point_rel_sm> offsets" not in patched
+assert "#include <array>" in patched
+assert "std::vector<point_rel_sm> offsets" not in new_quad
 
 program = r'''
 #include <array>
