@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 const fsNode = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
+const RealJSZip = require(path.join(__dirname, '../shell/vendor/jszip-3.10.1.min.js'));
 
 const html = fsNode.readFileSync(path.join(__dirname, '../shell/index.html'), 'utf8');
 const start = html.indexOf('document.getElementById("mod-zip-input").addEventListener("change", async (ev) => {');
@@ -61,7 +62,7 @@ function makeZip(entries) {
 }
 
 function makeScenario({ entries, fileName = 'bundle.zip', fileSize = 1024,
-                      initialFiles = [], failInstallRename = '' }) {
+                      initialFiles = [], failInstallRename = '', zipBytes = null }) {
   const dirs = new Set();
   const files = new Map();
   const operations = [];
@@ -182,7 +183,7 @@ function makeScenario({ entries, fileName = 'bundle.zip', fileSize = 1024,
     document: { getElementById(id) { assert.equal(id, 'mod-zip-input'); return input; } },
     window: { CDDA_PROFILE: 'audit', Module: gameModule },
     Module: gameModule,
-    JSZip: { loadAsync: async () => makeZip(entries) },
+    JSZip: { loadAsync: async buffer => zipBytes ? RealJSZip.loadAsync(buffer) : makeZip(entries) },
     booted: true,
     fsReady: () => true,
     modRoot: () => mods,
@@ -209,7 +210,12 @@ function makeScenario({ entries, fileName = 'bundle.zip', fileSize = 1024,
       const file = {
         name: fileName,
         size: fileSize,
-        arrayBuffer: async () => { arrayBufferReads++; return new ArrayBuffer(0); },
+        arrayBuffer: async () => {
+          arrayBufferReads++;
+          return zipBytes
+            ? zipBytes.buffer.slice(zipBytes.byteOffset, zipBytes.byteOffset + zipBytes.byteLength)
+            : new ArrayBuffer(0);
+        },
       };
       await input.handler({ target: { files: [file], value: fileName } });
     },
@@ -385,5 +391,63 @@ function makeScenario({ entries, fileName = 'bundle.zip', fileSize = 1024,
     assert.equal(e.persistCalls(), 1);
     assert(e.notices.some(message => /failed|失敗/i.test(message)));
     console.log('PASS MOD ZIP atomic overwrite: failed directory swap restores prior MOD');
+  }
+
+  // Exercise the actual bundled JSZip parser and its streaming API. Forge both
+  // ZIP uncompressed-size fields to 1 byte while leaving a valid 64 MiB+1
+  // DEFLATE payload. This verifies the defense is not merely a fake-adapter test.
+  {
+    const forgedZip = await (async () => {
+      const zip = new RealJSZip();
+      const payloadSize = 64 * 1024 * 1024 + 1;
+      zip.file('main/modinfo.json', '[{"type":"MOD_INFO","id":"main-new"}]');
+      zip.file('main/huge.bin', new Uint8Array(payloadSize), {
+        binary: true, compression: 'DEFLATE', compressionOptions: { level: 1 },
+      });
+      const bytes = await zip.generateAsync({
+        type: 'uint8array', compression: 'DEFLATE', compressionOptions: { level: 1 },
+      });
+      const name = new TextEncoder().encode('main/huge.bin');
+      const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+      let localName = -1, centralName = -1;
+      const matchesAt = (at, signature) =>
+        at >= 0 && bytes[at] === signature[0] && bytes[at + 1] === signature[1] &&
+        bytes[at + 2] === signature[2] && bytes[at + 3] === signature[3];
+      for (let i = 0; i <= bytes.length - name.length; i++) {
+        let match = true;
+        for (let j = 0; j < name.length; j++) {
+          if (bytes[i + j] !== name[j]) { match = false; break; }
+        }
+        if (!match) continue;
+        if (matchesAt(i - 30, [0x50, 0x4b, 0x03, 0x04])) localName = i;
+        if (matchesAt(i - 46, [0x50, 0x4b, 0x01, 0x02])) centralName = i;
+      }
+      assert(localName >= 30, 'find huge entry local header');
+      assert(centralName >= 46, 'find huge entry central-directory header');
+      view.setUint32(localName - 30 + 22, 1, true);
+      view.setUint32(centralName - 46 + 24, 1, true);
+      assert(bytes.byteLength < 128 * 1024 * 1024, 'compressed test archive remains under the installer cap');
+      return bytes;
+    })();
+    const oldInfo = '[{"type":"MOD_INFO","id":"main-old"}]';
+    const target = mods + '/main';
+    const e = makeScenario({
+      entries: [],
+      fileName: 'forged-size.zip',
+      fileSize: forgedZip.byteLength,
+      zipBytes: forgedZip,
+      initialFiles: [[target + '/modinfo.json', oldInfo], [target + '/old.txt', 'preserve']],
+    });
+    await e.install();
+    assert.equal(e.files.get(target + '/modinfo.json'), oldInfo,
+      'real JSZip stream overflow must leave the previous MOD intact');
+    assert.equal(e.files.get(target + '/old.txt'), 'preserve');
+    assert(![...e.files.keys()].some(p => p.includes('/.mod-installer-staging/')),
+      'real ZIP overflow must clean staging');
+    assert.equal(e.files.has(target + '/huge.bin'), false);
+    assert.equal(e.persistCalls(), 1);
+    assert(e.notices.some(message => message.includes('64 MiB')),
+      'actual output size, not forged ZIP metadata, must stop extraction');
+    console.log('PASS real JSZip: forged central/local size fields cannot bypass stream expansion limit');
   }
 })().catch(error => { console.error(error); process.exitCode = 1; });
