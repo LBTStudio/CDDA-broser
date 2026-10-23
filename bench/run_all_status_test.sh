@@ -36,6 +36,7 @@ if [ "${FAKE_FAIL_BENCH:-}" = "yield_cost" ]; then
     exit 1
 fi
 echo "DONE"
+[ "${FAKE_EXIT_NONZERO:-}" != "yield_cost" ]
 FAKE_NODE
 cat > "$tmp/bin/chrome" <<'FAKE_CHROME'
 #!/usr/bin/env bash
@@ -54,6 +55,13 @@ if env "${common_env[@]}" FAKE_FAIL_BENCH=yield_cost bash "$tmp/bench/run-all.sh
     exit 1
 fi
 grep -q "成功: 0 / 失敗: 1" "$tmp/run-failure.log"
+
+if env "${common_env[@]}" FAKE_EXIT_NONZERO=yield_cost bash "$tmp/bench/run-all.sh" > "$tmp/nonzero-after-done.log" 2>&1; then
+    echo "ERROR: non-zero runner exit was ignored because DONE was present" >&2
+    cat "$tmp/nonzero-after-done.log" >&2
+    exit 1
+fi
+grep -q "成功: 0 / 失敗: 1" "$tmp/nonzero-after-done.log"
 
 if env "${common_env[@]}" FAKE_BUILD_FAIL=yield_cost bash "$tmp/bench/run-all.sh" > "$tmp/build-failure.log" 2>&1; then
     echo "ERROR: compile failure was reported as success" >&2
