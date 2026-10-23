@@ -1036,8 +1036,15 @@
           languageOption.value = "ja";
         }
 
+        // The options file may already be mutated when writing the migration
+        // marker fails (for example, a quota error). Still report the mutation
+        // so the caller schedules IDBFS sync; retrying the marker is safe.
         fs.writeFile(optionsPath, JSON.stringify(options));
-        fs.writeFile(migrationPath, "v3\n");
+        try {
+          fs.writeFile(migrationPath, "v3\n");
+        } catch (error) {
+          console.warn("Could not write CDDA language migration marker; updated options still need persistence.", error);
+        }
         return true;
       }
 
