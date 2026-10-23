@@ -490,6 +490,36 @@
           console.warn("Could not read active asset cache pointer:", e);
         }
 
+        // If the active bucket was evicted or damaged, recover the most recent
+        // other complete v3 snapshot before falling back to the legacy bucket.
+        // Cache names contain a zero-padded timestamp, so reverse lexical order
+        // gives newest-first ordering without reading the large assets into JS.
+        try {
+          const names = ( await caches.keys() )
+            .filter(name => name.startsWith(ASSET_BUNDLE_PREFIX))
+            .sort()
+            .reverse();
+          for (const name of names) {
+            const backup = await readBundleFromCache(name, ASSET_BUNDLE_COMPLETE);
+            if (!backup) continue;
+            activeAssetCacheName = backup.name;
+            assetReadCache = backup.cache;
+            activeAssetBundle = backup;
+            try {
+              const meta = await caches.open(ASSET_META_CACHE);
+              await meta.put(ASSET_ACTIVE_KEY, new Response(name, {
+                headers: { "Content-Type": "text/plain" },
+              }));
+            } catch (e) {
+              console.warn("Recovered a complete cached bundle but could not restore its pointer:", e);
+            }
+            console.warn("Recovered previous complete asset bundle:", name);
+            return backup;
+          }
+        } catch (e) {
+          console.warn("Could not search prior complete asset bundles:", e);
+        }
+
         // Upgrade path: v2 bundles have a completion marker but shared mutable
         // entries. Preserve one as rollback until a new v3 snapshot is active.
         const legacy = await readBundleFromCache(
