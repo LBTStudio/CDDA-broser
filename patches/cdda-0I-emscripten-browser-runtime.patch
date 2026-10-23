@@ -116,7 +116,7 @@ Normal activity mode adds optional pacing; fast mode never skips game turns.
 +    const double now = now_ms();
 +    const double remaining = 50.0 - ( now - last_turn_ms );
 +    if( last_turn_ms > 0.0 && remaining > 0.0 && remaining <= 50.0 ) {
-+        wait_for_input( static_cast<int>( remaining ) + 1 );
++        wait_for_input( static_cast<int>( remaining ) + 1, false );
 +    }
 +    // Do not accumulate pacing debt across expensive turns or modal dialogs.
 +    last_turn_ms = now_ms();
