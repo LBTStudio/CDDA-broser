@@ -390,7 +390,10 @@
             document.body.appendChild(script);
           });
         } catch (error) {
-          if (strictCachedBundle) throw error;
+          // When a response is pinned to a coherent four-file bundle, never
+          // fetch a mutable sibling URL after a Blob execution failure. That
+          // URL may now serve a different release from the selected WASM/data.
+          if (strictCachedBundle || responseOverride) throw error;
           console.warn("Cached script path unavailable; trying normal script request:", src, error);
           await loadScriptDirect(src);
         } finally {
