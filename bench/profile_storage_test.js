@@ -63,13 +63,17 @@ function scenario({ profileValue = null, lastValue = null, storageThrows = false
 }
 
 {
-  const e = scenario({ profileValue: '{"not":"an array"}', lastValue: 'PLAYER ONE' });
+  const e = scenario({ profileValue: '{"not":"an array"}', lastValue: 'playerone' });
   assert.equal(e.profileList.children.length, 0);
   assert.equal(e.profileInput.value, 'playerone');
 }
 {
   const e = scenario({ profileValue: 'not valid JSON' });
   assert.equal(e.profileList.children.length, 0);
+}
+{
+  const e = scenario({ lastValue: '../evil' });
+  assert.equal(e.profileInput.value, '', 'non-canonical last profile must not map to another save name');
 }
 {
   const e = scenario({
