@@ -41,11 +41,11 @@ const fakeFs = {
 };
 const notices = [];
 let persistCalls = 0;
-const module = { FS: fakeFs };
+const gameModule = { FS: fakeFs };
 const context = {
   document: { getElementById(id) { assert.equal(id, 'mod-zip-input'); return input; } },
-  window: { CDDA_PROFILE: 'audit', Module: module },
-  Module: module,
+  window: { CDDA_PROFILE: 'audit', Module: gameModule },
+  Module: gameModule,
   JSZip: { loadAsync: async () => zip },
   booted: true,
   fsReady: () => true,
