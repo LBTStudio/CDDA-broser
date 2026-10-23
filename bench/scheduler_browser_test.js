@@ -149,7 +149,7 @@ var Module={};</script><script src="test.js"></script>` });
       await page.waitForFunction(n => window.resumed >= n, phase, { timeout: 1500 });
       latencies.push(Date.now() - start); // includes Playwright roundtrips, not game latency
     }
-    await page.waitForFunction(() => window.phase === 5, undefined, { timeout: 1500 });
+    await page.waitForFunction(() => window.motionWaitMs !== undefined, undefined, { timeout: 1500 });
     await page.waitForFunction(() => window.done, undefined, { timeout: 10000 });
     const result = await page.evaluate(() => ({ delivered, fallbackMs, idleUsedMessageChannel, paintOrder, hiddenMs, cancelledFrames, pacingMs, switchMs, motionWaitMs }));
     assert.deepEqual(errors, []);
