@@ -62,6 +62,8 @@ function smokeTestActualVendoredLibraries() {
     setTimeout, clearTimeout, setInterval, clearInterval,
     setImmediate, clearImmediate,
     navigator: { userAgent: 'Mozilla/5.0 Chrome/120.0' },
+    HTMLAnchorElement: class HTMLAnchorElement {},
+    HTMLElement: class HTMLElement {},
     document: {
       title: 'CDDA',
       body: { innerText: 'CDDA', appendChild() {} },
