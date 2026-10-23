@@ -10,17 +10,24 @@ rehashing and verify order, counts, positions and item pointers remain equal.
 diff --git a/src/game.cpp b/src/game.cpp
 --- a/src/game.cpp
 +++ b/src/game.cpp
-@@ -8313,2 +8313,2 @@
+@@ -8313,5 +8313,5 @@
 -static void add_item_recursive( std::vector<std::string> &item_order,
 -                                std::map<std::string, map_item_stack> &temp_items, const item *it,
 +static void add_item_recursive( std::vector<map_item_stack *> &stack_order,
 +                                std::unordered_map<std::string, map_item_stack> &temp_items, const item *it,
-@@ -8321,1 +8321,1 @@
+                                 const tripoint_rel_ms &relative_pos )
+ {
+     const std::string name = it->tname();
+@@ -8321,3 +8321,3 @@
+     if( entry.second ) {
 -        item_order.push_back( name );
 +        stack_order.push_back( &entry.first->second );
-@@ -8327,1 +8327,1 @@
+     } else {
+@@ -8326,3 +8326,3 @@
+     for( const item *content : it->all_known_contents() ) {
 -        add_item_recursive( item_order, temp_items, content, relative_pos );
 +        add_item_recursive( stack_order, temp_items, content, relative_pos );
+     }
 @@ -8335,3 +8335,3 @@
 -    std::map<std::string, map_item_stack> temp_items;
 +    std::unordered_map<std::string, map_item_stack> temp_items;
