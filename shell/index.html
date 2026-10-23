@@ -304,7 +304,7 @@
          from a temporary Blob URL. Their remaining binary/package lookups are
          supplied by Module.instantiateWasm / getPreloadedPackage below.
          Keep the normal URL loader as a CSP/storage fallback. */
-      async function loadScript(src) {
+      async function loadScript(src, responseOverride = null, strictCachedBundle = false) {
         const isDataLoader = src.endsWith(".data.js");
         const hasPreloadedPayload = isDataLoader
           ? typeof Module !== "undefined" && typeof Module.getPreloadedPackage === "function"
@@ -316,7 +316,7 @@
         const label = isDataLoader ? "データローダー" : "JavaScript本体";
         let objectUrl = "";
         try {
-          const response = await cachedAssetResponse(src, label);
+          const response = responseOverride || await cachedAssetResponse(src, label);
           const source = await response.text();
           objectUrl = URL.createObjectURL(new Blob([source], { type: "text/javascript" }));
           await new Promise((resolve, reject) => {
@@ -327,6 +327,7 @@
             document.body.appendChild(script);
           });
         } catch (error) {
+          if (strictCachedBundle) throw error;
           console.warn("Cached script path unavailable; trying normal script request:", src, error);
           await loadScriptDirect(src);
         } finally {
