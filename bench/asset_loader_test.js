@@ -214,6 +214,8 @@ function environment(options = {}) {
   let streamFailure = !!options.streamFailure;
   const module = {};
   const warnings = [];
+  const errors = [];
+  const loadingMessage = { textContent: '' };
 
   function cacheFor(name) {
     if (!cacheBuckets.has(name)) cacheBuckets.set(name, new Map());
@@ -236,7 +238,8 @@ function environment(options = {}) {
   }
 
   const context = vm.createContext({
-    console: { warn: (...args) => warnings.push(args), error: () => {} },
+    console: { warn: (...args) => warnings.push(args), error: (...args) => errors.push(args.map(String).join(' ')) },
+
     performance, Response, TransformStream: options.noTransform ? undefined : TransformStream,
     WebAssembly: {
       instantiateStreaming: options.noStreaming ? undefined : async (response, imports) => {
@@ -283,7 +286,7 @@ function environment(options = {}) {
           url.endsWith('.js') ? 'application/javascript' : 'application/octet-stream',
       } });
     },
-    loadingMessage: { textContent: '' },
+    loadingMessage,
     navigator: { storage: { persist() {
       if (options.persistThrow) throw new Error('storage shelf unavailable');
       if (options.persistReject) return Promise.reject(new Error('persistence denied'));
@@ -310,7 +313,7 @@ function environment(options = {}) {
   vm.runInContext('let booted = false;\n' + code +
     '\nglobalThis.api = {cachedAssetResponse, instantiateCachedWasm, boot, assetTags, readCompleteCachedBundle, commitAssetCacheBatch, get activeAssetCacheName() { return activeAssetCacheName; }};', context);
   return {
-    api: context.api, entries, cacheBuckets, requests, module, warnings,
+    api: context.api, entries, cacheBuckets, requests, module, warnings, errors, loadingMessage,
     offline() { offline = true; }, failCache() { cacheFailure = true; },
     snapshotCacheBuckets() { return [...cacheBuckets].map(([name, bucket]) => [name, [...bucket]]); },
     currentBucket() { return cacheBuckets.get(context.api.activeAssetCacheName); },
@@ -324,7 +327,7 @@ async function completeBoot(env) {
     if (env.counts().receives || env.counts().fatal) return;
     await new Promise(resolve => setTimeout(resolve, 5));
   }
-  throw new Error('boot did not complete');
+  throw new Error('boot did not complete; fatal=' + env.counts().fatal + '; loading=' + env.loadingMessage.textContent + '; console=' + env.errors.join(' | '));
 }
 
 (async () => {
