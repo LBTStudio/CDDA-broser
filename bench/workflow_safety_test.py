@@ -47,4 +47,14 @@ assert 'echo "## 各工程の実測"' not in workflow
 assert 'echo "| 工程 | 対象 | 所要 | 成果物 |"' not in workflow
 assert "## 各工程の実行ログ" in workflow
 
-print("PASS workflow safety: deployment gate, manual parity, complete-input link cache ordering, object-count verification, and non-empty summary design")
+# Architecture and measurement notes must describe the implementation that is
+# actually applied by CI, not the retracted first version of the activity patch.
+architecture = (root / "docs/ARCHITECTURE.md").read_text(encoding="utf-8")
+facts = (root / "docs/measurements/FACTS.md").read_text(encoding="utf-8")
+assert "cdda-assets-bundle-v3-*" in architecture
+assert "immutable bundle snapshots" in architecture
+assert "CI rejects" in architecture and "mon_info_update_throttled" in architecture
+assert "exclusive Web Lock" in architecture
+assert "F-20 [旧案・撤回済み]" in facts
+assert "this throttling proposal was retracted" in facts
+print("PASS docs consistency: immutable cache, current danger-check cadence, profile tab locks, retired optimization clearly labelled")
