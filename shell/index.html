@@ -288,7 +288,7 @@
       profileInput.addEventListener("keydown", (e) => { if (e.key === "Enter") profileStart.onclick(); });
 
       let booted = false;
-      function loadScript(src) {
+      function loadScriptDirect(src) {
         return new Promise((resolve, reject) => {
           const script = document.createElement("script");
           script.src = src;
@@ -296,6 +296,42 @@
           script.onerror = () => reject(new Error("Could not load " + src));
           document.body.appendChild(script);
         });
+      }
+
+      /* The binary assets use Cache Storage, but an ordinary <script src>
+         only consults the short-lived HTTP cache. Load the two generated JS
+         companions through the same persistent cache, then execute the bytes
+         from a temporary Blob URL. Their remaining binary/package lookups are
+         supplied by Module.instantiateWasm / getPreloadedPackage below.
+         Keep the normal URL loader as a CSP/storage fallback. */
+      async function loadScript(src) {
+        const isDataLoader = src.endsWith(".data.js");
+        const hasPreloadedPayload = isDataLoader
+          ? typeof Module !== "undefined" && typeof Module.getPreloadedPackage === "function"
+          : typeof Module !== "undefined" && typeof Module.instantiateWasm === "function";
+        // The generated loaders derive sibling paths from document.currentScript.
+        // Blob URLs are safe only when their payload overrides are installed;
+        // otherwise preserve the original URL for the stock Emscripten loader.
+        if (!hasPreloadedPayload) return loadScriptDirect(src);
+        const label = isDataLoader ? "データローダー" : "JavaScript本体";
+        let objectUrl = "";
+        try {
+          const response = await cachedAssetResponse(src, label);
+          const source = await response.text();
+          objectUrl = URL.createObjectURL(new Blob([source], { type: "text/javascript" }));
+          await new Promise((resolve, reject) => {
+            const script = document.createElement("script");
+            script.src = objectUrl;
+            script.onload = resolve;
+            script.onerror = () => reject(new Error("Could not execute cached script " + src));
+            document.body.appendChild(script);
+          });
+        } catch (error) {
+          console.warn("Cached script path unavailable; trying normal script request:", src, error);
+          await loadScriptDirect(src);
+        } finally {
+          if (objectUrl) URL.revokeObjectURL(objectUrl);
+        }
       }
 
       /* ---- Persistent asset cache ----------------------------------------
