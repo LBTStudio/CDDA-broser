@@ -1012,17 +1012,25 @@
         const migrationPath = configDir + "/.web-ja-default-v3";
         if (fs.analyzePath(migrationPath).exists) return false;
 
-        fs.mkdirTree(configDir);
         let options = [];
         if (fs.analyzePath(optionsPath).exists) {
+          let saved;
           try {
-            const saved = JSON.parse(fs.readFile(optionsPath, { encoding: "utf8" }));
-            if (Array.isArray(saved)) options = saved;
+            saved = JSON.parse(fs.readFile(optionsPath, { encoding: "utf8" }));
           } catch (error) {
-            console.warn("Could not read saved CDDA options; using defaults.", error);
+            // A one-time language migration must never replace an unreadable
+            // settings file with defaults. Preserve the original for recovery.
+            console.warn("Could not read saved CDDA options; preserving the original file.", error);
+            return false;
           }
+          if (!Array.isArray(saved)) {
+            console.warn("Saved CDDA options are not an array; preserving the original file.");
+            return false;
+          }
+          options = saved;
         }
 
+        fs.mkdirTree(configDir);
         const languageOption = options.find((option) => option && option.name === "USE_LANG");
         if (!languageOption) {
           options.push({ name: "USE_LANG", value: "ja" });
