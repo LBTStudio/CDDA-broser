@@ -197,13 +197,41 @@
       const LS_PROFILES = "cdda_web_profiles";
       const LS_LAST = "cdda_web_last_profile";
 
-      function getProfiles() {
-        try { return JSON.parse(localStorage.getItem(LS_PROFILES) || "[]"); }
-        catch (e) { return []; }
-      }
-      function setProfiles(list) { localStorage.setItem(LS_PROFILES, JSON.stringify(list)); }
       function sanitize(name) {
         return name.trim().toLowerCase().replace(/[^a-z0-9_-]/g, "").slice(0, 24);
+      }
+      function getProfiles() {
+        try {
+          const stored = JSON.parse(localStorage.getItem(LS_PROFILES) || "[]");
+          if (!Array.isArray(stored)) return [];
+          const profiles = [];
+          for (const value of stored) {
+            if (typeof value !== "string") continue;
+            const profile = sanitize(value);
+            // Profile names are stored only after canonicalization. A legacy
+            // or corrupted non-canonical entry must not be remapped to a
+            // different save directory on the user's behalf.
+            if (profile && profile === value && !profiles.includes(profile)) profiles.push(profile);
+          }
+          return profiles;
+        } catch (e) { return []; }
+      }
+      function setProfiles(list) {
+        try {
+          localStorage.setItem(LS_PROFILES, JSON.stringify(list));
+          return true;
+        } catch (e) {
+          console.warn("Could not save the browser profile list.", e);
+          return false;
+        }
+      }
+      function getLastProfile() {
+        try { return sanitize(localStorage.getItem(LS_LAST) || ""); }
+        catch (e) { return ""; }
+      }
+      function setLastProfile(profile) {
+        try { localStorage.setItem(LS_LAST, profile); }
+        catch (e) { console.warn("Could not remember the last browser profile.", e); }
       }
       function renderProfileChips() {
         profileList.innerHTML = "";
@@ -225,13 +253,13 @@
           profileList.appendChild(chip);
         }
       }
-      profileInput.value = localStorage.getItem(LS_LAST) || "";
+      profileInput.value = getLastProfile();
       renderProfileChips();
 
       function startGame(profile) {
         if (!profile) return;
         if (!getProfiles().includes(profile)) setProfiles(getProfiles().concat(profile));
-        localStorage.setItem(LS_LAST, profile);
+        setLastProfile(profile);
         window.CDDA_PROFILE = profile;
         // Module.ENV is created before a player chooses a profile.  Update
         // all locale-relevant paths before the Emscripten runtime starts.
