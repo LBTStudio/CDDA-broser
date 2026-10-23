@@ -26,6 +26,7 @@ assert "runtime_backend:" in workflow and '- "jspi"' in workflow
 assert "link_cache_key: ${{ steps.plan.outputs.link_cache_key }}" not in workflow
 assert 'link_fingerprint="$( bash ../ci/link-fingerprint.sh ../shard-plan/objs-all.txt )"' not in workflow.split("      - name: Build shard plan", 1)[1].split("      - name: Upload shard plan", 1)[0]
 assert "Fingerprint complete link inputs" in workflow
+assert 'CDDA_LINK_OPT="${{ inputs.link_opt }}" bash ../ci/link-fingerprint.sh ../shard-plan/objs-all.txt' in workflow
 assert "key: wasm-link-${{ steps.link_fingerprint.outputs.key }}" in workflow
 
 link_job = workflow.split("  link:\n", 1)[1].split("  # ==================================================================\n  # ジョブ 5", 1)[0]
