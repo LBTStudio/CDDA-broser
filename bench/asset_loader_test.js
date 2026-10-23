@@ -200,24 +200,41 @@ function rendererFixture(initial) {
 }
 
 function environment(options = {}) {
-  const entries = new Map(options.cacheEntries || []);
+  const cacheBuckets = new Map();
+  for (const [name, entries] of (options.cacheBuckets || [])) {
+    cacheBuckets.set(name, new Map(entries));
+  }
+  if (!cacheBuckets.has('cdda-assets-v2')) {
+    cacheBuckets.set('cdda-assets-v2', new Map(options.cacheEntries || []));
+  }
+  const entries = cacheBuckets.get('cdda-assets-v2');
   const requests = [];
-  let offline = false, cacheFailure = false;
+  let offline = false, cacheFailure = false, putCalls = 0;
   let streamCalls = 0, bufferCalls = 0, fatal = 0, receives = 0;
   let streamFailure = !!options.streamFailure;
   const module = {};
   const warnings = [];
-  const cache = {
-    async match(url) {
-      const entry = entries.get(url);
-      return entry ? new Response(entry.blob, { headers: entry.headers }) : undefined;
-    },
-    async put(url, response) {
-      if (cacheFailure || options.quota) throw new Error('quota');
-      entries.set(url, { blob: await response.blob(), headers: [...response.headers] });
-    },
-    async delete(url) { return entries.delete(url); },
-  };
+
+  function cacheFor(name) {
+    if (!cacheBuckets.has(name)) cacheBuckets.set(name, new Map());
+    const bucket = cacheBuckets.get(name);
+    return {
+      async match(url) {
+        const entry = bucket.get(url);
+        return entry ? new Response(entry.blob, { headers: entry.headers }) : undefined;
+      },
+      async put(url, response) {
+        ++putCalls;
+        if (cacheFailure || options.quota || options.failPutAt === putCalls) throw new Error('quota / injected cache-write failure');
+        bucket.set(url, { blob: await response.blob(), headers: [...response.headers] });
+      },
+      async delete(url) {
+        if (url === undefined) return cacheBuckets.delete(name);
+        return bucket.delete(url);
+      },
+    };
+  }
+
   const context = vm.createContext({
     console: { warn: (...args) => warnings.push(args), error: () => {} },
     performance, Response, TransformStream: options.noTransform ? undefined : TransformStream,
@@ -237,8 +254,9 @@ function environment(options = {}) {
       },
     },
     caches: {
-      async open() { if (options.noCache) throw new Error('storage blocked'); return cache; },
-      async keys() { return []; },
+      async open(name) { if (options.noCache) throw new Error('storage blocked'); return cacheFor(name); },
+      async keys() { return [...cacheBuckets.keys()]; },
+      async delete(name) { return cacheBuckets.delete(name); },
     },
     async fetch(url, init = {}) {
       requests.push({ url, init });
@@ -290,10 +308,12 @@ function environment(options = {}) {
     async loadScriptDirect(name) { return context.loadScript(name); },
   });
   vm.runInContext('let booted = false;\n' + code +
-    '\nglobalThis.api = {cachedAssetResponse, instantiateCachedWasm, boot, assetTags};', context);
+    '\nglobalThis.api = {cachedAssetResponse, instantiateCachedWasm, boot, assetTags, readCompleteCachedBundle, commitAssetCacheBatch, get activeAssetCacheName() { return activeAssetCacheName; }};', context);
   return {
-    api: context.api, entries, requests, module, warnings,
+    api: context.api, entries, cacheBuckets, requests, module, warnings,
     offline() { offline = true; }, failCache() { cacheFailure = true; },
+    snapshotCacheBuckets() { return [...cacheBuckets].map(([name, bucket]) => [name, [...bucket]]); },
+    currentBucket() { return cacheBuckets.get(context.api.activeAssetCacheName); },
     counts() { return { streamCalls, bufferCalls, fatal, receives }; },
   };
 }
