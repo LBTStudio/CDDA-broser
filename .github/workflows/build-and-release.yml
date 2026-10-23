@@ -100,6 +100,12 @@ jobs:
       link_cache_key: ${{ steps.plan.outputs.link_cache_key }}
 
     steps:
+      - name: Reject experimental JSPI deployment
+        if: ${{ inputs.runtime_backend == 'jspi' && inputs.deploy_pages != false }}
+        run: |
+          echo "::error::JSPI is experimental and must not be deployed to GitHub Pages. Set deploy_pages=false." >&2
+          exit 1
+
       - name: Checkout wrapper repository
         uses: actions/checkout@v4
 
@@ -634,7 +640,7 @@ jobs:
   # ==================================================================
   deploy:
     name: Deploy to GitHub Pages
-    if: ${{ inputs.deploy_pages != false }}
+    if: ${{ inputs.deploy_pages != false && inputs.runtime_backend != 'jspi' }}
     needs: bundle
     runs-on: ubuntu-latest
 
