@@ -84,7 +84,7 @@ Normal activity mode adds optional pacing; fast mode never skips game turns.
 +++ b/src/cata_web_yield.h
 @@ -59,6 +59,12 @@
  // gamepads and events queued internally by SDL. Never consumes an event.
- void wait_for_input( int timeout_ms );
+ void wait_for_input( int timeout_ms, bool wake_on_mouse_move = true );
  
 +// Shell preference, not a world/save option. Default keeps unpaced simulation.
 +bool activity_fast();
@@ -116,7 +116,7 @@ Normal activity mode adds optional pacing; fast mode never skips game turns.
 +    const double now = now_ms();
 +    const double remaining = 50.0 - ( now - last_turn_ms );
 +    if( last_turn_ms > 0.0 && remaining > 0.0 && remaining <= 50.0 ) {
-+        wait_for_input( static_cast<int>( remaining ) + 1 );
++        wait_for_input( static_cast<int>( remaining ) + 1, false );
 +    }
 +    // Do not accumulate pacing debt across expensive turns or modal dialogs.
 +    last_turn_ms = now_ms();

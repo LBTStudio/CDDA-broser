@@ -410,8 +410,12 @@ double emscripten_get_now() { return clock_ms; }
 void cata_web_yield_impl() { ++calls; if (hook) hook(); }
 void cata_web_yield_paint_impl() { ++calls; }
 int waited_ms = 0;
-void cata_web_wait_input_impl(int ms) { ++calls; waited_ms += ms; clock_ms += ms; }
+bool wake_on_mouse_move_last = true;
+void cata_web_wait_input_impl(int ms, int wake_on_mouse_move) {
+    ++calls; waited_ms += ms; clock_ms += ms; wake_on_mouse_move_last = wake_on_mouse_move != 0;
+}
 namespace cata_web {
+void wait_for_input(int timeout_ms, bool wake_on_mouse_move = true);
 '''
 program += 'double now_ms() { return emscripten_get_now(); }\n'
 for sig in ['void yield_now()', 'void wait_for_input(', 'void yield_paint()', 'bool yield_if_due(', 'void pace_activity(']:
@@ -441,6 +445,7 @@ int main() {
     cata_web::pace_activity(false); waited_ms = 0;
     clock_ms = 1000; cata_web::pace_activity(true); assert(waited_ms == 0);
     clock_ms += 10; cata_web::pace_activity(true); assert(waited_ms == 41);
+     assert(!wake_on_mouse_move_last); // activity pacing must ignore passive pointer motion
     clock_ms += 100; cata_web::pace_activity(true); assert(waited_ms == 41);
     cata_web::pace_activity(false); clock_ms += 1;
     cata_web::pace_activity(true); assert(waited_ms == 41); // no old pacing debt

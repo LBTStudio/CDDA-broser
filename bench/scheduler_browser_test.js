@@ -26,6 +26,19 @@ int main() {
             window.resumed = $0;
         }, phase);
     }
+    // Activity pacing must ignore mouse motion but still wake on actual input.
+    EM_ASM({
+        window.phase = 5;
+        window.motionStart = performance.now();
+        setTimeout(function() {
+            window.dispatchEvent(new MouseEvent("mousemove", {bubbles: true}));
+        }, 20);
+        setTimeout(function() {
+            window.dispatchEvent(new KeyboardEvent("keydown", {key: "Escape"}));
+        }, 80);
+    });
+    cata_web::wait_for_input(300, false);
+    EM_ASM({ window.motionWaitMs = performance.now() - motionStart; });
     EM_ASM({ window.phase = 99; window.fallbackStart = performance.now(); });
     for (int i = 0; i < 20; ++i) cata_web::wait_for_input(16);
     EM_ASM({
@@ -136,10 +149,13 @@ var Module={};</script><script src="test.js"></script>` });
       await page.waitForFunction(n => window.resumed >= n, phase, { timeout: 1500 });
       latencies.push(Date.now() - start); // includes Playwright roundtrips, not game latency
     }
+    await page.waitForFunction(() => window.motionWaitMs !== undefined, undefined, { timeout: 1500 });
     await page.waitForFunction(() => window.done, undefined, { timeout: 10000 });
-    const result = await page.evaluate(() => ({ delivered, fallbackMs, idleUsedMessageChannel, paintOrder, hiddenMs, cancelledFrames, pacingMs, switchMs }));
+    const result = await page.evaluate(() => ({ delivered, fallbackMs, idleUsedMessageChannel, paintOrder, hiddenMs, cancelledFrames, pacingMs, switchMs, motionWaitMs }));
     assert.deepEqual(errors, []);
-    assert.deepEqual(result.delivered.map(e => e.name), ['keydown', 'keyup', 'input', 'compositionend', 'keydown']);
+    assert.deepEqual(result.delivered.map(e => e.name), ['keydown', 'keyup', 'input', 'compositionend', 'keydown', 'keydown']);
+    assert(result.motionWaitMs >= 60 && result.motionWaitMs < 260,
+      'mouse motion must not wake the pacing wait; keyboard input should still wake it');
     assert.deepEqual(result.delivered.slice(2, 4).map(e => e.data), ['日本', '包帯']);
     assert(result.fallbackMs >= 250, 'idle wait must not hot-spin');
     assert.equal(result.idleUsedMessageChannel, false);
@@ -149,7 +165,7 @@ var Module={};</script><script src="test.js"></script>` });
     assert(result.pacingMs[0] >= 450, 'normal mode should pace twelve identical work steps');
     assert(result.pacingMs[1] < result.pacingMs[0] / 2, 'fast mode removes pacing waits');
     assert(result.switchMs >= 100 && result.switchMs < 600, 'live toggle/input should end pacing promptly');
-    console.log('PASS actual pacing: normal/fast identical checksum, live switch and wake input retained');
+    console.log('PASS actual pacing: normal/fast identical checksum, mouse motion ignored, keyboard input wakes promptly, live switch retained');
     console.log('PASS real paint: post-rAF task, hidden fallback, cancelled throttled frame');
     console.log('PASS actual scheduler ' + backend + ': input order, key/IME wake, 20 bounded idle waits, forced yield');
     console.log(JSON.stringify({ ...result, testRoundtripMs: latencies }));
