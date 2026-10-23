@@ -546,29 +546,63 @@
             }
           } catch (e) { /* optional */ }
 
-          /* Fetch both large assets in parallel through the persistent
-             cache.  Either failing independently falls back to the stock
-             loader for that asset. */
-          const dataPromise = cachedAssetResponse("cataclysm-tiles.data", "データ")
-            .then((r) => r.arrayBuffer())
-            .catch((e) => { console.warn("Data cache path unavailable; stock XHR loader will run:", e); return null; });
-          const wasmPromise = cachedAssetResponse("cataclysm-tiles.wasm", "本体")
-            .catch((e) => { console.warn("Wasm cache path unavailable; stock loader will run:", e); return null; });
-          let dataBuf = await dataPromise;
-          let wasmResp = await wasmPromise;
+          /* Select the four runtime assets as one release. A failed request
+             must never combine a stale cached file with a fresh file from a
+             newer deployment. Cache writes remain staged until every resource
+             has either validated (200/304) successfully. */
+          assetCacheBatchActive = true;
+          assetCacheFallbackUsed = false;
+          pendingAssetCacheWrites.clear();
+          const candidateResults = await Promise.all([
+            cachedAssetResponse("cataclysm-tiles.data", "データ")
+              .catch(error => { console.warn("Data cache path unavailable:", error); return null; }),
+            cachedAssetResponse("cataclysm-tiles.wasm", "本体")
+              .catch(error => { console.warn("Wasm cache path unavailable:", error); return null; }),
+            cachedAssetResponse("cataclysm-tiles.data.js", "データローダー")
+              .catch(error => { console.warn("Data loader cache path unavailable:", error); return null; }),
+            cachedAssetResponse("cataclysm-tiles.js", "JavaScript本体")
+              .catch(error => { console.warn("JavaScript cache path unavailable:", error); return null; }),
+          ]);
 
-          if (dataBuf) {
+          let assetResponses = candidateResults;
+          let useCachedAssets = assetResponses.every(Boolean) && !assetCacheFallbackUsed;
+          let usedPreviousCompleteBundle = false;
+
+          if (!useCachedAssets) {
+            // Ignore every candidate fetched during a partial network failure.
+            // Only an explicitly completed cache bundle is safe for fallback.
+            pendingAssetCacheWrites.clear();
+            const previousBundle = await readCompleteCachedBundle();
+            if (previousBundle) {
+              assetResponses = BOOT_ASSET_URLS.map(url => previousBundle[url]);
+              useCachedAssets = true;
+              usedPreviousCompleteBundle = true;
+              assetTags["cataclysm-tiles.data"] =
+                assetResponses[0].headers.get("x-cdda-etag") || "";
+            } else {
+              assetResponses = [null, null, null, null];
+              useCachedAssets = false;
+            }
+          } else {
+            await commitAssetCacheBatch();
+          }
+
+          assetCacheBatchActive = false;
+          pendingAssetCacheWrites.clear();
+
+          let dataBuf = null;
+          let wasmResp = null;
+          if (useCachedAssets) {
+            dataBuf = await assetResponses[0].arrayBuffer();
+            wasmResp = assetResponses[1];
             /* file_packager's generated loader asks this hook for the
-               package before falling back to its own XHR.  Hand the buffer
-               over exactly once and drop our reference so the ~85MB is not
-               retained twice. */
+               package before falling back to its own XHR. Hand over the
+               buffer once and release our reference after consumption. */
             Module.getPreloadedPackage = function () {
               const buf = dataBuf;
               dataBuf = null;
               return buf;
             };
-          }
-          if (wasmResp) {
             Module.instantiateWasm = function (imports, receiveInstance) {
               (async () => {
                 try {
@@ -594,13 +628,18 @@
               })();
               return {};
             };
+            /* The data pack must register preRun before the game runtime starts. */
+            await loadScript("cataclysm-tiles.data.js", assetResponses[2], usedPreviousCompleteBundle);
+            await loadScript("cataclysm-tiles.js", assetResponses[3], usedPreviousCompleteBundle);
+          } else {
+            // No coherent persistent bundle exists. Let the stock loader fetch
+            // all resources by their original URL, or show its regular failure
+            // if the browser is genuinely offline.
+            delete Module.getPreloadedPackage;
+            delete Module.instantiateWasm;
+            await loadScriptDirect("cataclysm-tiles.data.js");
+            await loadScriptDirect("cataclysm-tiles.js");
           }
-
-          /* The data pack registers its preRun callback.  It must finish
-             evaluating before the game runtime starts, otherwise CDDA scans
-             lang/mo before the Japanese MO catalog exists in its virtual FS. */
-          await loadScript("cataclysm-tiles.data.js");
-          await loadScript("cataclysm-tiles.js");
         } catch (error) {
           booted = false;
           console.error(error);
