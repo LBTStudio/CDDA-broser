@@ -103,12 +103,11 @@ run_browser_bench() {
     fi
 
     echo "== RUN   $name (timeout ${timeout_ms}ms)"
-    if node run-bench-all.js "http://localhost:$PORT/$name.html" "$timeout_ms" \
-            > "$OUT_DIR/$name.log" 2>&1; then
-        :
-    fi
-    # DONE が出ていれば成功扱い。TIMEOUT なら失敗。
-    if grep -q "DONE" "$OUT_DIR/$name.log"; then
+    run_status=0
+    node run-bench-all.js "http://localhost:$PORT/$name.html" "$timeout_ms" \
+        > "$OUT_DIR/$name.log" 2>&1 || run_status=$?
+    # Both the runner exit status and the explicit completion marker must pass.
+    if [ "$run_status" -eq 0 ] && grep -q "DONE" "$OUT_DIR/$name.log"; then
         echo "   OK -> $OUT_DIR/$name.log"
         ok=$(( ok + 1 ))
     else
@@ -118,10 +117,10 @@ run_browser_bench() {
     echo
 }
 
-echo "$BROWSER_BENCHES" | while read -r entry; do
+while IFS= read -r entry; do
     [ -z "$entry" ] && continue
     run_browser_bench "${entry%%:*}" "${entry##*:}"
-done
+done <<< "$BROWSER_BENCHES"
 
 # ---- CDDA の実装そのものを検証するベンチ（CDDA_SRC 指定時のみ） ----------
 if [ -n "${CDDA_SRC:-}" ]; then
@@ -138,13 +137,17 @@ if [ -n "${CDDA_SRC:-}" ]; then
                 -sASYNCIFY_STACK_SIZE=1048576 -sSTACK_SIZE=1048576 \
                 > "$OUT_DIR/verify_primitive.build.log" 2>&1; then
             echo "== RUN   verify_primitive"
-            node run-bench-all.js "http://localhost:$PORT/verify_primitive.html" 120000 \
-                > "$OUT_DIR/verify_primitive.log" 2>&1
-            grep -q "DONE" "$OUT_DIR/verify_primitive.log" \
-                && echo "   OK -> $OUT_DIR/verify_primitive.log" \
-                || echo "   TIMEOUT/FAIL -> $OUT_DIR/verify_primitive.log"
+            if node run-bench-all.js "http://localhost:$PORT/verify_primitive.html" 120000 \
+                    > "$OUT_DIR/verify_primitive.log" 2>&1 && grep -q "DONE" "$OUT_DIR/verify_primitive.log"; then
+                echo "   OK -> $OUT_DIR/verify_primitive.log"
+                ok=$(( ok + 1 ))
+            else
+                echo "   RUN FAILED -> $OUT_DIR/verify_primitive.log"
+                ng=$(( ng + 1 ))
+            fi
         else
             echo "   BUILD FAILED -> $OUT_DIR/verify_primitive.build.log"
+            ng=$(( ng + 1 ))
         fi
         echo
 
@@ -156,6 +159,7 @@ if [ -n "${CDDA_SRC:-}" ]; then
             echo "   OK 警告ゼロ"
         else
             echo "   FAILED -> $OUT_DIR/cata_web_yield.warn.log"
+            ng=$(( ng + 1 ))
         fi
         echo
     fi
@@ -171,11 +175,14 @@ if [ -n "${CDDA_SRC:-}" ]; then
             if "$OUT_DIR/text_input_scope_test" > "$OUT_DIR/text_input_scope_test.log" 2>&1; then
                 echo "   OK -> $OUT_DIR/text_input_scope_test.log"
                 sed 's/^/     /' "$OUT_DIR/text_input_scope_test.log"
+                ok=$(( ok + 1 ))
             else
                 echo "   ASSERT FAILED -> $OUT_DIR/text_input_scope_test.log"
+                ng=$(( ng + 1 ))
             fi
         else
             echo "   BUILD FAILED -> $OUT_DIR/text_input_scope_test.build.log"
+            ng=$(( ng + 1 ))
         fi
         echo
 
@@ -184,8 +191,13 @@ if [ -n "${CDDA_SRC:-}" ]; then
         em++ -std=c++17 -c cata_web_text_input.cpp -o "$OUT_DIR/cata_web_text_input.o" \
             -Wall -Wextra -Wpedantic -Werror -DEMSCRIPTEN \
             > "$OUT_DIR/cata_web_text_input.warn.log" 2>&1 || em_ok=0
-        [ "$em_ok" -eq 1 ] && echo "   OK (Emscripten) 警告ゼロ" \
-                           || echo "   FAILED (Emscripten) -> $OUT_DIR/cata_web_text_input.warn.log"
+        if [ "$em_ok" -eq 1 ]; then
+            echo "   OK (Emscripten) 警告ゼロ"
+            ok=$(( ok + 1 ))
+        else
+            echo "   FAILED (Emscripten) -> $OUT_DIR/cata_web_text_input.warn.log"
+            ng=$(( ng + 1 ))
+        fi
 
         # 非 EMSCRIPTEN では実質空 TU になるべき（ネイティブビルドに影響しないこと）
         nat_ok=1
@@ -197,6 +209,7 @@ if [ -n "${CDDA_SRC:-}" ]; then
             echo "   OK (native) ${sz} バイト = 実質空 TU"
         else
             echo "   FAILED (native) -> $OUT_DIR/cata_web_text_input.native.log"
+            ng=$(( ng + 1 ))
         fi
         echo
     fi
@@ -206,6 +219,10 @@ else
     echo
 fi
 
-echo "== 完了。結果は $OUT_DIR/*.log"
+echo "== 完了。成功: $ok / 失敗: $ng。結果は $OUT_DIR/*.log"
 echo "   数値が FACTS.md と違ったら FACTS.md を更新し、"
 echo "   生ログを docs/measurements/raw/ に置いてください。"
+if [ "$ng" -ne 0 ]; then
+    echo "ERROR: $ng 件のベンチマーク／回帰テストが失敗しました。" >&2
+    exit 1
+fi

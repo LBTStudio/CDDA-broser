@@ -49,6 +49,7 @@ runtime-efficiency
 monster-snapshot
 item-snapshot
 gear-guide
+browser-runtime
 "
 
 for name in $PATCHES; do
@@ -280,5 +281,8 @@ python3 "$SCRIPT_DIR/../bench/gear_guide_test.py" "$PWD"
 node "$SCRIPT_DIR/../bench/asset_loader_test.js"
 node "$SCRIPT_DIR/../bench/ime_bridge_test.js"
 node "$SCRIPT_DIR/../bench/idbfs_sync_test.js" "$PWD"
+node "$SCRIPT_DIR/../bench/mod_zip_test.js"
+bash "$SCRIPT_DIR/../bench/run_all_status_test.sh"
+python3 "$SCRIPT_DIR/../bench/workflow_safety_test.py"
 
-echo "[VERIFY] OK: 全 13 パッチとランタイム・IME・保存・装備ナビ回帰テストが合格"
+echo "[VERIFY] OK: パッチ適用・ランタイム・IME・保存・MOD ZIP・ベンチ終了状態・公開ガードの回帰テストが合格"

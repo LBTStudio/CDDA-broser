@@ -152,6 +152,88 @@ async function run() {
     assert.equal(await page.evaluate(() => FS.analyzePath(root + '/save/delete.sav').exists), false);
     console.log('PASS real IDBFS: long/nested save, lifecycle flushes, final retry, rename/delete reload');
 
+    // Real IndexedDB backpressure: count outstanding structured-clone requests,
+    // not just FS.syncfs calls. Inject a failure after multiple successful puts
+    // to prove the original generation remains intact until the WHOLE tx commits.
+    await open('bounded');
+    const result = await page.evaluate(async () => {
+      const persist = () => new Promise(resolve => FS.syncfs(false, resolve));
+      const dbEntries = () => new Promise((resolve, reject) => {
+        const request = indexedDB.open(root);
+        request.onerror = () => reject(request.error);
+        request.onsuccess = () => {
+          const db = request.result;
+          const tx = db.transaction(['FILE_DATA'], 'readonly');
+          const store = tx.objectStore('FILE_DATA');
+          const keys = store.getAllKeys(), values = store.getAll();
+          tx.oncomplete = () => { db.close(); resolve(keys.result.map((k, i) => [k, values.result[i].contents?.[0] ?? null])); };
+          tx.onabort = () => { db.close(); reject(tx.error); };
+        };
+      });
+      FS.mkdirTree(root + '/bulk');
+      for (let i = 0; i < 128; ++i) FS.writeFile(root + '/bulk/' + String(i).padStart(3, '0'), new Uint8Array(65536).fill(1));
+      if (await persist()) throw new Error('baseline save');
+      const before = await dbEntries();
+      for (let i = 0; i < 128; ++i) {
+        const name = root + '/bulk/' + String(i).padStart(3, '0');
+        FS.writeFile(name, new Uint8Array(65536).fill(2));
+        FS.utime(name, new Date(10000), new Date(10000)); // deterministic dirty timestamps
+      }
+      FS.unlink(root + '/bulk/127');
+      const originalPut = IDBObjectStore.prototype.put;
+      let outstanding = 0, maxOutstanding = 0, outstandingBytes = 0, maxBytes = 0;
+      let requests = 0, failAt = 4, heartbeats = 0;
+      const heartbeat = setInterval(() => ++heartbeats, 1);
+      IDBObjectStore.prototype.put = function(entry, key) {
+        if (this.transaction.db.name !== root) return originalPut.call(this, entry, key);
+        if (++requests === failAt) throw new Error('injected fourth put failure');
+        const bytes = entry.contents?.byteLength || 0;
+        const req = originalPut.call(this, entry, key);
+        ++outstanding; outstandingBytes += bytes;
+        maxOutstanding = Math.max(maxOutstanding, outstanding); maxBytes = Math.max(maxBytes, outstandingBytes);
+        const done = () => { --outstanding; outstandingBytes -= bytes; };
+        req.addEventListener('success', done, {once: true});
+        req.addEventListener('error', done, {once: true});
+        return req;
+      };
+      try {
+        const err = await persist();
+        if (!err || outstanding !== 0) throw new Error('missing failure or unsettled request');
+        const rolledBack = await dbEntries();
+        if (JSON.stringify(rolledBack) !== JSON.stringify(before)) throw new Error('partial transaction committed');
+        failAt = -1;
+        window.setFsNeedsSync();
+        await new Promise((resolve, reject) => {
+          const deadline = performance.now() + 10000;
+          const check = () => {
+            if (!window.cdda_persistence_pending) resolve();
+            else if (performance.now() > deadline) reject(new Error('durability timeout'));
+            else setTimeout(check, 20);
+          };
+          check();
+        });
+        const after = await dbEntries();
+        if (after.some(([key, byte]) => key.includes('/bulk/') && byte !== 2)) throw new Error('stale file persisted');
+        if (after.some(([key]) => key.endsWith('/127'))) throw new Error('deletion not persisted');
+        if (maxOutstanding !== 1 || maxBytes !== 65536 || outstanding !== 0) throw new Error('unbounded requests');
+        return { files: 128, bytesPerFile: 65536, maxOutstanding, maxBytes, heartbeats, rollback: true };
+      } finally {
+        IDBObjectStore.prototype.put = originalPut;
+        clearInterval(heartbeat);
+      }
+    });
+    await open('bounded');
+    assert.equal(await page.evaluate(() => {
+      for (let i = 0; i < 127; ++i) {
+        const bytes = FS.readFile(root + '/bulk/' + String(i).padStart(3, '0'));
+        if (bytes.length !== 65536 || bytes.some(x => x !== 2)) return false;
+      }
+      return !FS.analyzePath(root + '/bulk/127').exists;
+    }), true);
+    assert(result.heartbeats > 0, 'browser must service tasks during the write chain');
+    fs.writeFileSync(path.join(out, 'bounded-result.json'), JSON.stringify(result, null, 2));
+    console.log('PASS real IDBFS: bounded clone queue, mid-transaction rollback, final retry and byte-exact reload', result);
+
     await open('beta');
     assert.equal(await page.evaluate(() => FS.analyzePath(root + '/save/世界.sav').exists), false);
     await open('alpha');
