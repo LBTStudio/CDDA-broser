@@ -764,9 +764,16 @@
             }
             fs.mkdirTree(target);
             const prefixSlash = prefix ? prefix + "/" : "";
+            // Nested MOD_INFO roots are installed independently below their
+            // own ID. Do not copy their payload into the parent's directory too.
+            const nestedModRoots = [...handled].filter((h) =>
+              h && (prefix === "" || h.startsWith(prefix + "/")));
             const files = [];
             zip.forEach((relPath, entry) => {
-              if (!entry.dir && relPath.startsWith(prefixSlash)) files.push([relPath, entry]);
+              if (!entry.dir && relPath.startsWith(prefixSlash) &&
+                  !nestedModRoots.some((h) => relPath.startsWith(h + "/"))) {
+                files.push([relPath, entry]);
+              }
             });
             for (const [relPath, entry] of files) {
               const rel = relPath.slice(prefixSlash.length);
