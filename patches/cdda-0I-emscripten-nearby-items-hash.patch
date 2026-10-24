@@ -28,13 +28,13 @@ diff --git a/src/game.cpp b/src/game.cpp
 -        add_item_recursive( item_order, temp_items, content, relative_pos );
 +        add_item_recursive( stack_order, temp_items, content, relative_pos );
      }
-@@ -8335,3 +8335,3 @@
+@@ -8337,3 +8337,3 @@
 -    std::map<std::string, map_item_stack> temp_items;
 +    std::unordered_map<std::string, map_item_stack> temp_items;
      std::vector<map_item_stack> ret;
 -    std::vector<std::string> item_order;
 +    std::vector<map_item_stack *> stack_order;
-@@ -8350,3 +8350,3 @@
+@@ -8351,3 +8351,3 @@
                  const tripoint_rel_ms relative_pos = points_p_it - pos;
  
 -                add_item_recursive( item_order, temp_items, &elem, relative_pos );
