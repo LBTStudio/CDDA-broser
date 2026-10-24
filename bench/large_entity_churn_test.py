@@ -353,6 +353,22 @@ static void benchmark_vehicle_groups( const std::size_t count ) {
     }
     std::printf( "vehicle-submaps n=%zu x%d: allocations %zu -> %zu, bytes %zu -> %zu, time %.3f -> %.3f ms\n",
                  count, repetitions, old_allocs, new_allocs, old_bytes, new_bytes, old_ms, new_ms );
+
+    // Dense cluster: all vehicles can resolve to one submap. The output must
+    // still deduplicate to one coordinate with the same visitation order.
+    for( vehicle &v : storage ) {
+        v.position = tripoint_bub_ms( 1, 1, 0 );
+    }
+    old_result.clear();
+    new_result.clear();
+    vehicle_baseline::for_each_unique_vehicle_submap( vehicles, global_map,
+        [&]( const tripoint &p ) { old_result.push_back( p ); } );
+    vehicle_optimized::for_each_unique_vehicle_submap( vehicles, global_map,
+        [&]( const tripoint &p ) { new_result.push_back( p ); } );
+    assert( same_points( old_result, new_result ) );
+    if( count > 0 ) {
+        assert( old_result.size() == 1 );
+    }
 }
 int main() {
     for( int count : { 32, 256, 1024, 4096 } ) {
