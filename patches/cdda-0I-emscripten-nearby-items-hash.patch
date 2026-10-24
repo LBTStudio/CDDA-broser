@@ -1,0 +1,51 @@
+CDDA 0.I: make nearby-item grouping hash-indexed and store result order as pointers.
+
+The recursive grouping already indexes names through its associative container,
+but the displayed-order vector duplicates every item name and the final pass
+looks every name up again. Use unordered_map for average constant-time lookup
+and keep pointers to mapped stacks in first-seen order. Standard unordered-map
+rehash preserves references/pointers to elements; regression tests stress
+rehashing and verify order, counts, positions and item pointers remain equal.
+
+diff --git a/src/game.cpp b/src/game.cpp
+--- a/src/game.cpp
++++ b/src/game.cpp
+@@ -8313,5 +8313,5 @@
+-static void add_item_recursive( std::vector<std::string> &item_order,
+-                                std::map<std::string, map_item_stack> &temp_items, const item *it,
++static void add_item_recursive( std::vector<map_item_stack *> &stack_order,
++                                std::unordered_map<std::string, map_item_stack> &temp_items, const item *it,
+                                 const tripoint_rel_ms &relative_pos )
+ {
+     const std::string name = it->tname();
+@@ -8321,3 +8321,3 @@
+     if( entry.second ) {
+-        item_order.push_back( name );
++        stack_order.push_back( &entry.first->second );
+     } else {
+@@ -8326,3 +8326,3 @@
+     for( const item *content : it->all_known_contents() ) {
+-        add_item_recursive( item_order, temp_items, content, relative_pos );
++        add_item_recursive( stack_order, temp_items, content, relative_pos );
+     }
+@@ -8337,3 +8337,3 @@
+-    std::map<std::string, map_item_stack> temp_items;
++    std::unordered_map<std::string, map_item_stack> temp_items;
+     std::vector<map_item_stack> ret;
+-    std::vector<std::string> item_order;
++    std::vector<map_item_stack *> stack_order;
+@@ -8351,3 +8351,3 @@
+                 const tripoint_rel_ms relative_pos = points_p_it - pos;
+ 
+-                add_item_recursive( item_order, temp_items, &elem, relative_pos );
++                add_item_recursive( stack_order, temp_items, &elem, relative_pos );
+@@ -8358,6 +8358,6 @@
+-    ret.reserve( item_order.size() );
+-    for( auto &elem : item_order ) {
+-        ret.push_back( std::move( temp_items.at( elem ) ) );
++    ret.reserve( stack_order.size() );
++    for( map_item_stack *stack : stack_order ) {
++        ret.push_back( std::move( *stack ) );
+     }
+ 
+     return ret;
