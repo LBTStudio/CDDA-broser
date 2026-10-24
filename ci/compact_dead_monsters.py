@@ -46,6 +46,8 @@ replacement = """void creature_tracker::remove_dead()
                 removed_any = true;
             }
             remove_from_location_map( *critter );
+            // Drop list ownership now; do not retain a death wave until compaction ends.
+            read->reset();
         } else {
             if( write != read ) {
                 *write = *read;
