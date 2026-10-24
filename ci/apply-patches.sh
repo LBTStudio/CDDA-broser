@@ -52,6 +52,7 @@ gear-guide
 browser-runtime
 mapbuffer-fixed-arrays
 visible-creature-position-cache
+large-entity-churn
 "
 
 for name in $PATCHES; do
@@ -275,6 +276,7 @@ SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 python3 "$SCRIPT_DIR/../bench/runtime_efficiency_test.py" "$PWD"
 python3 "$SCRIPT_DIR/../bench/mapbuffer_fixed_array_test.py" "$PWD"
 python3 "$SCRIPT_DIR/../bench/visible_creature_position_test.py" "$PWD"
+python3 "$SCRIPT_DIR/../bench/large_entity_churn_test.py" "$PWD"
 python3 "$SCRIPT_DIR/../bench/monster_scan_test.py" "$PWD"
 python3 "$SCRIPT_DIR/../bench/monster_snapshot_test.py" "$PWD"
 python3 "$SCRIPT_DIR/../bench/item_snapshot_test.py" "$PWD"
