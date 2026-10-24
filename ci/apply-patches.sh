@@ -86,6 +86,9 @@ python3 "$SCRIPT_DIR/optimize_fire_neighbor_buffer.py" "$PWD/src/map_field.cpp"
 echo "[PATCH] gas-spread-stack-buffers (source-anchored)"
 python3 "$SCRIPT_DIR/optimize_gas_spread_buffers.py" "$PWD/src/map_field.cpp"
 
+echo "[PATCH] reuse-wind-blocker-neighbors (source-anchored)"
+python3 "$SCRIPT_DIR/optimize_wind_blocker_neighbor_reuse.py" "$PWD/src/map_field.cpp"
+
 git diff --check
 
 # ------------------------------------------------------------------
@@ -299,6 +302,7 @@ python3 "$SCRIPT_DIR/../bench/visible_creature_position_test.py" "$PWD"
 python3 "$SCRIPT_DIR/../bench/large_entity_churn_test.py" "$PWD"
 python3 "$SCRIPT_DIR/../bench/fire_neighbor_buffer_test.py" "$PWD"
 python3 "$SCRIPT_DIR/../bench/gas_spread_buffer_test.py" "$PWD"
+python3 "$SCRIPT_DIR/../bench/wind_blocker_neighbor_reuse_test.py" "$PWD"
 python3 "$SCRIPT_DIR/../bench/monster_scan_test.py" "$PWD"
 python3 "$SCRIPT_DIR/../bench/monster_snapshot_test.py" "$PWD"
 python3 "$SCRIPT_DIR/../bench/monster_remove_dead_test.py" "$PWD"
