@@ -2,7 +2,7 @@
 """Avoid heap allocation for bounded unique vehicle-submap sets.
 
 The active map normally has at most 121 submaps per z-level. Store up to 256
-unique coordinates in sorted stack storage; only pathological out-of-range
+unique coordinates in a bounded open-addressing stack table; only pathological
 inputs fall back to a vector sorted and deduplicated in contiguous memory.
 """
 from pathlib import Path
