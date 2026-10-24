@@ -22,7 +22,15 @@ while depth:
     end += 1
 method = source[start:end]
 
-old = """    // A single z-level normally contains <= 121 submaps. Keep its unique
+old = """    // Keep the original heap-backed path for large populations.
+    std::set<tripoint> positions;
+    for( vehicle *this_vehicle : vehicles ) {
+        positions.emplace( submap_position( this_vehicle ) );
+    }
+    for( const tripoint &pos : positions ) {
+        process( pos );
+    }"""
+new = """    // A single z-level normally contains <= 121 submaps. Keep its unique
     // coordinates sorted in bounded stack storage so duplicate-heavy vehicle
     // clusters do not reserve a vector proportional to vehicle count.
     constexpr std::size_t unique_capacity = 256;
@@ -65,22 +73,6 @@ old = """    // A single z-level normally contains <= 121 submaps. Keep its uniq
     } );
     fallback.erase( unique_end, fallback.end() );
     for( const tripoint &pos : fallback ) {
-        process( pos );
-    }"""
-new = """    // For large populations, keep coordinates contiguous and sort once.
-    // This preserves the set's order without allocating one tree node per key.
-    std::vector<tripoint> positions;
-    positions.reserve( vehicles.size() );
-    for( vehicle *this_vehicle : vehicles ) {
-        positions.push_back( submap_position( this_vehicle ) );
-    }
-    std::sort( positions.begin(), positions.end() );
-    const auto unique_end = std::unique( positions.begin(), positions.end(),
-    []( const tripoint &lhs, const tripoint &rhs ) {
-        return lhs.x == rhs.x && lhs.y == rhs.y && lhs.z == rhs.z;
-    } );
-    positions.erase( unique_end, positions.end() );
-    for( const tripoint &pos : positions ) {
         process( pos );
     }"""
 if method.count(old) != 1:
