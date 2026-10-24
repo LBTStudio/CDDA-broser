@@ -82,7 +82,6 @@ static std::array<std::size_t, 3> wind_blocker_neighbor_indices( const int windd
             { 60,  {{ 1, 0, 2 }} }, // north, northwest, northeast
             { 31,  {{ 2, 4, 1 }} }, // northeast, east, north
             { 0,   {{ 4, 2, 7 }} }  // east, northeast, southeast
-        }
     }};
     for( const wind_blocker_neighbor_rule &rule : rules ) {
         if( winddirection >= rule.minimum_direction ) {
