@@ -187,6 +187,9 @@ public:
     program += '};\n'
     for signature in methods:
         program += body(text['creature_tracker.cpp'], signature) + '\n'
+    # Compile each branch's actual cleanup method: upstream erase loop vs the
+    # optimized stable compaction. Its semantics are also tested independently.
+    program += body(text['creature_tracker.cpp'], 'void creature_tracker::remove_dead(') + '\n'
     for signature in ('void creature_tracker::deserialize(', 'void creature_tracker::serialize('):
         program += body(text['savegame.cpp'], signature) + '\n'
     if namespace == 'optimized':
