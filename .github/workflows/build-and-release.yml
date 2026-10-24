@@ -157,7 +157,7 @@ jobs:
           echo "matrix=$( cat ../shard-plan/matrix.json )" >> "$GITHUB_OUTPUT"
 
           # ccache のキャッシュキーに使うハッシュ
-          cache_key="$( { printf '%s\n' "$CDDA_RUNTIME_BACKEND" "$CDDA_EMSDK_VERSION"; cat ../patches/*.patch ../ci/*.sh; } | sha256sum | cut -c1-16 )"
+          cache_key="$( { printf '%s\n' "$CDDA_RUNTIME_BACKEND" "$CDDA_EMSDK_VERSION"; cat ../patches/*.patch ../ci/*.sh ../ci/*.py; } | sha256sum | cut -c1-16 )"
           echo "cache_key=${cache_key}" >> "$GITHUB_OUTPUT"
           echo "キャッシュキー: ${cache_key}"
 
