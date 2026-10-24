@@ -168,11 +168,23 @@ struct map {
 
     neighbor_array get_neighbors( const tripoint_bub_ms & ) const { return neighbors; }
     std::tuple<maptile, maptile, maptile> get_wind_blockers(
-        const int &, const tripoint_bub_ms & ) {
+        const int &winddirection, const tripoint_bub_ms & ) {
         ++blocker_lookups;
-        return { neighbors[static_cast<size_t>(blocker_indices[0])].second,
-                 neighbors[static_cast<size_t>(blocker_indices[1])].second,
-                 neighbors[static_cast<size_t>(blocker_indices[2])].second };
+        static constexpr std::array<std::array<int, 4>, 9> rules = {{
+            {{330, 4, 2, 7}}, {{301, 7, 4, 6}}, {{240, 6, 5, 7}},
+            {{211, 5, 3, 6}}, {{150, 3, 0, 5}}, {{121, 0, 1, 3}},
+            {{60, 1, 0, 2}}, {{31, 2, 4, 1}}, {{0, 4, 2, 7}}
+        }};
+        std::array<size_t, 3> idx{{4, 2, 7}};
+        for (const auto &rule : rules) {
+            if (winddirection >= rule[0]) {
+                idx[0] = static_cast<size_t>(rule[1]);
+                idx[1] = static_cast<size_t>(rule[2]);
+                idx[2] = static_cast<size_t>(rule[3]);
+                break;
+            }
+        }
+        return { neighbors[idx[0]].second, neighbors[idx[1]].second, neighbors[idx[2]].second };
     }
     bool gas_can_spread_to( field_entry &, const maptile &dst ) const {
         return ( allowed_mask & (1u << dst.id) ) != 0;
@@ -212,6 +224,15 @@ static trace snapshot(const map &m) {
             m.last_destination, m.blocker_lookups};
 }
 ''';
+rule_start = patched.index("struct wind_blocker_neighbor_rule {")
+helper_start = patched.index(
+    "static std::array<std::size_t, 3> wind_blocker_neighbor_indices(", rule_start
+)
+wind_rule_definition = patched[rule_start:helper_start]
+wind_helper = function(
+    patched, "static std::array<std::size_t, 3> wind_blocker_neighbor_indices("
+)
+program += "\n" + wind_rule_definition + "\n" + wind_helper + "\n"
 program += ("\nvoid map::select_baseline( field_entry &cur, const tripoint_bub_ms &p,\n"
             "                          int winddirection, bool sheltered, int windpower ) {\n");
 program += old_block + "}\n";
