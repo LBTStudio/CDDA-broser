@@ -267,7 +267,8 @@ int main() {
         assert(old_trace.one_in == new_trace.one_in);
         assert(old_trace.x_in_y == new_trace.x_in_y);
         assert(old_trace.destination == new_trace.destination);
-        assert(old_trace.blocker_lookups >= new_trace.blocker_lookups);\n        assert(old_trace.blocker_lookups - new_trace.blocker_lookups <= 1);
+        assert(old_trace.blocker_lookups >= new_trace.blocker_lookups);
+        assert(old_trace.blocker_lookups - new_trace.blocker_lookups <= 1);
     }
     std::puts("PASS gas spread candidate selection: 4,000 scenarios preserve destination and exact RNG/probability call order");
 
@@ -300,7 +301,9 @@ int main() {
     const size_t new_allocations = allocation_count;
     const size_t new_bytes = allocation_bytes;
     assert(old_allocations > 0);
-    assert(new_allocations == 0 && new_bytes == 0);\n    assert(before.blocker_lookups == repetitions);\n    assert(after.blocker_lookups == 0);
+    assert(new_allocations == 0 && new_bytes == 0);
+    assert(before.blocker_lookups == repetitions);
+    assert(after.blocker_lookups == 0);
     std::printf("MEASURE gas spread candidate selection (%d windy field tiles): allocations %zu -> %zu; requested bytes %zu -> %zu\n",
                 repetitions, old_allocations, new_allocations, old_bytes, new_bytes);
     std::puts("PASS gas spread stack buffers: no dynamic candidate storage on the hot path");
