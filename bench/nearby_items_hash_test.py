@@ -192,7 +192,7 @@ std::vector<map_item_stack> collect(const std::vector<item> &items) {{
         finish = finish.replace(
             "    return ret;",
             "    if (verify_buffers) for (std::size_t i = 0; i < ret.size(); ++i) assert(ret[i].vIG.data() == buffers[i]);\n    return ret;")
-    program += finish + "\n}\n} // namespace\n"
+    program += finish + "\n} // namespace\n"
 
 program += r'''
 static void compare_results(const std::vector<map_item_stack> &a,
