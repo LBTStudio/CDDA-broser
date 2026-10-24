@@ -83,6 +83,9 @@ python3 "$SCRIPT_DIR/optimize_vehicle_submap_collection.py" "$PWD/src/map.cpp"
 echo "[PATCH] fire-neighbor-stack-buffer (source-anchored)"
 python3 "$SCRIPT_DIR/optimize_fire_neighbor_buffer.py" "$PWD/src/map_field.cpp"
 
+echo "[PATCH] gas-spread-stack-buffers (source-anchored)"
+python3 "$SCRIPT_DIR/optimize_gas_spread_buffers.py" "$PWD/src/map_field.cpp"
+
 git diff --check
 
 # ------------------------------------------------------------------
@@ -295,6 +298,7 @@ python3 "$SCRIPT_DIR/../bench/mapbuffer_fixed_array_test.py" "$PWD"
 python3 "$SCRIPT_DIR/../bench/visible_creature_position_test.py" "$PWD"
 python3 "$SCRIPT_DIR/../bench/large_entity_churn_test.py" "$PWD"
 python3 "$SCRIPT_DIR/../bench/fire_neighbor_buffer_test.py" "$PWD"
+python3 "$SCRIPT_DIR/../bench/gas_spread_buffer_test.py" "$PWD"
 python3 "$SCRIPT_DIR/../bench/monster_scan_test.py" "$PWD"
 python3 "$SCRIPT_DIR/../bench/monster_snapshot_test.py" "$PWD"
 python3 "$SCRIPT_DIR/../bench/monster_remove_dead_test.py" "$PWD"
