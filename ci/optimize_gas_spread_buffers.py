@@ -95,7 +95,7 @@ for forbidden in (
     if forbidden in method:
         raise SystemExit(f"ERROR: dynamic gas candidate operation remains: {forbidden}")
 
-if method.count("spread_count") != 5:
+if method.count("spread_count") != 6:
     raise SystemExit(f"ERROR: unexpected spread_count use count {method.count('spread_count')}")
 if method.count("neighbour_count") != 4:
     raise SystemExit(f"ERROR: unexpected neighbour_count use count {method.count('neighbour_count')}")
