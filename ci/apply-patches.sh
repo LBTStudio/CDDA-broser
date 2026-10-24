@@ -71,6 +71,9 @@ for name in $PATCHES; do
     fi
 done
 
+echo "[PATCH] stable-dead-monster-compaction (source-anchored)"
+python3 "$SCRIPT_DIR/compact_dead_monsters.py" "$PWD/src/creature_tracker.cpp"
+
 git diff --check
 
 # ------------------------------------------------------------------
@@ -284,6 +287,7 @@ python3 "$SCRIPT_DIR/../bench/visible_creature_position_test.py" "$PWD"
 python3 "$SCRIPT_DIR/../bench/large_entity_churn_test.py" "$PWD"
 python3 "$SCRIPT_DIR/../bench/monster_scan_test.py" "$PWD"
 python3 "$SCRIPT_DIR/../bench/monster_snapshot_test.py" "$PWD"
+python3 "$SCRIPT_DIR/../bench/monster_remove_dead_test.py" "$PWD"
 python3 "$SCRIPT_DIR/../bench/item_snapshot_test.py" "$PWD"
 python3 "$SCRIPT_DIR/../bench/sleep_save_test.py" "$PWD"
 python3 "$SCRIPT_DIR/../bench/input_utf8_test.py" "$PWD"
