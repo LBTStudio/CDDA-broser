@@ -63,7 +63,13 @@ for name in $PATCHES; do
         exit 1
     fi
     echo "[PATCH] $name"
-    git apply --check "$f"
+    if ! git apply --check "$f"; then
+        if [ "$name" = "nearby-items-hash" ]; then
+            echo "[DIAGNOSTIC] nearby-items-hash target region in src/game.cpp"
+            nl -ba src/game.cpp | sed -n '8280,8405p'
+        fi
+        exit 1
+    fi
     git apply "$f"
 done
 
