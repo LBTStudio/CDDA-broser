@@ -30,32 +30,57 @@ old = """    // Keep the original heap-backed path for large populations.
     for( const tripoint &pos : positions ) {
         process( pos );
     }"""
-new = """    // A single z-level normally contains <= 121 submaps. Keep its unique
-    // coordinates sorted in bounded stack storage so duplicate-heavy vehicle
-    // clusters do not reserve a vector proportional to vehicle count.
+new = """    // Most single-level maps have at most 121 submaps. Use bounded open
+    // addressing to deduplicate vehicle positions without tree nodes or an
+    // N-sized vector, then sort the unique coordinates for set-compatible order.
     constexpr std::size_t unique_capacity = 256;
+    constexpr std::size_t table_capacity = 512;
     std::array<tripoint, unique_capacity> positions{};
+    std::array<int, table_capacity> indices{};
+    indices.fill( -1 );
     std::size_t count = 0;
     bool overflow = false;
     for( vehicle *this_vehicle : vehicles ) {
         const tripoint candidate = submap_position( this_vehicle );
-        const auto first = positions.begin();
-        const auto last = first + count;
-        const auto iter = std::lower_bound( first, last, candidate );
-        if( iter != last && !( candidate < *iter ) && !( *iter < candidate ) ) {
-            continue;
+        const std::size_t hx = static_cast<unsigned int>( candidate.x ) * 73856093u;
+        const std::size_t hy = static_cast<unsigned int>( candidate.y ) * 19349663u;
+        const std::size_t hz = static_cast<unsigned int>( candidate.z ) * 83492791u;
+        std::size_t bucket = ( hx ^ hy ^ hz ) % table_capacity;
+        bool handled = false;
+        for( std::size_t probe = 0; probe < table_capacity; ++probe ) {
+            const int existing_index = indices[bucket];
+            if( existing_index < 0 ) {
+                if( count == unique_capacity ) {
+                    overflow = true;
+                    break;
+                }
+                positions[count] = candidate;
+                indices[bucket] = static_cast<int>( count );
+                ++count;
+                handled = true;
+                break;
+            }
+            const tripoint &existing = positions[static_cast<std::size_t>( existing_index )];
+            if( existing.x == candidate.x && existing.y == candidate.y &&
+                existing.z == candidate.z ) {
+                handled = true;
+                break;
+            }
+            bucket = ( bucket + 1 ) % table_capacity;
         }
-        if( count == unique_capacity ) {
+        if( overflow ) {
+            break;
+        }
+        if( !handled ) {
             overflow = true;
             break;
         }
-        std::move_backward( iter, last, last + 1 );
-        *iter = candidate;
-        ++count;
     }
     if( !overflow ) {
-        for( std::size_t i = 0; i < count; ++i ) {
-            process( positions[i] );
+        const auto last = positions.begin() + count;
+        std::sort( positions.begin(), last );
+        for( auto iter = positions.begin(); iter != last; ++iter ) {
+            process( *iter );
         }
         return;
     }
@@ -82,10 +107,10 @@ if "std::set<tripoint> positions;" in method:
     raise SystemExit("ERROR: tree-backed large-vehicle path remains after transform")
 if "unique_capacity = 256" not in method:
     raise SystemExit("ERROR: bounded unique-position buffer missing")
-if "std::lower_bound( first, last, candidate )" not in method:
-    raise SystemExit("ERROR: sorted deduplication lookup missing")
+if "table_capacity = 512" not in method or "indices.fill( -1 );" not in method:
+    raise SystemExit("ERROR: bounded open-addressing table missing")
 if "fallback.reserve( vehicles.size() );" not in method:
     raise SystemExit("ERROR: overflow fallback missing")
 source = source[:start] + method + source[end:]
 path.write_text(source, encoding="utf-8")
-print("PASS: vehicle-submap path uses bounded sorted stack storage with overflow fallback")
+print("PASS: vehicle-submap path uses bounded open-addressing storage with overflow fallback")
