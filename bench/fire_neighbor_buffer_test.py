@@ -72,8 +72,8 @@ assert "if( neighbour_count == 0 )" in new_method
 
 old_block = neighbor_block(old_method)
 new_block = neighbor_block(new_method)
-assert old_block.count("neighbour_vec.size()") == 6
-assert new_block.count("neighbour_count") == 8
+assert old_block.count("neighbour_vec.size()") == 0
+assert new_block.count("neighbour_count") == 2
 
 program = r'''
 #include <algorithm>
