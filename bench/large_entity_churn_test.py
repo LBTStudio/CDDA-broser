@@ -77,8 +77,10 @@ assert helper_start >= 0, "vehicle-submap helper template not found"
 helper_body = function(new_map[helper_start:], "template<typename VehicleRange, typename MapRef, typename ProcessFn>")
 assert "inline_capacity = 32" in helper_body
 assert "unique_capacity = 256" in helper_body
-assert "std::lower_bound( first, last, candidate )" in helper_body
-assert "std::move_backward( iter, last, last + 1 )" in helper_body
+assert "table_capacity = 512" in helper_body
+assert "std::array<int, table_capacity> indices{};" in helper_body
+assert "indices.fill( -1 );" in helper_body
+assert "std::sort( positions.begin(), last );" in helper_body
 assert "fallback.reserve( vehicles.size() );" in helper_body
 assert "std::set<tripoint> positions;" not in helper_body
 
