@@ -172,11 +172,11 @@ outcome run_case(const std::vector<int> &flags, bool spawn_on_death) {
     populate(tracker, flags);
     death_order.clear();
     bool spawned = false;
-    death_hook = [&tracker, spawn_on_death, &spawned](monster &dead) {
+    death_hook = [&tracker, spawn_on_death, &spawned](monster &) {
         if (spawn_on_death && !spawned) {
             auto child = std::make_shared<monster>();
             child->id = 900000;
-            child->dead = false;
+            child->dead = true;
             tracker.monsters_list.push_back(child);
             spawned = true;
         }
