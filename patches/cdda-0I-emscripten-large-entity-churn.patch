@@ -1,0 +1,104 @@
+CDDA 0.I: avoid linear monster tracking scans on every move and remove
+small-set heap churn from per-turn vehicle item processing.
+
+1. creature_tracker::update_pos already has an old-position hash index. When
+that index points at the moving monster, use it to re-key the entry directly.
+Retain the upstream vector search/rebuild recovery path when the index does not
+match, and do not change monster list order or any movement/AI work.
+2. map::process_items builds a temporary tree set of vehicle submaps every turn.
+For up to 32 vehicles, collect coordinates in a fixed stack array, sort and
+deduplicate them to preserve std::set's visitation order, and process them.
+For larger populations, preserve the existing std::set path to avoid an
+unbounded stack buffer.
+
+diff --git a/src/creature_tracker.cpp b/src/creature_tracker.cpp
+--- a/src/creature_tracker.cpp
++++ b/src/creature_tracker.cpp
+@@ -125,6 +125,14 @@ bool creature_tracker::update_pos( const monster &critter, const tripoint_abs_ms &old_pos,
+         }
+     }
+ 
++    // Movement normally keeps this position index and monsters_list in sync.
++    // Use the index for the common path instead of scanning every monster.
++    // Keep the list scan below as recovery for a missing/stale position entry.
++    const auto tracked_iter = monsters_by_location.find( old_pos );
++    if( tracked_iter != monsters_by_location.end() && tracked_iter->second.get() == &critter ) {
++        const shared_ptr_fast<monster> tracked = tracked_iter->second;
++        monsters_by_location.erase( tracked_iter );
++        monsters_by_location[new_pos] = tracked;
++        return true;
++    }
++
+     const auto iter = std::find_if( monsters_list.begin(), monsters_list.end(),
+     [&]( const shared_ptr_fast<monster> &ptr ) {
+         return ptr.get() == &critter;
+diff --git a/src/map.cpp b/src/map.cpp
+--- a/src/map.cpp
++++ b/src/map.cpp
+@@ -5575,6 +5575,47 @@
++// map::process_items() runs once per turn. Most maps have few vehicle submaps,
++// so avoid allocating a tree node for every distinct submap in that case.
++// Sorting the bounded stack buffer preserves std::set's coordinate order.
++template<typename VehicleRange, typename MapRef, typename ProcessFn>
++static void for_each_unique_vehicle_submap( const VehicleRange &vehicles, const MapRef &here,
++        ProcessFn process )
++{
++    constexpr std::size_t inline_capacity = 32;
++    const auto submap_position = [&here]( vehicle *this_vehicle ) {
++        const tripoint_bub_ms pos = this_vehicle->pos_bub( here );
++        return tripoint( pos.x() / SEEX, pos.y() / SEEY, pos.z() );
++    };
++
++    if( vehicles.size() <= inline_capacity ) {
++        std::array<tripoint, inline_capacity> positions{};
++        std::size_t count = 0;
++        for( vehicle *this_vehicle : vehicles ) {
++            positions[count++] = submap_position( this_vehicle );
++        }
++        const auto last = positions.begin() + count;
++        std::sort( positions.begin(), last );
++        const auto unique_end = std::unique( positions.begin(), last,
++        []( const tripoint &lhs, const tripoint &rhs ) {
++            return lhs.x == rhs.x && lhs.y == rhs.y && lhs.z == rhs.z;
++        } );
++        for( auto iter = positions.begin(); iter != unique_end; ++iter ) {
++            process( *iter );
++        }
++        return;
++    }
++
++    // Keep the original heap-backed path for large populations.
++    std::set<tripoint> positions;
++    for( vehicle *this_vehicle : vehicles ) {
++        positions.emplace( submap_position( this_vehicle ) );
++    }
++    for( const tripoint &pos : positions ) {
++        process( pos );
++    }
++}
++
+ void map::process_items()
+ {
+     const int minz = zlevels ? -OVERMAP_DEPTH : abs_sub.z();
+@@ -5581,20 +5622,21 @@ void map::process_items()
+         level_cache &cache = access_cache( gz );
+-        std::set<tripoint> submaps_with_vehicles;
+-        for( vehicle *this_vehicle : cache.vehicle_list ) {
+-            tripoint_bub_ms pos = this_vehicle->pos_bub( *this );
+-            submaps_with_vehicles.emplace( pos.x() / SEEX, pos.y() / SEEY, pos.z() );
+-        }
+-        for( const tripoint &pos : submaps_with_vehicles ) {
++        const auto process_vehicle_submap = [this]( const tripoint &pos ) {
+             submap *const current_submap = get_submap_at_grid( tripoint_rel_sm( pos ) );
+             if( current_submap == nullptr ) {
+                 debugmsg( "Tried to process items at (%d,%d,%d) but the submap is not loaded", pos.x, pos.y,
+                           pos.z );
+-                continue;
++                return;
+             }
+             // Vehicles first in case they get blown up and drop active items on the map.
+             process_items_in_vehicles( *current_submap );
+-        }
++        };
++        for_each_unique_vehicle_submap( cache.vehicle_list, *this, process_vehicle_submap );
+     }
