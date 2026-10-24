@@ -1,0 +1,82 @@
+CDDA 0.I: avoid per-turn heap nodes for small vehicle-submap groups.
+
+map::process_items runs every turn. Its temporary std::set allocates one tree
+node per distinct vehicle submap, even when there are only one or two vehicles.
+Use a fixed 32-entry stack buffer for the common small case, sort and deduplicate
+it to retain std::set's exact coordinate order, and keep the original tree-set
+path for larger vehicle lists. The stack usage is bounded; no heap buffer grows
+with vehicle count, and large cases keep their existing memory profile.
+
+The helper only computes grouping positions. Vehicle processing, missing-submap
+diagnostics, simulation ordering, and all game-state changes remain unchanged.
+
+diff --git a/src/map.cpp b/src/map.cpp
+--- a/src/map.cpp
++++ b/src/map.cpp
+@@ -5575,6 +5575,47 @@
++template<typename VehicleRange, typename MapRef, typename ProcessFn>
++static void for_each_unique_vehicle_submap( const VehicleRange &vehicles, const MapRef &here,
++        ProcessFn process )
++{
++    // This hot path runs every game turn. Keep the common case allocation-free,
++    // but bound stack usage and retain the lower-peak-memory set path for large
++    // vehicle populations.
++    constexpr std::size_t inline_capacity = 32;
++    const auto submap_position = [&here]( vehicle *this_vehicle ) {
++        const tripoint_bub_ms pos = this_vehicle->pos_bub( here );
++        return tripoint( pos.x() / SEEX, pos.y() / SEEY, pos.z() );
++    };
++
++    if( vehicles.size() <= inline_capacity ) {
++        std::array<tripoint, inline_capacity> positions{};
++        std::size_t count = 0;
++        for( vehicle *this_vehicle : vehicles ) {
++            positions[count++] = submap_position( this_vehicle );
++        }
++        const auto last = positions.begin() + count;
++        std::sort( positions.begin(), last );
++        const auto unique_end = std::unique( positions.begin(), last,
++        []( const tripoint &lhs, const tripoint &rhs ) {
++            return lhs.x == rhs.x && lhs.y == rhs.y && lhs.z == rhs.z;
++        } );
++        for( auto iter = positions.begin(); iter != unique_end; ++iter ) {
++            process( *iter );
++        }
++        return;
++    }
++
++    // Do not allocate a vector sized to every vehicle on crowded maps.
++    std::set<tripoint> positions;
++    for( vehicle *this_vehicle : vehicles ) {
++        positions.emplace( submap_position( this_vehicle ) );
++    }
++    for( const tripoint &pos : positions ) {
++        process( pos );
++    }
++}
++
+ void map::process_items()
+ {
+     const int minz = zlevels ? -OVERMAP_DEPTH : abs_sub.z();
+@@ -5581,21 +5622,20 @@ void map::process_items()
+         level_cache &cache = access_cache( gz );
+-        std::set<tripoint> submaps_with_vehicles;
+-        for( vehicle *this_vehicle : cache.vehicle_list ) {
+-            tripoint_bub_ms pos = this_vehicle->pos_bub( *this );
+-            submaps_with_vehicles.emplace( pos.x() / SEEX, pos.y() / SEEY, pos.z() );
+-        }
+-        for( const tripoint &pos : submaps_with_vehicles ) {
++        const auto process_vehicle_submap = [this]( const tripoint &pos ) {
+             submap *const current_submap = get_submap_at_grid( tripoint_rel_sm( pos ) );
+             if( current_submap == nullptr ) {
+                 debugmsg( "Tried to process items at (%d,%d,%d) but the submap is not loaded", pos.x, pos.y,
+                           pos.z );
+-                continue;
++                return;
+             }
+             // Vehicles first in case they get blown up and drop active items on the map.
+             process_items_in_vehicles( *current_submap );
+-        }
++        };
++        for_each_unique_vehicle_submap( cache.vehicle_list, *this, process_vehicle_submap );
+     }
