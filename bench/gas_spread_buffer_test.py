@@ -13,6 +13,7 @@ import sys
 import tempfile
 
 source = Path(sys.argv[1]).resolve()
+patched = (source / "src/map_field.cpp").read_text(encoding="utf-8")
 out = Path(__file__).resolve().parent / "out" / "gas-spread-buffers"
 out.mkdir(parents=True, exist_ok=True)
 
