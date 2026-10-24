@@ -463,9 +463,44 @@ with tempfile.TemporaryDirectory(prefix='scheduler-', dir=out) as tmp:
 old_game, new_game = upstream('game.cpp'), (source / 'src/game.cpp').read_text()
 old_add = function(old_game, 'static void add_item_recursive(')
 new_add = function(new_game, 'static void add_item_recursive(')
-assert 'std::find(' not in new_add and 'try_emplace(' in new_add
 old_find = function(old_game, 'std::vector<map_item_stack> game::find_nearby_items(')
 new_find = function(new_game, 'std::vector<map_item_stack> game::find_nearby_items(')
+# Keep this generic upstream-vs-current semantic harness focused on traversal
+# behavior. A separately tested optimization may change only the grouping
+# container/order index; normalize it back to the pre-optimization map version.
+if 'std::vector<map_item_stack *>' in new_add:
+    new_add = new_add.replace(
+        'std::vector<map_item_stack *> &stack_order',
+        'std::vector<std::string> &item_order', 1)
+    new_add = new_add.replace(
+        'std::unordered_map<std::string, map_item_stack> &temp_items',
+        'std::map<std::string, map_item_stack> &temp_items', 1)
+    new_add = new_add.replace(
+        'stack_order.push_back( &entry.first->second );',
+        'item_order.push_back( name );', 1)
+    new_add = new_add.replace(
+        'add_item_recursive( stack_order, temp_items,',
+        'add_item_recursive( item_order, temp_items,')
+
+    new_find = new_find.replace(
+        'std::unordered_map<std::string, map_item_stack> temp_items;',
+        'std::map<std::string, map_item_stack> temp_items;', 1)
+    new_find = new_find.replace(
+        'std::vector<map_item_stack *> stack_order;',
+        'std::vector<std::string> item_order;', 1)
+    new_find = new_find.replace(
+        'add_item_recursive( stack_order, temp_items,',
+        'add_item_recursive( item_order, temp_items,', 1)
+    new_find = new_find.replace('stack_order.size()', 'item_order.size()', 1)
+    optimized_finish = """    for( map_item_stack *stack : stack_order ) {
+        ret.push_back( std::move( *stack ) );
+    }"""
+    baseline_finish = """    for( auto &elem : item_order ) {
+        ret.push_back( std::move( temp_items.at( elem ) ) );
+    }"""
+    assert optimized_finish in new_find
+    new_find = new_find.replace(optimized_finish, baseline_finish, 1)
+assert 'std::find(' not in new_add and 'try_emplace(' in new_add
 assert old_find[:old_find.index('    ret.reserve(')] == new_find[:new_find.index('    ret.reserve(')]
 for file, sig in [('item.cpp', 'std::string item::durability_indicator('),
                   ('item_tname.cpp', 'std::string food_status(')]:
