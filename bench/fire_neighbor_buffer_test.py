@@ -140,10 +140,22 @@ struct map {
         return neighbors;
     }
     std::tuple<maptile, maptile, maptile> get_wind_blockers(
-        const int &, const tripoint_bub_ms & ) const {
-        return { neighbors[static_cast<size_t>( blockers[0] )].second,
-                 neighbors[static_cast<size_t>( blockers[1] )].second,
-                 neighbors[static_cast<size_t>( blockers[2] )].second };
+        const int &winddirection, const tripoint_bub_ms & ) const {
+        static constexpr std::array<std::array<int, 4>, 9> rules = {{
+            {{330, 4, 2, 7}}, {{301, 7, 4, 6}}, {{240, 6, 5, 7}},
+            {{211, 5, 3, 6}}, {{150, 3, 0, 5}}, {{121, 0, 1, 3}},
+            {{60, 1, 0, 2}}, {{31, 2, 4, 1}}, {{0, 4, 2, 7}}
+        }};
+        std::array<size_t, 3> idx{{4, 2, 7}};
+        for (const auto &rule : rules) {
+            if (winddirection >= rule[0]) {
+                idx[0] = static_cast<size_t>(rule[1]);
+                idx[1] = static_cast<size_t>(rule[2]);
+                idx[2] = static_cast<size_t>(rule[3]);
+                break;
+            }
+        }
+        return { neighbors[idx[0]].second, neighbors[idx[1]].second, neighbors[idx[2]].second };
     }
 };
 static map global_map;
