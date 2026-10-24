@@ -76,8 +76,10 @@ helper_start = new_map.rfind("template<typename VehicleRange, typename MapRef, t
 assert helper_start >= 0, "vehicle-submap helper template not found"
 helper_body = function(new_map[helper_start:], "template<typename VehicleRange, typename MapRef, typename ProcessFn>")
 assert "inline_capacity = 32" in helper_body
-assert "positions.reserve( vehicles.size() );" in helper_body
-assert "std::sort( positions.begin(), positions.end() );" in helper_body
+assert "unique_capacity = 256" in helper_body
+assert "std::lower_bound( first, last, candidate )" in helper_body
+assert "std::move_backward( iter, last, last + 1 )" in helper_body
+assert "fallback.reserve( vehicles.size() );" in helper_body
 assert "std::set<tripoint> positions;" not in helper_body
 
 
@@ -302,7 +304,7 @@ template<class A, class B> void compare_trackers( const A &a, const B &b ) {
 static bool same_points( const std::vector<tripoint> &a, const std::vector<tripoint> &b ) {
     return a == b;
 }
-static void benchmark_vehicle_groups( const std::size_t count ) {
+static void benchmark_vehicle_groups( const std::size_t count, const bool many_z_levels = false ) {
     std::vector<vehicle> storage( count );
     std::vector<vehicle *> vehicles;
     vehicles.reserve( count );
@@ -314,11 +316,12 @@ static void benchmark_vehicle_groups( const std::size_t count ) {
     constexpr int repetitions = 25;
     for( int rep = 0; rep < repetitions; ++rep ) {
         for( std::size_t i = 0; i < count; ++i ) {
-            // Spread unique points over an 11x11 submap grid and z-levels,
-            // while varying the in-submap tile every pass to simulate motion.
+            // A normal per-level map has at most 121 submaps. A separate
+            // synthetic multi-z case exercises the defensive overflow path.
             const int submap_x = static_cast<int>( i % 11 );
             const int submap_y = static_cast<int>( ( i / 11 ) % 11 );
-            const int z = static_cast<int>( i / 121 ) - static_cast<int>( count / 242 );
+            const int z = many_z_levels ?
+                          static_cast<int>( i / 121 ) - static_cast<int>( count / 242 ) : 0;
             storage[i].position = tripoint_bub_ms(
                 submap_x * SEEX + rep % SEEX,
                 submap_y * SEEY + ( rep * 7 ) % SEEY,
@@ -350,10 +353,17 @@ static void benchmark_vehicle_groups( const std::size_t count ) {
     if( count <= 32 ) {
         assert( new_allocs == 0 );
         if( count > 0 ) { assert( old_allocs > 0 ); }
-    } else {
+    } else if( many_z_levels ) {
+        // More than the bounded unique slots falls back to one reserved vector.
         assert( new_allocs == repetitions );
         assert( new_allocs < old_allocs );
         assert( new_bytes < old_bytes );
+    } else {
+        // Normal single-level maps deduplicate in stack storage only.
+        assert( new_allocs == 0 );
+        assert( new_bytes == 0 );
+        assert( old_allocs > 0 );
+        assert( old_bytes > 0 );
     }
     std::printf( "vehicle-submaps n=%zu x%d: allocations %zu -> %zu, bytes %zu -> %zu, time %.3f -> %.3f ms\n",
                  count, repetitions, old_allocs, new_allocs, old_bytes, new_bytes, old_ms, new_ms );
@@ -373,6 +383,12 @@ static void benchmark_vehicle_groups( const std::size_t count ) {
     if( count > 0 ) {
         assert( old_result.size() == 1 );
     }
+    allocation_count = allocation_bytes = 0;
+    count_allocations = true;
+    vehicle_optimized::for_each_unique_vehicle_submap( vehicles, global_map,
+        [&]( const tripoint & ) {} );
+    count_allocations = false;
+    assert( allocation_count == 0 && allocation_bytes == 0 );
 }
 int main() {
     for( int count : { 32, 256, 1024, 4096 } ) {
@@ -417,6 +433,7 @@ int main() {
     for( std::size_t count : { 0U, 1U, 4U, 16U, 32U, 33U, 128U, 1024U } ) {
         benchmark_vehicle_groups( count );
     }
+    benchmark_vehicle_groups( 300, true );
     std::puts( "PASS large entity movement and dynamic vehicle-submap grouping differential checks" );
 }
 '''
