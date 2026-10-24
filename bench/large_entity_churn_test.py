@@ -75,7 +75,10 @@ helper_start = new_map.rfind("template<typename VehicleRange, typename MapRef, t
                              0, new_map.index(helper_signature))
 assert helper_start >= 0, "vehicle-submap helper template not found"
 helper_body = function(new_map[helper_start:], "template<typename VehicleRange, typename MapRef, typename ProcessFn>")
-assert "inline_capacity = 32" in helper_body and "std::set<tripoint> positions;" in helper_body
+assert "inline_capacity = 32" in helper_body
+assert "positions.reserve( vehicles.size() );" in helper_body
+assert "std::sort( positions.begin(), positions.end() );" in helper_body
+assert "std::set<tripoint> positions;" not in helper_body
 
 
 def cxx_function(body):
@@ -344,8 +347,9 @@ static void benchmark_vehicle_groups( const std::size_t count ) {
         assert( new_allocs == 0 );
         if( count > 0 ) { assert( old_allocs > 0 ); }
     } else {
-        assert( new_allocs == old_allocs );
-        assert( new_bytes == old_bytes );
+        assert( new_allocs == repetitions );
+        assert( new_allocs < old_allocs );
+        assert( new_bytes < old_bytes );
     }
     std::printf( "vehicle-submaps n=%zu x%d: allocations %zu -> %zu, bytes %zu -> %zu, time %.3f -> %.3f ms\n",
                  count, repetitions, old_allocs, new_allocs, old_bytes, new_bytes, old_ms, new_ms );
