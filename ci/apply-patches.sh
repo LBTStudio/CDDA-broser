@@ -46,6 +46,7 @@ activity-and-ime
 input-queue
 activity-perf
 runtime-efficiency
+nearby-items-hash
 monster-snapshot
 item-snapshot
 gear-guide
@@ -274,6 +275,7 @@ fi
 # Dependencies: Python 3, g++ (C++17), Node.js 22 (available on ubuntu-latest).
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 python3 "$SCRIPT_DIR/../bench/runtime_efficiency_test.py" "$PWD"
+python3 "$SCRIPT_DIR/../bench/nearby_items_hash_test.py" "$PWD"
 python3 "$SCRIPT_DIR/../bench/mapbuffer_fixed_array_test.py" "$PWD"
 python3 "$SCRIPT_DIR/../bench/visible_creature_position_test.py" "$PWD"
 python3 "$SCRIPT_DIR/../bench/large_entity_churn_test.py" "$PWD"
