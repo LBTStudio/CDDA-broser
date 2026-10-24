@@ -43,6 +43,7 @@ assert "removed_this_turn_.clear();" in old_method
 assert new_method.count("monsters_snapshot_.reset();") == 1
 assert "monsters_list.erase( write, monsters_list.end() );" in new_method
 assert "monsters_list.erase( iter );" not in new_method
+assert "read->reset();" in new_method
 assert "if( write != read )" in new_method
 assert "removed_this_turn_.clear();" in new_method
 
