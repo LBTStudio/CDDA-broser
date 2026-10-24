@@ -57,11 +57,11 @@ expected = expected.replace(
     "            neighbour_vec.push_back( i );",
     "            neighbour_vec[neighbour_count++] = i;", 1
 )
-assert expected.count("neighbour_vec.size()") == 6
+assert expected.count("neighbour_vec.size()") == 8
 assert expected.count("neighbour_vec.empty()") == 1
 expected = expected.replace("neighbour_vec.size()", "neighbour_count")
 expected = expected.replace("neighbour_vec.empty()", "neighbour_count == 0")
-assert expected.count("neighbour_count") == 9
+assert expected.count("neighbour_count") == 11
 assert new_method == expected, (
     "field_processor_fd_fire changed beyond vector -> fixed-array transformation")
 assert "neighbour_vec.reserve" not in new_method
