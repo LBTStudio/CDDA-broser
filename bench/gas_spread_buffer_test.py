@@ -63,6 +63,17 @@ replacements = [
 for old, new in replacements:
     assert expected.count(old) == 1, f"expected one transformation anchor: {old[:80]!r}"
     expected = expected.replace(old, new, 1)
+old_wind = """            auto maptiles = get_wind_blockers( winddirection, p );
+            // Three map tiles that are facing the wind direction.
+            const maptile &remove_tile = std::get<0>( maptiles );
+            const maptile &remove_tile2 = std::get<1>( maptiles );
+            const maptile &remove_tile3 = std::get<2>( maptiles );"""
+new_wind = """            const auto blocker_indices = wind_blocker_neighbor_indices( winddirection );
+            const maptile &remove_tile = neighs[blocker_indices[0]].second;
+            const maptile &remove_tile2 = neighs[blocker_indices[1]].second;
+            const maptile &remove_tile3 = neighs[blocker_indices[2]].second;"""
+assert expected.count(old_wind) == 1
+expected = expected.replace(old_wind, new_wind, 1)
 assert expected == new_method, (
     "map::spread_gas changed beyond the audited vector-to-fixed-array substitutions")
 
