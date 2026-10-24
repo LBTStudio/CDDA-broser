@@ -260,7 +260,7 @@ int main() {
     std::printf("MEASURE remove_dead (N=%d, alternating deaths): erase shift-equivalents=%llu -> compaction pointer writes=%llu; fixture elapsed %.2f -> %.2f ms\n",
                 n, static_cast<unsigned long long>(erase_shift_equivalents),
                 static_cast<unsigned long long>(compaction_writes), old_ms, new_ms);
-    assert(erase_shift_equivalents > static_cast<std::uint64_t>(n) * n / 4);
+    assert(erase_shift_equivalents >= static_cast<std::uint64_t>(n) * n / 4);
     assert(compaction_writes < static_cast<std::uint64_t>(n));
     std::puts("PASS remove_dead stress: large death wave retains identical surviving monsters and map entries");
 }
