@@ -13,6 +13,7 @@ import sys
 import tempfile
 
 source = Path(sys.argv[1]).resolve()
+patched = (source / "src/map_field.cpp").read_text(encoding="utf-8")
 out = Path(__file__).resolve().parent / "out" / "gas-spread-buffers"
 out.mkdir(parents=True, exist_ok=True)
 
@@ -63,6 +64,17 @@ replacements = [
 for old, new in replacements:
     assert expected.count(old) == 1, f"expected one transformation anchor: {old[:80]!r}"
     expected = expected.replace(old, new, 1)
+old_wind = """            auto maptiles = get_wind_blockers( winddirection, p );
+            // Three map tiles that are facing the wind direction.
+            const maptile &remove_tile = std::get<0>( maptiles );
+            const maptile &remove_tile2 = std::get<1>( maptiles );
+            const maptile &remove_tile3 = std::get<2>( maptiles );"""
+new_wind = """            const auto blocker_indices = wind_blocker_neighbor_indices( winddirection );
+            const maptile &remove_tile = neighs[blocker_indices[0]].second;
+            const maptile &remove_tile2 = neighs[blocker_indices[1]].second;
+            const maptile &remove_tile3 = neighs[blocker_indices[2]].second;"""
+assert expected.count(old_wind) == 1
+expected = expected.replace(old_wind, new_wind, 1)
 assert expected == new_method, (
     "map::spread_gas changed beyond the audited vector-to-fixed-array substitutions")
 
@@ -157,11 +169,23 @@ struct map {
 
     neighbor_array get_neighbors( const tripoint_bub_ms & ) const { return neighbors; }
     std::tuple<maptile, maptile, maptile> get_wind_blockers(
-        const int &, const tripoint_bub_ms & ) {
+        const int &winddirection, const tripoint_bub_ms & ) {
         ++blocker_lookups;
-        return { neighbors[static_cast<size_t>(blocker_indices[0])].second,
-                 neighbors[static_cast<size_t>(blocker_indices[1])].second,
-                 neighbors[static_cast<size_t>(blocker_indices[2])].second };
+        static constexpr std::array<std::array<int, 4>, 9> rules = {{
+            {{330, 4, 2, 7}}, {{301, 7, 4, 6}}, {{240, 6, 5, 7}},
+            {{211, 5, 3, 6}}, {{150, 3, 0, 5}}, {{121, 0, 1, 3}},
+            {{60, 1, 0, 2}}, {{31, 2, 4, 1}}, {{0, 4, 2, 7}}
+        }};
+        std::array<size_t, 3> idx{{4, 2, 7}};
+        for (const auto &rule : rules) {
+            if (winddirection >= rule[0]) {
+                idx[0] = static_cast<size_t>(rule[1]);
+                idx[1] = static_cast<size_t>(rule[2]);
+                idx[2] = static_cast<size_t>(rule[3]);
+                break;
+            }
+        }
+        return { neighbors[idx[0]].second, neighbors[idx[1]].second, neighbors[idx[2]].second };
     }
     bool gas_can_spread_to( field_entry &, const maptile &dst ) const {
         return ( allowed_mask & (1u << dst.id) ) != 0;
@@ -201,6 +225,15 @@ static trace snapshot(const map &m) {
             m.last_destination, m.blocker_lookups};
 }
 ''';
+rule_start = patched.index("struct wind_blocker_neighbor_rule {")
+helper_start = patched.index(
+    "static std::array<std::size_t, 3> wind_blocker_neighbor_indices(", rule_start
+)
+wind_rule_definition = patched[rule_start:helper_start]
+wind_helper = function(
+    patched, "static std::array<std::size_t, 3> wind_blocker_neighbor_indices("
+)
+program += "\n" + wind_rule_definition + "\n" + wind_helper + "\n"
 program += ("\nvoid map::select_baseline( field_entry &cur, const tripoint_bub_ms &p,\n"
             "                          int winddirection, bool sheltered, int windpower ) {\n");
 program += old_block + "}\n";
@@ -234,7 +267,8 @@ int main() {
         assert(old_trace.one_in == new_trace.one_in);
         assert(old_trace.x_in_y == new_trace.x_in_y);
         assert(old_trace.destination == new_trace.destination);
-        assert(old_trace.blocker_lookups == new_trace.blocker_lookups);
+        assert(old_trace.blocker_lookups >= new_trace.blocker_lookups);
+        assert(old_trace.blocker_lookups - new_trace.blocker_lookups <= 1);
     }
     std::puts("PASS gas spread candidate selection: 4,000 scenarios preserve destination and exact RNG/probability call order");
 
@@ -268,6 +302,8 @@ int main() {
     const size_t new_bytes = allocation_bytes;
     assert(old_allocations > 0);
     assert(new_allocations == 0 && new_bytes == 0);
+    assert(before.blocker_lookups == repetitions);
+    assert(after.blocker_lookups == 0);
     std::printf("MEASURE gas spread candidate selection (%d windy field tiles): allocations %zu -> %zu; requested bytes %zu -> %zu\n",
                 repetitions, old_allocations, new_allocations, old_bytes, new_bytes);
     std::puts("PASS gas spread stack buffers: no dynamic candidate storage on the hot path");

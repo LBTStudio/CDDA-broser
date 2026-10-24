@@ -62,6 +62,16 @@ assert expected.count("neighbour_vec.empty()") == 1
 expected = expected.replace("neighbour_vec.size()", "neighbour_count")
 expected = expected.replace("neighbour_vec.empty()", "neighbour_count == 0")
 assert expected.count("neighbour_count") == 11
+old_wind = """    auto maptiles = here.get_wind_blockers( winddirection, p );
+    maptile remove_tile = std::get<0>( maptiles );
+    maptile remove_tile2 = std::get<1>( maptiles );
+    maptile remove_tile3 = std::get<2>( maptiles );"""
+new_wind = """    const auto blocker_indices = wind_blocker_neighbor_indices( winddirection );
+    const maptile &remove_tile = neighs[blocker_indices[0]].second;
+    const maptile &remove_tile2 = neighs[blocker_indices[1]].second;
+    const maptile &remove_tile3 = neighs[blocker_indices[2]].second;"""
+assert expected.count(old_wind) == 1
+expected = expected.replace(old_wind, new_wind, 1)
 assert new_method == expected, (
     "field_processor_fd_fire changed beyond vector -> fixed-array transformation")
 assert "neighbour_vec.reserve" not in new_method
@@ -74,6 +84,15 @@ old_block = neighbor_block(old_method)
 new_block = neighbor_block(new_method)
 assert old_block.count("neighbour_vec.size()") == 0
 assert new_block.count("neighbour_count") == 2
+
+helper_start = patched.index("struct wind_blocker_neighbor_rule {")
+helper_function_start = patched.index(
+    "static std::array<std::size_t, 3> wind_blocker_neighbor_indices(", helper_start
+)
+wind_rule_definition = patched[helper_start:helper_function_start]
+wind_helper = function(
+    patched, "static std::array<std::size_t, 3> wind_blocker_neighbor_indices("
+)
 
 program = r'''
 #include <algorithm>
@@ -121,10 +140,22 @@ struct map {
         return neighbors;
     }
     std::tuple<maptile, maptile, maptile> get_wind_blockers(
-        const int &, const tripoint_bub_ms & ) const {
-        return { neighbors[static_cast<size_t>( blockers[0] )].second,
-                 neighbors[static_cast<size_t>( blockers[1] )].second,
-                 neighbors[static_cast<size_t>( blockers[2] )].second };
+        const int &winddirection, const tripoint_bub_ms & ) const {
+        static constexpr std::array<std::array<int, 4>, 9> rules = {{
+            {{330, 4, 2, 7}}, {{301, 7, 4, 6}}, {{240, 6, 5, 7}},
+            {{211, 5, 3, 6}}, {{150, 3, 0, 5}}, {{121, 0, 1, 3}},
+            {{60, 1, 0, 2}}, {{31, 2, 4, 1}}, {{0, 4, 2, 7}}
+        }};
+        std::array<size_t, 3> idx{{4, 2, 7}};
+        for (const auto &rule : rules) {
+            if (winddirection >= rule[0]) {
+                idx[0] = static_cast<size_t>(rule[1]);
+                idx[1] = static_cast<size_t>(rule[2]);
+                idx[2] = static_cast<size_t>(rule[3]);
+                break;
+            }
+        }
+        return { neighbors[idx[0]].second, neighbors[idx[1]].second, neighbors[idx[2]].second };
     }
 };
 static map global_map;
@@ -156,6 +187,7 @@ static void configure_neighbors( int center_x, int center_y, int winddirection )
 }
 ''';
 
+program += "\n" + wind_rule_definition + "\n" + wind_helper + "\n";
 program += "\nstatic void build_baseline( const tripoint_bub_ms &p, int winddirection, int windpower, std::vector<size_t> &out ) {\n";
 program += "    map &here = global_map;\n" + old_block;
 program += "    out.assign( neighbour_vec.begin(), neighbour_vec.end() );\n}\n";
