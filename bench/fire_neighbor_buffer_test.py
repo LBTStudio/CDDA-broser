@@ -85,6 +85,15 @@ new_block = neighbor_block(new_method)
 assert old_block.count("neighbour_vec.size()") == 0
 assert new_block.count("neighbour_count") == 2
 
+helper_start = patched.index("struct wind_blocker_neighbor_rule {")
+helper_function_start = patched.index(
+    "static std::array<std::size_t, 3> wind_blocker_neighbor_indices(", helper_start
+)
+wind_rule_definition = patched[helper_start:helper_function_start]
+wind_helper = function(
+    patched, "static std::array<std::size_t, 3> wind_blocker_neighbor_indices("
+)
+
 program = r'''
 #include <algorithm>
 #include <array>
@@ -166,6 +175,7 @@ static void configure_neighbors( int center_x, int center_y, int winddirection )
 }
 ''';
 
+program += "\n" + wind_rule_definition + "\n" + wind_helper + "\n";
 program += "\nstatic void build_baseline( const tripoint_bub_ms &p, int winddirection, int windpower, std::vector<size_t> &out ) {\n";
 program += "    map &here = global_map;\n" + old_block;
 program += "    out.assign( neighbour_vec.begin(), neighbour_vec.end() );\n}\n";
