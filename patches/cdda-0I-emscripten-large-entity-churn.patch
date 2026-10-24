@@ -10,11 +10,10 @@ For up to 32 vehicles, collect coordinates in a fixed stack array, sort and
 deduplicate them to preserve std::set's visitation order, and process them.
 For larger populations, preserve the existing std::set path to avoid an
 unbounded stack buffer.
-
 diff --git a/src/creature_tracker.cpp b/src/creature_tracker.cpp
 --- a/src/creature_tracker.cpp
 +++ b/src/creature_tracker.cpp
-@@ -125,6 +125,14 @@ bool creature_tracker::update_pos( const monster &critter, const tripoint_abs_ms &old_pos,
+@@ -125,6 +125,17 @@ bool creature_tracker::update_pos( const monster &critter, const tripoint_abs_ms &old_pos,
          }
      }
  
@@ -35,7 +34,7 @@ diff --git a/src/creature_tracker.cpp b/src/creature_tracker.cpp
 diff --git a/src/map.cpp b/src/map.cpp
 --- a/src/map.cpp
 +++ b/src/map.cpp
-@@ -5575,6 +5575,47 @@
+@@ -5578,1 +5578,41 @@
 +// map::process_items() runs once per turn. Most maps have few vehicle submaps,
 +// so avoid allocating a tree node for every distinct submap in that case.
 +// Sorting the bounded stack buffer preserves std::set's coordinate order.
@@ -76,11 +75,8 @@ diff --git a/src/map.cpp b/src/map.cpp
 +        process( pos );
 +    }
 +}
-+
  void map::process_items()
- {
-     const int minz = zlevels ? -OVERMAP_DEPTH : abs_sub.z();
-@@ -5581,20 +5622,21 @@ void map::process_items()
+@@ -5581,17 +5622,13 @@ void map::process_items()
          level_cache &cache = access_cache( gz );
 -        std::set<tripoint> submaps_with_vehicles;
 -        for( vehicle *this_vehicle : cache.vehicle_list ) {
@@ -88,17 +84,24 @@ diff --git a/src/map.cpp b/src/map.cpp
 -            submaps_with_vehicles.emplace( pos.x() / SEEX, pos.y() / SEEY, pos.z() );
 -        }
 -        for( const tripoint &pos : submaps_with_vehicles ) {
-+        const auto process_vehicle_submap = [this]( const tripoint &pos ) {
-             submap *const current_submap = get_submap_at_grid( tripoint_rel_sm( pos ) );
-             if( current_submap == nullptr ) {
-                 debugmsg( "Tried to process items at (%d,%d,%d) but the submap is not loaded", pos.x, pos.y,
-                           pos.z );
+-            submap *const current_submap = get_submap_at_grid( tripoint_rel_sm( pos ) );
+-            if( current_submap == nullptr ) {
+-                debugmsg( "Tried to process items at (%d,%d,%d) but the submap is not loaded", pos.x, pos.y,
+-                          pos.z );
 -                continue;
-+                return;
-             }
-             // Vehicles first in case they get blown up and drop active items on the map.
-             process_items_in_vehicles( *current_submap );
+-            }
+-            // Vehicles first in case they get blown up and drop active items on the map.
+-            process_items_in_vehicles( *current_submap );
 -        }
++        const auto process_vehicle_submap = [this]( const tripoint &pos ) {
++            submap *const current_submap = get_submap_at_grid( tripoint_rel_sm( pos ) );
++            if( current_submap == nullptr ) {
++                debugmsg( "Tried to process items at (%d,%d,%d) but the submap is not loaded", pos.x, pos.y,
++                          pos.z );
++                return;
++            }
++            // Vehicles first in case they get blown up and drop active items on the map.
++            process_items_in_vehicles( *current_submap );
 +        };
 +        for_each_unique_vehicle_submap( cache.vehicle_list, *this, process_vehicle_submap );
      }
