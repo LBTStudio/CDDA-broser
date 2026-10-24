@@ -144,8 +144,7 @@ template<class It> It counted_find(It first, It last, const std::string &value) 
 }
 '''.replace("std::find(", "counted_find(")
 
-program += stack_h + "
-" + stack_cpp
+program += stack_h + "\n" + stack_cpp
 
 variants = [
     ("legacy", old_add, old_find, "std::map<std::string, map_item_stack>",
