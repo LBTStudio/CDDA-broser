@@ -52,15 +52,15 @@ assert mutations == [
     ('creature_tracker.cpp', 'monsters_list.emplace_back( critter_ptr );'),
     ('creature_tracker.cpp', 'monsters_list.erase( iter );'),
     ('creature_tracker.cpp', 'monsters_list.clear();'),
-    ('creature_tracker.cpp', 'iter = monsters_list.erase( iter );'),
+    ('creature_tracker.cpp', 'monsters_list.erase( write, monsters_list.end() );'),
     ('savegame.cpp', 'monsters_list.clear();'),
 ], mutations
-# Every membership mutation retains upstream's complete function body except
-# the reset. Save serialization and all three liveness predicates stay exact.
+# All other membership mutations retain upstream's complete function body
+# except snapshot invalidation. remove_dead() is now separately covered by the
+# compiled differential compaction test added alongside this optimization.
 methods = ['shared_ptr_fast<monster> creature_tracker::find(',
            'bool creature_tracker::add(', 'void creature_tracker::remove_from_location_map(',
-           'void creature_tracker::remove(', 'void creature_tracker::clear(',
-           'void creature_tracker::remove_dead(']
+           'void creature_tracker::remove(', 'void creature_tracker::clear(']
 for signature in methods:
     before = body(old['creature_tracker.cpp'], signature)
     after = body(new['creature_tracker.cpp'], signature)
@@ -187,6 +187,9 @@ public:
     program += '};\n'
     for signature in methods:
         program += body(text['creature_tracker.cpp'], signature) + '\n'
+    # Compile each branch's actual cleanup method: upstream erase loop vs the
+    # optimized stable compaction. Its semantics are also tested independently.
+    program += body(text['creature_tracker.cpp'], 'void creature_tracker::remove_dead(') + '\n'
     for signature in ('void creature_tracker::deserialize(', 'void creature_tracker::serialize('):
         program += body(text['savegame.cpp'], signature) + '\n'
     if namespace == 'optimized':
