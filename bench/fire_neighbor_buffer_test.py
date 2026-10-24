@@ -172,11 +172,6 @@ struct rng_state_snapshot {
 static rng_state_snapshot save_rng() {
     return { random_state, random_calls, probability_calls };
 }
-static void restore_rng( rng_state_snapshot s ) {
-    random_state = s.random;
-    random_calls = s.random_count;
-    probability_calls = s.probability_count;
-}
 int main() {
     std::vector<size_t> before;
     std::vector<size_t> after;
