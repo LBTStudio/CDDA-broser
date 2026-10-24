@@ -313,12 +313,16 @@ static void benchmark_vehicle_groups( const std::size_t count ) {
     double old_ms = 0, new_ms = 0;
     constexpr int repetitions = 25;
     for( int rep = 0; rep < repetitions; ++rep ) {
-        const int x_span = count > 1 ? static_cast<int>( count / 2 ) : 1;
         for( std::size_t i = 0; i < count; ++i ) {
+            // Spread unique points over an 11x11 submap grid and z-levels,
+            // while varying the in-submap tile every pass to simulate motion.
+            const int submap_x = static_cast<int>( i % 11 );
+            const int submap_y = static_cast<int>( ( i / 11 ) % 11 );
+            const int z = static_cast<int>( i / 121 ) - static_cast<int>( count / 242 );
             storage[i].position = tripoint_bub_ms(
-                ( static_cast<int>( i ) + rep ) % x_span * SEEX + static_cast<int>( i % SEEX ),
-                ( static_cast<int>( i * 7 ) + rep ) % 5 * SEEY + static_cast<int>( i % SEEY ),
-                static_cast<int>( ( i + static_cast<std::size_t>( rep ) ) % 3 ) );
+                submap_x * SEEX + rep % SEEX,
+                submap_y * SEEY + ( rep * 7 ) % SEEY,
+                z );
         }
         old_result.clear();
         allocation_count = allocation_bytes = 0;
