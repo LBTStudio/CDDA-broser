@@ -39,8 +39,8 @@ method = method.replace(old, new, 1)
 
 size_use = method.count("neighbour_vec.size()")
 empty_use = method.count("neighbour_vec.empty()")
-if size_use != 6:
-    raise SystemExit(f"ERROR: expected six neighbor-vector size uses, found {size_use}")
+if size_use != 8:
+    raise SystemExit(f"ERROR: expected eight neighbor-vector size uses, found {size_use}")
 if empty_use != 1:
     raise SystemExit(f"ERROR: expected one neighbor-vector empty check, found {empty_use}")
 method = method.replace("neighbour_vec.size()", "neighbour_count")
@@ -50,7 +50,7 @@ if "std::vector<size_t> neighbour_vec" in method or "neighbour_vec.reserve" in m
     raise SystemExit("ERROR: heap-allocated fire neighbor vector remains")
 if "neighbour_vec.push_back" in method or "neighbour_vec.size()" in method:
     raise SystemExit("ERROR: dynamic neighbor vector operation remains")
-if method.count("neighbour_count") != 9:
+if method.count("neighbour_count") != 11:
     raise SystemExit(
         f"ERROR: unexpected neighbor_count use count {method.count('neighbour_count')}"
     )
