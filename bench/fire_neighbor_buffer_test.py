@@ -62,6 +62,16 @@ assert expected.count("neighbour_vec.empty()") == 1
 expected = expected.replace("neighbour_vec.size()", "neighbour_count")
 expected = expected.replace("neighbour_vec.empty()", "neighbour_count == 0")
 assert expected.count("neighbour_count") == 11
+old_wind = """    auto maptiles = here.get_wind_blockers( winddirection, p );
+    maptile remove_tile = std::get<0>( maptiles );
+    maptile remove_tile2 = std::get<1>( maptiles );
+    maptile remove_tile3 = std::get<2>( maptiles );"""
+new_wind = """    const auto blocker_indices = wind_blocker_neighbor_indices( winddirection );
+    const maptile &remove_tile = neighs[blocker_indices[0]].second;
+    const maptile &remove_tile2 = neighs[blocker_indices[1]].second;
+    const maptile &remove_tile3 = neighs[blocker_indices[2]].second;"""
+assert expected.count(old_wind) == 1
+expected = expected.replace(old_wind, new_wind, 1)
 assert new_method == expected, (
     "field_processor_fd_fire changed beyond vector -> fixed-array transformation")
 assert "neighbour_vec.reserve" not in new_method
