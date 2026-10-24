@@ -20,6 +20,7 @@
 set -euo pipefail
 
 PATCH_DIR="${1:-../patches}"
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 
 if [ ! -f Makefile ] || [ ! -d src ]; then
     echo "ERROR: CDDA のソースツリー内で実行してください（Makefile と src/ が必要）" >&2
@@ -46,7 +47,6 @@ activity-and-ime
 input-queue
 activity-perf
 runtime-efficiency
-nearby-items-hash
 monster-snapshot
 item-snapshot
 gear-guide
@@ -63,14 +63,12 @@ for name in $PATCHES; do
         exit 1
     fi
     echo "[PATCH] $name"
-    if ! git apply --check "$f"; then
-        if [ "$name" = "nearby-items-hash" ]; then
-            echo "[DIAGNOSTIC] nearby-items-hash target region in src/game.cpp"
-            nl -ba src/game.cpp | sed -n '8280,8405p'
-        fi
-        exit 1
-    fi
+    git apply --check "$f"
     git apply "$f"
+    if [ "$name" = "runtime-efficiency" ]; then
+        echo "[PATCH] nearby-items-hash (source-anchored)"
+        python3 "$SCRIPT_DIR/apply_nearby_items_hash.py" "$PWD/src/game.cpp"
+    fi
 done
 
 git diff --check
@@ -279,7 +277,6 @@ fi
 # Exercise actual patched control flow before any expensive compilation.
 # Existing Actions jobs already call this script; no workflow changes needed.
 # Dependencies: Python 3, g++ (C++17), Node.js 22 (available on ubuntu-latest).
-SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 python3 "$SCRIPT_DIR/../bench/runtime_efficiency_test.py" "$PWD"
 python3 "$SCRIPT_DIR/../bench/nearby_items_hash_test.py" "$PWD"
 python3 "$SCRIPT_DIR/../bench/mapbuffer_fixed_array_test.py" "$PWD"
