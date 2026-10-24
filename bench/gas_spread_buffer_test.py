@@ -201,11 +201,11 @@ static trace snapshot(const map &m) {
             m.last_destination, m.blocker_lookups};
 }
 ''';
-program += "\nvoid map::select_baseline( field_entry &cur, const tripoint_bub_ms &p,\n"
-           "                          int winddirection, bool sheltered, int windpower ) {\n";
+program += ("\nvoid map::select_baseline( field_entry &cur, const tripoint_bub_ms &p,\n"
+            "                          int winddirection, bool sheltered, int windpower ) {\n");
 program += old_block + "}\n";
-program += "\nvoid map::select_optimized( field_entry &cur, const tripoint_bub_ms &p,\n"
-           "                           int winddirection, bool sheltered, int windpower ) {\n";
+program += ("\nvoid map::select_optimized( field_entry &cur, const tripoint_bub_ms &p,\n"
+            "                           int winddirection, bool sheltered, int windpower ) {\n");
 program += new_block + "}\n";
 program += r'''
 int main() {
