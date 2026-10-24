@@ -77,6 +77,9 @@ python3 "$SCRIPT_DIR/compact_dead_monsters.py" "$PWD/src/creature_tracker.cpp"
 echo "[PATCH] skip-empty-monster-death-sweep (source-anchored)"
 python3 "$SCRIPT_DIR/skip_empty_monster_death_sweep.py" "$PWD/src/creature_tracker.cpp"
 
+echo "[PATCH] vectorize-large-vehicle-submaps (source-anchored)"
+python3 "$SCRIPT_DIR/optimize_vehicle_submap_collection.py" "$PWD/src/map.cpp"
+
 git diff --check
 
 # ------------------------------------------------------------------
