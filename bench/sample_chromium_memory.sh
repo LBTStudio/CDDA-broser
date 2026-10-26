@@ -8,7 +8,10 @@ printf 'elapsed_ms\tprocesses\trss_kib_sum\tpss_kib_sum\n' > "$OUT"
 started=$(date +%s%3N)
 while kill -0 "$ROOT_PID" 2>/dev/null; do
   elapsed=$(( $(date +%s%3N) - started ))
-  pids=$(ps -eo pid=,comm= | awk '$2 ~ /^(chrome|chromium|chrome_crashpad|chromium-browser)$/ {print $1}')
+  # Chromium uses several process names (including chrome-headless-shell). Match
+  # the process-name prefix instead of an exact list so renderer/browser children
+  # are not silently omitted on hosted Linux runners.
+  pids=$(ps -eo pid=,comm= | awk '$2 ~ /^(chrome|chromium)/ {print $1}')
   count=0 rss=0 pss=0
   for pid in $pids; do
     [[ -r "/proc/$pid/status" ]] || continue
