@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
-"""Check and benchmark reserve() for the per-movement vehicle collision vector."""
+"""Check and benchmark lazy, bounded collision candidate capacity reservation."""
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
 
 root = Path(sys.argv[1]).resolve()
-new_map = (root / "src/map.cpp").read_text(encoding="utf-8")
-old_map = subprocess.check_output(
-    ["git", "-C", str(root), "show", "HEAD:src/map.cpp"], text=True)
+new_move = (root / "src/vehicle_move.cpp").read_text(encoding="utf-8")
+old_move = subprocess.check_output(
+    ["git", "-C", str(root), "show", "HEAD:src/vehicle_move.cpp"], text=True)
 
-signature = "vehicle *map::move_vehicle( vehicle &veh, const tripoint_rel_ms &dp, const tileray &facing )"
+signature = """bool vehicle::collision( map &here, std::vector<veh_collision> &colls,
+                         const tripoint_rel_ms &dp,"""
 
 
 def function(source, sig, next_sig):
@@ -25,23 +26,42 @@ def function(source, sig, next_sig):
     return body[:pos]
 
 
-old_fn = function(old_map, signature, "float map::vehicle_vehicle_collision(")
-new_fn = function(new_map, signature, "float map::vehicle_vehicle_collision(")
-old_line = "    std::vector<veh_collision> collisions;\n\n    // Find collisions"
-new_line = """    std::vector<veh_collision> collisions;
-    // A single movement can inspect many vehicle parts and may repeat collision
-    // detection after an impact. Reserve once, then reuse capacity across retries.
-    collisions.reserve( static_cast<std::size_t>( veh.part_count() ) );
+old_fn = function(old_move, signature, "veh_collision vehicle::part_collision(")
+new_fn = function(new_move, signature, "veh_collision vehicle::part_collision(")
+rotor_old = """                    } else {
+                        colls.push_back( rotor_coll );
+                    }"""
+rotor_new = """                    } else {
+                        if( colls.empty() ) {
+                            colls.reserve( std::min<std::size_t>(
+                                               static_cast<std::size_t>( part_count() ), 16 ) );
+                        }
+                        colls.push_back( rotor_coll );
+                    }"""
+main_old = """        colls.push_back( coll );
 
-    // Find collisions"""
-assert old_line in old_fn, "upstream collision buffer declaration changed"
-assert new_line in new_fn, "reserved collision buffer missing"
-assert new_fn.replace(new_line, old_line, 1) == old_fn, (
-    "move_vehicle changed beyond reserving the collision vector")
-assert new_fn.count("collisions.reserve( static_cast<std::size_t>( veh.part_count() ) );") == 1
-print("PASS: move_vehicle source guard; collision algorithm and ordering unchanged")
+        if( just_detect ) {"""
+main_new = """        if( !just_detect && colls.empty() ) {
+            // Reserve only after a real collision is found. Clear-road driving
+            // keeps the upstream zero-allocation fast path.
+            colls.reserve( std::min<std::size_t>(
+                               static_cast<std::size_t>( part_count() ), 16 ) );
+        }
+        colls.push_back( coll );
+
+        if( just_detect ) {"""
+assert rotor_old in old_fn and rotor_new in new_fn, "rotor collision anchor changed"
+assert main_old in old_fn and main_new in new_fn, "main collision anchor changed"
+normalized = new_fn.replace(rotor_new, rotor_old, 1).replace(main_new, main_old, 1)
+assert normalized == old_fn, "vehicle::collision changed outside lazy capacity reservation"
+assert "if( !just_detect && colls.empty() ) {" in new_fn
+assert new_fn.count("colls.reserve( std::min<std::size_t>(") == 2
+assert "colls.reserve( static_cast<std::size_t>( veh.part_count() ) );" not in (
+    root / "src/map.cpp").read_text(encoding="utf-8")
+print("PASS: lazy collision reserve source guard; collision checks/order unchanged")
 
 fixture = r'''
+#include <algorithm>
 #include <cassert>
 #include <cstddef>
 #include <cstdio>
@@ -53,15 +73,14 @@ struct Collision { unsigned char data[32]; };
 static bool measuring = false;
 static std::size_t allocation_count = 0;
 static std::size_t allocated_bytes = 0;
-
 void *operator new( std::size_t n ) {
     if( measuring ) { ++allocation_count; allocated_bytes += n; }
-    if( void *p = std::malloc( n ? n : 1 ) ) { return p; }
+    if( void *p = std::malloc( n ? n : 1 ) ) return p;
     throw std::bad_alloc();
 }
 void *operator new[]( std::size_t n ) {
     if( measuring ) { ++allocation_count; allocated_bytes += n; }
-    if( void *p = std::malloc( n ? n : 1 ) ) { return p; }
+    if( void *p = std::malloc( n ? n : 1 ) ) return p;
     throw std::bad_alloc();
 }
 void operator delete( void *p ) noexcept { std::free( p ); }
@@ -69,38 +88,49 @@ void operator delete[]( void *p ) noexcept { std::free( p ); }
 void operator delete( void *p, std::size_t ) noexcept { std::free( p ); }
 void operator delete[]( void *p, std::size_t ) noexcept { std::free( p ); }
 
-static void run_case( std::size_t part_count )
+static void run_case( std::size_t parts, std::size_t hits )
 {
-    std::size_t baseline_allocs = 0, reserved_allocs = 0;
-    std::size_t baseline_bytes = 0, reserved_bytes = 0;
-    std::vector<Collision> baseline, reserved;
-    allocation_count = allocated_bytes = 0;
-    measuring = true;
-    for( std::size_t i = 0; i < part_count; ++i ) baseline.push_back( Collision{} );
-    measuring = false;
-    baseline_allocs = allocation_count;
-    baseline_bytes = allocated_bytes;
+    assert( hits <= parts );
+    std::vector<Collision> baseline, optimized;
+    std::size_t base_allocs, opt_allocs, base_bytes, opt_bytes;
 
     allocation_count = allocated_bytes = 0;
     measuring = true;
-    reserved.reserve( part_count );
-    for( std::size_t i = 0; i < part_count; ++i ) reserved.push_back( Collision{} );
+    for( std::size_t i = 0; i < hits; ++i ) baseline.push_back( Collision{} );
     measuring = false;
-    reserved_allocs = allocation_count;
-    reserved_bytes = allocated_bytes;
+    base_allocs = allocation_count;
+    base_bytes = allocated_bytes;
 
-    assert( baseline.size() == reserved.size() );
-    assert( reserved_allocs <= baseline_allocs );
-    assert( reserved_bytes <= baseline_bytes || part_count == 0 );
-    if( part_count >= 8 ) assert( reserved_allocs < baseline_allocs );
-    std::printf("collision-candidates n=%zu: allocations %zu -> %zu, bytes %zu -> %zu\n",
-        part_count, baseline_allocs, reserved_allocs, baseline_bytes, reserved_bytes);
+    allocation_count = allocated_bytes = 0;
+    measuring = true;
+    for( std::size_t i = 0; i < hits; ++i ) {
+        // Mirrors the production rule: just_detect does not reserve, and
+        // the vector is reserved only on the first actual collision.
+        if( optimized.empty() ) {
+            optimized.reserve( std::min<std::size_t>( parts, 16 ) );
+        }
+        optimized.push_back( Collision{} );
+    }
+    measuring = false;
+    opt_allocs = allocation_count;
+    opt_bytes = allocated_bytes;
+
+    assert( baseline.size() == optimized.size() );
+    assert( opt_allocs <= base_allocs );
+    if( hits == 0 ) assert( opt_allocs == 0 && opt_bytes == 0 );
+    if( hits >= 8 ) assert( opt_allocs < base_allocs );
+    std::printf("collision-buffer parts=%zu hits=%zu: allocs %zu->%zu, bytes %zu->%zu\n",
+        parts, hits, base_allocs, opt_allocs, base_bytes, opt_bytes);
 }
-
 int main()
 {
-    for( std::size_t n : { 0, 1, 4, 8, 16, 32, 64, 128, 256, 512 } ) run_case( n );
-    std::puts("PASS: reserved collision vector avoids repeated capacity growth");
+    run_case(0, 0);
+    run_case(1, 0); run_case(1, 1);
+    run_case(8, 0); run_case(8, 1); run_case(8, 8);
+    run_case(16, 16); run_case(32, 32);
+    run_case(128, 1); run_case(128, 8); run_case(128, 16); run_case(128, 32);
+    run_case(512, 512);
+    std::puts("PASS: no-hit path stays allocation-free; multi-hit capacity growth is reduced");
 }
 '''
 with tempfile.TemporaryDirectory(prefix="cdda-vehicle-collision-") as temp:
@@ -112,4 +142,4 @@ with tempfile.TemporaryDirectory(prefix="cdda-vehicle-collision-") as temp:
         "-Wno-mismatched-new-delete", str(cpp), "-o", str(binary)
     ], check=True, timeout=90)
     subprocess.run([str(binary)], check=True, timeout=90)
-print("PASS: collision vector allocation benchmark")
+print("PASS: lazy vehicle collision buffer benchmark")
