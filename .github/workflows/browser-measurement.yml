@@ -28,6 +28,17 @@ on:
           - "software"
           - "opengles2"
           - "compare"
+      population:
+        description: "Optional cloaked monster stress count; nonzero only with sleep scenario"
+        required: true
+        default: "0"
+        type: choice
+        options:
+          - "0"
+          - "32"
+          - "64"
+          - "128"
+          - "200"
   workflow_run:
     workflows: ["Build CDDA 0.I WebAssembly"]
     types: [completed]
@@ -67,6 +78,7 @@ jobs:
       CDDA_BASE_URL: ${{ github.event_name == 'workflow_run' && format('https://github.com/LBTStudio/CDDA-broser/actions/runs/{0}', github.event.workflow_run.id) || github.event.inputs.base_url || 'https://lbtstudio.github.io/CDDA-broser/' }}
       CDDA_SCENARIO: ${{ github.event.inputs.scenario || 'all' }}
       CDDA_RENDERER: ${{ github.event.inputs.renderer || 'game' }}
+      CDDA_POPULATION: ${{ github.event.inputs.population || '0' }}
     steps:
       - name: Checkout measurement harness
         uses: actions/checkout@v4
@@ -180,15 +192,24 @@ jobs:
             game|software|opengles2) renderers=("$CDDA_RENDERER") ;;
             *) echo "Unsupported renderer: $CDDA_RENDERER" >&2; exit 2 ;;
           esac
+          case "$CDDA_POPULATION" in
+            0|32|64|128|200) ;;
+            *) echo "Unsupported population count: $CDDA_POPULATION" >&2; exit 2 ;;
+          esac
+          if [[ "$CDDA_POPULATION" != "0" && "$CDDA_SCENARIO" != "sleep" ]]; then
+            echo "Population stress mode currently requires scenario=sleep to keep reading benchmarks uncontaminated." >&2
+            exit 2
+          fi
+          echo "- Scenario: $CDDA_SCENARIO; renderer: $CDDA_RENDERER; cloaked monster population: $CDDA_POPULATION" >> "$GITHUB_STEP_SUMMARY"
           overall=0
           for scenario in "${scenarios[@]}"; do
             for renderer in "${renderers[@]}"; do
               echo "[fixture] scenario=$scenario renderer=$renderer"
-              if ! python3 bench/real_activity_fixture.py "$BUNDLE" "$scenario" 0 "$renderer"; then
+              if ! python3 bench/real_activity_fixture.py "$BUNDLE" "$scenario" "$CDDA_POPULATION" "$renderer"; then
                 overall=1
                 continue
               fi
-              node bench/playwright_game_measurement.mjs "$BUNDLE" "$scenario" "$renderer" "$CDDA_BASE_URL" &
+              node bench/playwright_game_measurement.mjs "$BUNDLE" "$scenario" "$renderer" "$CDDA_BASE_URL" "$CDDA_POPULATION" &
               runner_pid=$!
               bash bench/sample_chromium_memory.sh "$OUT/chromium-memory-$scenario-$renderer.tsv" "$runner_pid" &
               memory_pid=$!
