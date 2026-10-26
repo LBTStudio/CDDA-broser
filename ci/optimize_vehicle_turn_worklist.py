@@ -71,6 +71,17 @@ if source.count(old) != 1:
     raise SystemExit("ERROR: expected vehicle worklist block did not match exactly once")
 source = source.replace(old, new, 1)
 
+old_zone_cache = """    // refresh vehicle zones for moved vehicles
+    zone_manager::get_manager().cache_vzones( this );"""
+new_zone_cache = """    // Vehicle movement marks loot-zone positions dirty. Do not clear and rebuild
+    // every vehicle-zone point set on turns where no zone position changed.
+    if( check_vehicle_zones( get_abs_sub().z() ) ) {
+        zone_manager::get_manager().cache_vzones( this );
+    }"""
+if source.count(old_zone_cache) != 1:
+    raise SystemExit("ERROR: expected unconditional vehicle-zone refresh did not match exactly once")
+source = source.replace(old_zone_cache, new_zone_cache, 1)
+
 helper = """// Match std::map<vehicle *, bool>'s pointer ordering and merge semantics
 // without allocating one red-black-tree node per vehicle on every turn.
 template<typename WorkRange, typename ProcessFn>
@@ -114,6 +125,8 @@ if source.count("for_each_unique_vehicle_turn_work_item( vehs,") != 1:
     raise SystemExit("ERROR: optimized worklist is not called exactly once")
 if "veh->process_effects();\n        veh->recalculate_enchantment_cache();\n        veh->idle( *this, /* on_map = */ on_map );" not in source:
     raise SystemExit("ERROR: vehicle post-movement processing order changed")
+if source.count("if( check_vehicle_zones( get_abs_sub().z() ) ) {") != 1:
+    raise SystemExit("ERROR: vehicle-zone refresh is not guarded by the upstream dirty flag")
 
 path.write_text(source, encoding="utf-8")
 print("PASS: vehicle turn worklist now uses contiguous storage with std::map-compatible order and merge semantics")
