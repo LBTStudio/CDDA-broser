@@ -258,8 +258,15 @@ async function main() {
       wasmRuntimePresent: !!(window.Module || window.FS) };
   });
   await page.screenshot({ path: path.join(out, 'game-start-page.png'), fullPage: true, animations: 'disabled' }).catch(error => consoleLog.push({ type: 'screenshot-error', text: String(error) }));
+
+  // Let the activity fixture finish before injecting movement keys. Mixing a
+  // movement test into the fixture's pre-read idle window can move the player
+  // away from the book/light and invalidate the reading benchmark.
+  await page.waitForSelector('#fixture-finished', { state: 'attached', timeout: 260000 });
+  await page.waitForTimeout(300);
   await page.locator('#canvas').focus().catch(() => {});
   const before = await quickSave('before-movement');
+
   // Controlled compositor A/B: keep the same rendered game frame and change
   // only the CSS interpolation used when the canvas is scaled by the browser.
   // This does not touch CDDA's renderer, settings, or save data.
@@ -284,8 +291,6 @@ async function main() {
   const end = await page.evaluate(() => ({ frame: window.__cddaMeasure.frames.length, task: window.__cddaMeasure.tasks.length, key: window.__cddaMeasure.keys.length }));
   const after = await quickSave('after-movement', before);
   await page.screenshot({ path: path.join(out, 'after-long-press-page.png'), fullPage: true, animations: 'disabled' }).catch(error => consoleLog.push({ type: 'screenshot-error', text: String(error) }));
-  await page.waitForSelector('#fixture-finished', { timeout: 220000 });
-  await page.waitForTimeout(300);
 
   const runtime = await page.evaluate(marks => {
     const state = window.__cddaMeasure, frames = state.frames, tasks = state.tasks, keys = state.keys;
