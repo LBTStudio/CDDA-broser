@@ -104,6 +104,39 @@ assert normalized_turn == old_turn, (
 assert "check_vehicle_zones( get_abs_sub().z() )" in new_turn
 assert "zone_manager::get_manager().cache_vzones( this );" in new_zone_cache
 
+# The recache switch must be honored when called by cache_vzones itself; this
+# avoids recursively clearing and repopulating the same point-set cache twice.
+old_get_zones = function(old_map, "std::vector<zone_data *> map::get_vehicle_zones(")
+new_get_zones = function(new_map, "std::vector<zone_data *> map::get_vehicle_zones(")
+old_get_signature = "std::vector<zone_data *> map::get_vehicle_zones( const int zlev )"
+new_get_signature = "std::vector<zone_data *> map::get_vehicle_zones( const int zlev, bool refresh_cache )"
+assert old_get_signature in old_get_zones
+assert new_get_signature in new_get_zones
+assert "if( rebuild ) {" in old_get_zones
+assert "if( rebuild && refresh_cache ) {" in new_get_zones
+normalized_get_zones = new_get_zones.replace(new_get_signature, old_get_signature, 1).replace(
+    "if( rebuild && refresh_cache ) {", "if( rebuild ) {", 1)
+assert normalized_get_zones == old_get_zones, (
+    "map::get_vehicle_zones changed outside the recursion guard")
+
+old_header = original("map.h")
+new_header = (source / "src/map.h").read_text(encoding="utf-8")
+old_decl = "std::vector<zone_data *> get_vehicle_zones( int zlev );"
+new_decl = "std::vector<zone_data *> get_vehicle_zones( int zlev, bool refresh_cache = true );"
+assert old_decl in old_header and new_decl in new_header
+assert new_header.replace(new_decl, old_decl, 1) == old_header, (
+    "map.h changed beyond the vehicle-zone refresh parameter")
+
+old_clzones = original("clzones.cpp")
+new_clzones = (source / "src/clzones.cpp").read_text(encoding="utf-8")
+old_cache_fn = function(old_clzones, "void zone_manager::cache_vzones( map *pmap )")
+new_cache_fn = function(new_clzones, "void zone_manager::cache_vzones( map *pmap )")
+old_get_call = "here.get_vehicle_zones( here.get_abs_sub().z() )"
+new_get_call = "here.get_vehicle_zones( here.get_abs_sub().z(), /* refresh_cache = */ false )"
+assert old_get_call in old_cache_fn and new_get_call in new_cache_fn
+assert new_cache_fn.replace(new_get_call, old_get_call, 1) == old_cache_fn, (
+    "zone_manager::cache_vzones changed beyond suppressing recursive refresh")
+
 helper = function(new_map, "static void for_each_unique_vehicle_turn_work_item(")
 assert "std::less<vehicle *>{}" in helper, "std::map-compatible pointer order missing"
 assert "on_map = on_map || iter->second;" in helper, "on-map precedence merge missing"
