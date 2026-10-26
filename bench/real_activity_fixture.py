@@ -92,7 +92,15 @@ script = r'''
     };
     const pause = ms => new Promise(r => setTimeout(r, ms));
     const send = (name, body) => fetch('/capture-' + name, { method: 'POST', body }).catch(() => {});
-    const shot = () => send('screen', document.querySelector('canvas').toDataURL('image/png'));
+    let fixtureShotSequence = 0;
+    const shot = async (label) => {
+        if (typeof window.__cddaCaptureFixtureScreenshot === 'function') {
+            return window.__cddaCaptureFixtureScreenshot(label || ('fixture-' + (++fixtureShotSequence)));
+        }
+        // Fallback for manual fixture use; WebGL may return a black canvas when
+        // preserveDrawingBuffer is disabled, so the CI measurement uses Playwright's compositor screenshot.
+        return send('screen', document.querySelector('canvas').toDataURL('image/png'));
+    };
     const key = k => {
         const code = k === 'Enter' ? 13 : k === 'F5' ? 116 : k === '.' ? 190 : k.toUpperCase().charCodeAt(0);
         const physical = k === 'Enter' || k === 'F5' ? k : k === '.' ? 'Period' : /[0-9]/.test(k) ? 'Digit' + k : 'Key' + k.toUpperCase();
@@ -166,17 +174,16 @@ script = r'''
     // Populated reading takes longer than the original quiet baseline. This is
     // a bounded observation window, not a completion assertion; verify saves.
     for (let i = 0; i < 15; ++i) {
+        // Keep both reading and sleep observation windows free from screenshot
+        // capture overhead. Screens are taken before and after the timed window.
         await pause(4000);
-        // Screenshots can themselves stall a software-rendered game. In read4,
-        // take none inside the observation window.
-        if (initialLevel !== 4) await shot();
         console.log('fixture:sample', mode, i, HEAPU8.length);
     }
     observationEndAt = performance.now();
     // Inspect this image before interpreting elapsed time. Never dismiss danger
     // automatically: a modal is a valid safety response, not slow simulation.
     const beforeInterrupt = initialLevel === 4 ?
-        document.querySelector('canvas').toDataURL('image/png') : null;
+        await shot('before-interruption') : null;
     if (initialLevel === 4) {
         // First try a normal save. During reading/modal input F5 is ignored;
         // after completion it gives us a verified current ACT_NULL snapshot.
@@ -224,7 +231,12 @@ script = r'''
             timingIncludesPossibleModalWait: true,
             caveat: 'save delta includes menus/interruption/final wait; perf wall time ALSO includes modal waiting; inspect beforeInterrupt, not just the completion marker'};
     }
-    await send('result', JSON.stringify({ mode, variant, population, renderer, beforeInterrupt, reading, saves, heap: HEAPU8.length, error }));
+    const result = { mode, variant, population, renderer, beforeInterrupt, reading, saves, heap: HEAPU8.length, error };
+    if (typeof window.__cddaCaptureFixtureResult === 'function') {
+        await window.__cddaCaptureFixtureResult(result);
+    } else {
+        await send('result', JSON.stringify(result));
+    }
     const done = document.createElement('i'); done.id = 'fixture-finished'; document.body.appendChild(done);
 })();
 </script>
