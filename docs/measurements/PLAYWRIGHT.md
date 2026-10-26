@@ -4,7 +4,7 @@
 
 CDDA Playwright browser measurements Workflowは、指定されたGitHub Pages上のブラウザ版CDDAを7つの配布ファイルごとにダウンロードし、隔離したChromiumプロファイルで起動します。既存ユーザーのセーブ・MOD・設定は流用しません。既存の real_activity_fixture.py が試験専用の初期条件を作成し、実際の配布WebAssemblyを実行します。
 
-Actionsから手動実行できます。base_urlは測定対象の配信先、scenarioは read4 / sleep / read / all、rendererは game / software / opengles2 / compare です。allは読書レベル4→5と睡眠を個別に実行し、compareは同じシナリオをsoftwareとopengles2で比較します。pushとpull_requestでも関連ファイルの変更時に配信版を計測します。また、Build CDDA 0.I WebAssembly Workflowがmainで成功終了すると、同じrunに保存された cdda-0I-web-bundle 成果物を直接ダウンロードして測定します。これによりPagesへの反映待ちやキャッシュと切り離して、フルビルド直後のソース成果物を測定できます。ビルド失敗時は計測を開始しません。
+Actionsから手動実行できます。base_urlは測定対象の配信先、scenarioは read4 / sleep / read / all、rendererは game / software / opengles2 / compare です。allは読書レベル4→5と睡眠を個別に実行し、compareは同じシナリオをsoftwareとopengles2で比較します。populationは0 / 32 / 64 / 128 / 200体の対照条件で、0以外はsleepシナリオのみ許可します。これはデバッグ透明化を同一条件で付けた制御ストレス試験で、敵対行動を通常プレイそのままに再現する試験ではありません。読書の進行や中断条件を混ぜずに、個体数増加時のメモリ・長時間タスク・入力応答を比較する目的です。pushとpull_requestでも関連ファイルの変更時に配信版を計測します。また、Build CDDA 0.I WebAssembly Workflowがmainで成功終了すると、同じrunに保存された cdda-0I-web-bundle 成果物を直接ダウンロードして測定します。これによりPagesへの反映待ちやキャッシュと切り離して、フルビルド直後のソース成果物を測定できます。ビルド失敗時は計測を開始しません。
 
 ## 記録する内容
 
