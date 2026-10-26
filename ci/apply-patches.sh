@@ -115,6 +115,9 @@ grep -q "pagehide"                                 src/main.cpp
 grep -q "CDDA_SET_TEXT_INPUT"                      src/sdltiles.cpp
 grep -q "cdda_web_wants_ime"                       src/sdltiles.cpp
 grep -q "for_each_unique_vehicle_turn_work_item" src/map.cpp
+grep -Fq "get_vehicle_zones( int zlev, bool refresh_cache = true )" src/map.h
+grep -Fq "if( rebuild && refresh_cache )" src/map.cpp
+grep -Fq "get_vehicle_zones( here.get_abs_sub().z(), /* refresh_cache = */ false )" src/clzones.cpp
 grep -q "web_data_cache_root"                      src/json_loader.cpp
 grep -q "assume_immutable_root"                    src/flexbuffer_cache.cpp
 
