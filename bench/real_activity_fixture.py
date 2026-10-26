@@ -92,7 +92,15 @@ script = r'''
     };
     const pause = ms => new Promise(r => setTimeout(r, ms));
     const send = (name, body) => fetch('/capture-' + name, { method: 'POST', body }).catch(() => {});
-    const shot = () => send('screen', document.querySelector('canvas').toDataURL('image/png'));
+    let fixtureShotSequence = 0;
+    const shot = async (label) => {
+        if (typeof window.__cddaCaptureFixtureScreenshot === 'function') {
+            return window.__cddaCaptureFixtureScreenshot(label || ('fixture-' + (++fixtureShotSequence)));
+        }
+        // Fallback for manual fixture use; WebGL may return a black canvas when
+        // preserveDrawingBuffer is disabled, so the CI measurement uses Playwright's compositor screenshot.
+        return send('screen', document.querySelector('canvas').toDataURL('image/png'));
+    };
     const key = k => {
         const code = k === 'Enter' ? 13 : k === 'F5' ? 116 : k === '.' ? 190 : k.toUpperCase().charCodeAt(0);
         const physical = k === 'Enter' || k === 'F5' ? k : k === '.' ? 'Period' : /[0-9]/.test(k) ? 'Digit' + k : 'Key' + k.toUpperCase();
@@ -176,7 +184,7 @@ script = r'''
     // Inspect this image before interpreting elapsed time. Never dismiss danger
     // automatically: a modal is a valid safety response, not slow simulation.
     const beforeInterrupt = initialLevel === 4 ?
-        document.querySelector('canvas').toDataURL('image/png') : null;
+        await shot('before-interruption') : null;
     if (initialLevel === 4) {
         // First try a normal save. During reading/modal input F5 is ignored;
         // after completion it gives us a verified current ACT_NULL snapshot.
