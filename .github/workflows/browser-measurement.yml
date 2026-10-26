@@ -55,7 +55,7 @@ permissions:
 
 concurrency:
   group: cdda-browser-measurement-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   measure:
