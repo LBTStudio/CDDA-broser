@@ -108,10 +108,14 @@ new_signature = "void handle_key_blocking_activity( bool skip_idle_refresh )"
 if turn_source.count(old_signature) != 1:
     raise SystemExit("ERROR: handle_key_blocking_activity definition changed")
 turn_start = turn_source.index(old_signature)
-next_function = "namespace\n{\nvoid monmove()"
-if turn_source.count(next_function) != 1:
-    raise SystemExit("ERROR: handle_key_blocking_activity boundary changed")
-turn_end = turn_source.index(next_function, turn_start)
+# The activity patch inserts profiler comments inside the anonymous namespace,
+# so the next function is no longer adjacent to the namespace opening. Bound
+# this top-level function by its unindented closing brace instead.
+import re
+closing = re.search(r"(?m)^}[ \\t]*$", turn_source[turn_start:])
+if closing is None:
+    raise SystemExit("ERROR: handle_key_blocking_activity closing brace not found")
+turn_end = turn_start + closing.end()
 turn_fn = turn_source[turn_start:turn_end]
 if turn_fn.count(old_signature) != 1:
     raise SystemExit("ERROR: ambiguous handle_key_blocking_activity definition")
