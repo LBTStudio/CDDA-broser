@@ -137,10 +137,11 @@ assert old_get_call in old_cache_fn and new_get_call in new_cache_fn
 assert new_cache_fn.replace(new_get_call, old_get_call, 1) == old_cache_fn, (
     "zone_manager::cache_vzones changed beyond suppressing recursive refresh")
 
-helper = function(new_map, "static void for_each_unique_vehicle_turn_work_item(")
+helper = function(new_map, "template<typename WorkRange, typename ProcessFn>")
 assert "std::less<vehicle *>{}" in helper, "std::map-compatible pointer order missing"
 assert "on_map = on_map || iter->second;" in helper, "on-map precedence merge missing"
 assert "process( current, on_map );" in helper, "deduplicated callback missing"
+assert helper.startswith("template<typename WorkRange, typename ProcessFn>"), "helper template declaration was omitted"
 
 fixture = r'''
 #include <algorithm>
