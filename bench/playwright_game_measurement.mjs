@@ -98,7 +98,11 @@ async function snapshotSave() {
 async function quickSave(tag, previous = null) {
   const beforeCommand = previous || await snapshotSave();
   const syncStartCount = await page.evaluate(() => window.__cddaMeasure?.persistenceSyncs?.length || 0);
-  const marks = await page.evaluate(() => ({ at: performance.now(), task: window.__cddaMeasure.tasks.length }));
+  const marks = await page.evaluate(() => {
+    const state = window.__cddaMeasure;
+    state.startFrameMonitor();
+    return { at: performance.now(), task: state.tasks.length };
+  });
   const started = now();
   await page.keyboard.press('F5').catch(error => consoleLog.push({ type: 'save-key-error', text: String(error) }));
   let value = await snapshotSave();
@@ -127,7 +131,9 @@ async function quickSave(tag, previous = null) {
     syncStartCount);
   const syncWaitElapsedMs = Number((now() - syncWaitStarted).toFixed(2));
   const frameEffects = await page.evaluate(m => {
-    const state = window.__cddaMeasure, tasks = state.tasks.slice(m.task), intervals = [];
+    const state = window.__cddaMeasure;
+    state.stopFrameMonitor();
+    const tasks = state.tasks.filter(task => task.start >= m.at && task.start <= performance.now()), intervals = [];
     for (let i = 1; i < state.frameTimes.length; i++) {
       const from = state.frameTimes[i - 1], to = state.frameTimes[i];
       if (from >= m.at && to <= performance.now()) intervals.push(to - from);
@@ -266,11 +272,23 @@ async function main() {
   });
   await page.addInitScript(() => {
     const state = window.__cddaMeasure = { frameTimes: [], tasks: [], keys: [], persistenceSyncs: [], persistenceSyncPending: 0 };
-    const original = window.requestAnimationFrame.bind(window);
-    window.requestAnimationFrame = callback => original(time => {
-      if (state.frameTimes.length < 30000) state.frameTimes.push(time);
-      callback(time);
-    });
+    const nativeRaf = window.requestAnimationFrame.bind(window);
+    let frameMonitorActive = false;
+    state.startFrameMonitor = () => {
+      if (frameMonitorActive) return;
+      state.frameTimes.length = 0;
+      frameMonitorActive = true;
+      const tick = time => {
+        if (!frameMonitorActive) return;
+        if (state.frameTimes.length < 30000) state.frameTimes.push(time);
+        nativeRaf(tick);
+      };
+      nativeRaf(tick);
+    };
+    state.stopFrameMonitor = () => { frameMonitorActive = false; };
+    // Preserve browser/game RAF behavior; the independent monitor records once
+    // per RAF opportunity instead of counting each callback registered by CDDA.
+    window.requestAnimationFrame = callback => nativeRaf(time => callback(time));
     window.addEventListener('keydown', event => {
       const item = { key: event.key, repeat: !!event.repeat, at: performance.now(), frameMs: null };
       if (state.keys.length < 5000) state.keys.push(item);
@@ -338,36 +356,40 @@ async function main() {
     note: 'Both screenshots display the same static canvas screenshot at 75% scale; only CSS interpolation differs.'
   };
   await comparisonPage.close();
-  const start = await page.evaluate(() => ({ at: performance.now(), task: window.__cddaMeasure.tasks.length, key: window.__cddaMeasure.keys.length }));
+  const start = await page.evaluate(() => {
+    const state = window.__cddaMeasure;
+    state.startFrameMonitor();
+    return { at: performance.now(), task: state.tasks.length, key: state.keys.length };
+  });
   const movementStarted = now();
   await page.keyboard.down('l');
   for (let i = 0; i < 18; i++) { await pause(80); await page.keyboard.down('l'); }
   await page.keyboard.up('l');
   await pause(500);
   const movementMs = Number((now() - movementStarted).toFixed(2));
-  const end = await page.evaluate(() => ({ at: performance.now(), task: window.__cddaMeasure.tasks.length, key: window.__cddaMeasure.keys.length }));
+  const end = await page.evaluate(() => {
+    const state = window.__cddaMeasure;
+    state.stopFrameMonitor();
+    return { at: performance.now(), task: state.tasks.length, key: state.keys.length, frameTimes: state.frameTimes.slice() };
+  });
   const after = await quickSave('after-movement', before);
   await page.screenshot({ path: path.join(out, 'after-long-press-page.png'), fullPage: true, animations: 'disabled' }).catch(error => consoleLog.push({ type: 'screenshot-error', text: String(error) }));
 
   const runtime = await page.evaluate(marks => {
     const state = window.__cddaMeasure, tasks = state.tasks, keys = state.keys;
-    const intervalsInRange = (fromAt, toAt) => {
-      const intervals = [];
-      for (let i = 1; i < state.frameTimes.length; i++) {
-        const from = state.frameTimes[i - 1], to = state.frameTimes[i];
-        if (from >= fromAt && to <= toAt) intervals.push(to - from);
-      }
-      return intervals;
-    };
-    const wholeFrames = intervalsInRange(-Infinity, performance.now());
-    const movementFrames = intervalsInRange(marks.start.at, marks.end.at);
+    const movementTimes = marks.end.frameTimes || [];
+    const movementFrames = [];
+    for (let i = 1; i < movementTimes.length; i++) {
+      const from = movementTimes[i - 1], to = movementTimes[i];
+      if (from >= marks.start.at && to <= marks.end.at) movementFrames.push(to - from);
+    }
     const movementTasks = tasks.filter(task => task.start >= marks.start.at && task.start <= marks.end.at);
     const movementKeys = keys.filter(item => item.at >= marks.start.at && item.at <= marks.end.at && (item.key === 'l' || item.key === 'L'));
     const latency = movementKeys.filter(item => Number.isFinite(item.frameMs)).map(item => item.frameMs);
-    return { rafIntervalCount: wholeFrames.length, rafCallbackIntervalMs: frameStatsInPage(wholeFrames),
+    return { movementFrameMonitorIntervals: movementFrames.length, movementFrameMonitorIntervalMs: frameStatsInPage(movementFrames),
       longTaskCount: tasks.length, longTaskMs: { total: Number(tasks.reduce((a, b) => a + b.duration, 0).toFixed(2)),
         max: tasks.length ? Number(Math.max(...tasks.map(t => t.duration)).toFixed(2)) : null, over100: tasks.filter(t => t.duration > 100).length },
-      movement: { rafIntervalCount: movementFrames.length, rafCallbackIntervalMs: frameStatsInPage(movementFrames), longTaskCount: movementTasks.length,
+      movement: { frameMonitorIntervals: movementFrames.length, frameMonitorIntervalMs: frameStatsInPage(movementFrames), longTaskCount: movementTasks.length,
         longTaskTotalMs: Number(movementTasks.reduce((a, b) => a + b.duration, 0).toFixed(2)),
         keyEvents: movementKeys.length, keydowns: movementKeys.filter(item => item.type !== 'keyup').length,
         keydownToNextFrameMs: { p50: percentileInPage(latency, .50), p95: percentileInPage(latency, .95), max: latency.length ? Number(Math.max(...latency).toFixed(2)) : null } },
@@ -411,7 +433,7 @@ async function main() {
     'turn delta ' + result.movement.turnDelta + '; position fields changed: ' + (result.movement.changedPositionFields.join(', ') || 'none observed');
   const reading = result.fixture?.reading ? 'turns ' + result.fixture.reading.gameSecondsBetweenSaves + '; observation ' +
     Math.round(result.fixture.reading.observationMs) + ' ms; reached level 5: ' + result.fixture.reading.reachedLevel5 : 'not applicable';
-  const m = runtime.movement, f = m.rafCallbackIntervalMs;
+  const m = runtime.movement, f = m.frameMonitorIntervalMs;
   const summary = ['# CDDA Playwright browser measurement', '', '- Target: ' + baseUrl, '- Captured: ' + result.measuredAt,
     '- Scenario/renderer: ' + scenario + ' / ' + renderer, '- Browser version: ' + result.browserVersion,
     '- Boot to new-game log: ' + bootMs + ' ms', '- Canvas: ' + JSON.stringify(display.canvas),
@@ -421,15 +443,15 @@ async function main() {
     '- IDBFS sync hook: ' + JSON.stringify(persistenceInstrumentation) + '; post-movement syncs: ' + JSON.stringify(result.movement.afterSave?.saveTiming?.idbfsSyncsAfterCommand || []),
     '- Save RAF intervals/Long Tasks: ' + JSON.stringify(result.movement.afterSave?.saveTiming?.frameEffects || {}),
     '- Reading result: ' + reading,
-    '- Movement RAF callback intervals p50/p95/p99/max ms: ' + [f.p50, f.p95, f.p99, f.max].join(' / '),
-    '- Movement RAF callback intervals >50/>100/>250 ms: ' + [f.over50, f.over100, f.over250].join(' / '),
+    '- Movement RAF monitor intervals p50/p95/p99/max ms: ' + [f.p50, f.p95, f.p99, f.max].join(' / '),
+    '- Movement RAF monitor intervals >50/>100/>250 ms: ' + [f.over50, f.over100, f.over250].join(' / '),
     '- Input-to-next-frame p50/p95/max ms: ' + [m.keydownToNextFrameMs.p50, m.keydownToNextFrameMs.p95, m.keydownToNextFrameMs.max].join(' / '),
     '- Whole-run Long Tasks: ' + runtime.longTaskCount + ', total ' + runtime.longTaskMs.total + ' ms, max ' + runtime.longTaskMs.max + ' ms',
     '- Canvas captures: ' + captured.screens.length + '; page errors: ' + pageErrors.length,
     '- Text scaling A/B: same static canvas image at 75% CSS size, pixelated vs auto interpolation',
     '- Playwright fixture screenshots: ' + fixtureScreens.length,
     '', '## Interpretation limits', '', '- GitHub Actions values are not a physical 4GB Chromebook benchmark.',
-    '- RAF intervals are callback-to-callback timing, not a guaranteed display-FPS metric; idle waits and activity modals can create long gaps.',
+    '- RAF monitor intervals are the independent monitor loop’s callback cadence, not confirmed physical display FPS; idle waits and activity modals can create long gaps.',
     '- Long Task time includes browser runtime, game processing, drawing, and measurement overhead; it is not pure turn CPU time.',
     '- JS heap is not Wasm heap or total browser RAM; RSS/PSS is sampled separately.',
     '- Movement is confirmed only if before/after save data is available.', '- Canvas images require visual review; UTF-8/font resource success does not prove glyph correctness.',
