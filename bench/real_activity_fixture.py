@@ -174,10 +174,9 @@ script = r'''
     // Populated reading takes longer than the original quiet baseline. This is
     // a bounded observation window, not a completion assertion; verify saves.
     for (let i = 0; i < 15; ++i) {
+        // Keep both reading and sleep observation windows free from screenshot
+        // capture overhead. Screens are taken before and after the timed window.
         await pause(4000);
-        // Screenshots can themselves stall a software-rendered game. In read4,
-        // take none inside the observation window.
-        if (initialLevel !== 4) await shot();
         console.log('fixture:sample', mode, i, HEAPU8.length);
     }
     observationEndAt = performance.now();
@@ -232,7 +231,12 @@ script = r'''
             timingIncludesPossibleModalWait: true,
             caveat: 'save delta includes menus/interruption/final wait; perf wall time ALSO includes modal waiting; inspect beforeInterrupt, not just the completion marker'};
     }
-    await send('result', JSON.stringify({ mode, variant, population, renderer, beforeInterrupt, reading, saves, heap: HEAPU8.length, error }));
+    const result = { mode, variant, population, renderer, beforeInterrupt, reading, saves, heap: HEAPU8.length, error };
+    if (typeof window.__cddaCaptureFixtureResult === 'function') {
+        await window.__cddaCaptureFixtureResult(result);
+    } else {
+        await send('result', JSON.stringify(result));
+    }
     const done = document.createElement('i'); done.id = 'fixture-finished'; document.body.appendChild(done);
 })();
 </script>
