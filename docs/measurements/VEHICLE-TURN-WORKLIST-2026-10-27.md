@@ -8,6 +8,8 @@
 
 もう一つの無駄は、`vehmove()` が車両ゾーンのキャッシュを毎ターン無条件に消去・再構築していたこと。上流0.Iには車両ゾーンが dirty かを返す `map::check_vehicle_zones(zlev)` があり、車両の移動はゾーン位置を dirty にする。修正後はプレイヤーの現在階層に対してそのフラグを確認し、変更がある場合に限ってキャッシュを再構築する。車両ゾーンがない場合や、位置が変わっていないゾーンまで毎ターン作り直す処理を避ける。
 
+加えて、従来の `zone_manager::cache_vzones()` は `map::get_vehicle_zones()` を呼び、そちらが dirty を見つけると再び `cache_vzones()` を呼んでいた。この経路では、車両ゾーンの位置更新が必要なターンに同じキャッシュ構築を再帰的に二度行う。新しい `refresh_cache` 引数を追加し、キャッシュを構築している側からは `false` を指定することで、外側の一回だけで点集合を組み立てる。通常の `get_vehicle_zones(zlev)` 呼び出しは既定値により従来どおり更新を要求できる。
+
 ## 保持する動作
 
 - `std::map<vehicle *, bool>` と同じ `std::less<vehicle *>` の順で各車両を処理する。
@@ -15,6 +17,7 @@
 - `process_effects()` → `recalculate_enchantment_cache()` → `idle()` の順番を維持する。
 - 車両リスト、連結関係の探索、衝突判定、移動順序は変更しない。ネイティブ版にも広がる最適化だが、データ構造と処理結果を同等に保つ。
 - 車両ゾーンのキャッシュ再構築は `check_vehicle_zones(current_z)` が true のときに限る。移動・ゾーン編集で dirty になったゾーンは従来どおり更新する。
+- `cache_vzones()` から `get_vehicle_zones(zlev, false)` を呼び、再構築途中の自己再呼び出しを防ぐ。直接の `get_vehicle_zones(zlev)` 呼び出しは既定値で既存の更新要求を保つ。
 
 ## 検証
 
