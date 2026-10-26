@@ -87,7 +87,7 @@ echo "[PATCH] vehicle-move-render-batch (source-anchored)"
 python3 "$SCRIPT_DIR/optimize_vehicle_move_render_batch.py" "$PWD/src/map.cpp"
 
 echo "[PATCH] vehicle-collision-buffer (source-anchored)"
-python3 "$SCRIPT_DIR/optimize_vehicle_collision_buffer.py" "$PWD/src/map.cpp"
+python3 "$SCRIPT_DIR/optimize_vehicle_collision_buffer.py" "$PWD/src/vehicle_move.cpp"
 
 echo "[PATCH] fire-neighbor-stack-buffer (source-anchored)"
 python3 "$SCRIPT_DIR/optimize_fire_neighbor_buffer.py" "$PWD/src/map_field.cpp"
