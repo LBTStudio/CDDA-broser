@@ -85,8 +85,22 @@ new_block = """    // A tree node per vehicle caused avoidable allocation churn 
 
 assert old_block in old_turn, "upstream baseline vehicle worklist changed"
 assert new_block in new_turn, "optimized vehicle worklist block missing"
-assert new_turn.replace(new_block, old_block, 1) == old_turn, (
-    "map::vehmove changed outside the approved worklist block")
+
+old_zone_cache = """    // refresh vehicle zones for moved vehicles
+    zone_manager::get_manager().cache_vzones( this );"""
+new_zone_cache = """    // Vehicle movement marks loot-zone positions dirty. Do not clear and rebuild
+    // every vehicle-zone point set on turns where no zone position changed.
+    if( check_vehicle_zones( get_abs_sub().z() ) ) {
+        zone_manager::get_manager().cache_vzones( this );
+    }"""
+assert old_zone_cache in old_turn, "upstream vehicle-zone refresh block changed"
+assert new_zone_cache in new_turn, "dirty-guarded vehicle-zone refresh missing"
+normalized_turn = new_turn.replace(new_block, old_block, 1).replace(
+    new_zone_cache, old_zone_cache, 1)
+assert normalized_turn == old_turn, (
+    "map::vehmove changed outside the approved worklist / zone-cache blocks")
+assert "check_vehicle_zones( get_abs_sub().z() )" in new_turn
+assert "zone_manager::get_manager().cache_vzones( this );" in new_zone_cache
 
 helper = function(new_map, "static void for_each_unique_vehicle_turn_work_item(")
 assert "std::less<vehicle *>{}" in helper, "std::map-compatible pointer order missing"
