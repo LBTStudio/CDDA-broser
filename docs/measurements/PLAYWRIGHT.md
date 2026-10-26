@@ -10,7 +10,7 @@ Actionsから手動実行できます。base_urlは測定対象の配信先、sc
 
 - 配布ファイル7点のSHA-256、サイズ、測定URL。
 - 新規ゲーム開始ログまでの時間、ブラウザ例外、失敗リクエスト。
-- Canvas内部解像度とCSS表示サイズ、拡大率、image-rendering、HTMLシェルのフォント読込状態。
+- Canvas内部解像度とCSS表示サイズ、拡大率、image-rendering、HTMLシェルのフォント読込状態。同一ゲーム画面で `image-rendering: pixelated` と `auto` を切り替えた比較画像も採取し、ブラウザ側の拡大補間の影響を目視比較する。
 - 移動キー長押し中のフレーム間隔p50/p95/p99/最大値、50/100/250ms超の停止回数、keydownから次フレームまでの時間。
 - PerformanceObserverで観測したLong Taskの件数・総時間・最大時間。
 - 可能な場合に、キー押下前後のクイックセーブからターン数と位置関連フィールドの差分。
@@ -18,7 +18,7 @@ Actionsから手動実行できます。base_urlは測定対象の配信先、sc
 - Chromium関連プロセスのRSS/PSSを1秒間隔で採取した記録。
 - Playwright trace、コンソールログ、構造化されたmeasurement.json。
 
-成果物はActionsのartifact cdda-playwright-measurement-<run id>に30日間保存します。measurement.jsonが構造化データ、summary.mdが短い要約です。Canvas画像とPlaywright traceを併用して表示と停止箇所をレビューできます。
+成果物はActionsのartifact cdda-playwright-measurement-<run id>に30日間保存します。measurement.jsonが構造化データ、summary.mdが短い要約です。Canvas画像とPlaywright traceを併用して表示と停止箇所をレビューできます。`text-scale-pixelated.png` と `text-scale-auto.png` はゲーム内の画素そのものを変えずにCSSの拡大補間だけを変えた比較画像で、文字の崩れがブラウザ拡大によるものか、ゲーム内で生成された字形なのかを切り分ける助けになります。
 
 ## 解釈上の制約
 
