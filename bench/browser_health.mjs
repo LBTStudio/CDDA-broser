@@ -3,23 +3,35 @@ export const ACTIVE_MOVEMENT_STALL_LIMIT_MS = 5000;
 
 export function createBrowserHealth() {
   const pageCrashes = [];
+  const browserDisconnects = [];
 
   return {
     notePageCrash(atMs, message = 'Chromium page crashed') {
       pageCrashes.push({ atMs: Number(atMs), message: String(message) });
     },
 
+    noteBrowserDisconnect(atMs, message = 'Chromium browser disconnected unexpectedly') {
+      browserDisconnects.push({ atMs: Number(atMs), message: String(message) });
+    },
+
     snapshot() {
       return {
         pageCrashCount: pageCrashes.length,
-        pageCrashes: pageCrashes.map(crash => ({ ...crash }))
+        pageCrashes: pageCrashes.map(crash => ({ ...crash })),
+        browserDisconnectCount: browserDisconnects.length,
+        browserDisconnects: browserDisconnects.map(event => ({ ...event }))
       };
     },
 
-    assertNoPageCrash() {
-      if (pageCrashes.length === 0) return;
-      const last = pageCrashes[pageCrashes.length - 1];
-      throw new Error(`Chromium page crashed ${pageCrashes.length} time(s); last at ${last.atMs} ms: ${last.message}`);
+    assertNoBrowserFailure() {
+      if (pageCrashes.length > 0) {
+        const last = pageCrashes[pageCrashes.length - 1];
+        throw new Error(`Chromium page crashed ${pageCrashes.length} time(s); last at ${last.atMs} ms: ${last.message}`);
+      }
+      if (browserDisconnects.length > 0) {
+        const last = browserDisconnects[browserDisconnects.length - 1];
+        throw new Error(`Chromium browser disconnected unexpectedly ${browserDisconnects.length} time(s); last at ${last.atMs} ms: ${last.message}`);
+      }
     }
   };
 }
