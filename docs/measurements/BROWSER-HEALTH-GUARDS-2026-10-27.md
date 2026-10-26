@@ -2,9 +2,9 @@
 
 ## What the runtime measurement now fails on
 
-- Any Chromium page-crash event is retained in the health state and checked again after the gameplay measurement. The crash event no longer relies solely on rejecting the startup promise, which may already have resolved.
+- Any Chromium page-crash event and any unexpected browser-process disconnect are retained in the health state and checked again after the gameplay measurement. The event handling no longer relies solely on rejecting the startup promise, which may already have resolved.
 - The active movement window must yield at least one valid independent RAF interval.
-- A maximum RAF-monitor interval of 5,000 ms or longer during active movement fails the run as a severe main-thread stall. The measured interval and crash history are included in success output; failure output keeps the last runtime statistics and crash history for diagnosis.
+- A maximum RAF-monitor interval of 5,000 ms or longer during active movement fails the run as a severe main-thread stall. The measured interval and browser failure history are included in success output; failure output keeps the last runtime statistics and browser failure history for diagnosis.
 - Existing unhandled page-error checks remain fatal.
 
 ## Scope and limitations
@@ -15,4 +15,4 @@ The GitHub Actions browser is not a physical 4GB Chromebook. A successful run me
 
 ## Regression test
 
-`node bench/browser_health_test.mjs` unit-tests crash retention, fatal health assertions, the 5,000 ms boundary, and invalid RAF samples. It is part of `ci/apply-patches.sh`, so the runtime regression workflow validates this guard on every PR and push to `main`.
+`node bench/browser_health_test.mjs` unit-tests page-crash and browser-disconnect retention, fatal health assertions, the 5,000 ms boundary, and invalid RAF samples. It is part of `ci/apply-patches.sh`, so the runtime regression workflow validates this guard on every PR and push to `main`.
