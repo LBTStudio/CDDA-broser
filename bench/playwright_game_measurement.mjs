@@ -104,9 +104,14 @@ async function quickSave(tag, previous = null) {
   const marks = await page.evaluate(() => {
     const state = window.__cddaMeasure;
     state.startFrameMonitor();
-    return { at: performance.now(), task: state.tasks.length };
+    return { at: performance.now(), task: state.tasks.length,
+      syncCount: state.persistenceSyncs?.length || 0,
+      syncPendingAtStart: state.persistenceSyncPending || 0,
+      gameUnsavedAtStart: !!window.game_unsaved,
+      persistencePendingAtStart: !!window.cdda_persistence_pending };
   });
   const started = now();
+  const f5StartedAtMs = await page.evaluate(() => performance.now());
   await page.keyboard.press('F5').catch(error => consoleLog.push({ type: 'save-key-error', text: String(error) }));
   let value = await snapshotSave();
   const changed = snapshot => {
@@ -124,14 +129,32 @@ async function quickSave(tag, previous = null) {
   let syncWaitTimedOut = false;
   if (fileUpdated && persistenceInstrumentation.installed) {
     try {
-      await page.waitForFunction(startCount =>
-        (window.__cddaMeasure?.persistenceSyncs || []).slice(startCount).some(entry => !entry.populate),
-        syncStartCount, { timeout: 5000 });
+      await page.waitForFunction(f5At =>
+        (window.__cddaMeasure?.persistenceSyncs || []).some(entry =>
+          !entry.populate && entry.startedAtMs >= f5At),
+        f5StartedAtMs, { timeout: 7000 });
     } catch (_) { syncWaitTimedOut = true; }
   }
-  const persistentSyncs = await page.evaluate(startCount =>
-    (window.__cddaMeasure?.persistenceSyncs || []).slice(startCount).filter(entry => !entry.populate),
-    syncStartCount);
+  const syncObservation = await page.evaluate(f5At => {
+    const state = window.__cddaMeasure;
+    const all = (state.persistenceSyncs || []).filter(entry => !entry.populate);
+    const afterF5 = all.filter(entry => entry.startedAtMs >= f5At);
+    const overlapping = all.filter(entry => entry.startedAtMs < f5At &&
+      entry.startedAtMs + entry.durationMs >= f5At);
+    const first = afterF5.sort((a,b) => a.startedAtMs - b.startedAtMs)[0] || null;
+    return {
+      afterF5,
+      overlappingBeforeF5: overlapping,
+      firstAfterF5: first,
+      f5ToSyncStartMs: first ? Number((first.startedAtMs - f5At).toFixed(2)) : null,
+      f5ToSyncCompleteMs: first ? Number((first.startedAtMs + first.durationMs - f5At).toFixed(2)) : null,
+      observedAtMs: Number(performance.now().toFixed(2)),
+      pendingSyncsAtObservation: state.persistenceSyncPending || 0,
+      gameUnsavedAtObservation: !!window.game_unsaved,
+      persistencePendingAtObservation: !!window.cdda_persistence_pending
+    };
+  }, f5StartedAtMs);
+  const persistentSyncs = syncObservation.afterF5;
   const syncWaitElapsedMs = Number((now() - syncWaitStarted).toFixed(2));
   const frameEffects = await page.evaluate(m => {
     const state = window.__cddaMeasure;
@@ -160,10 +183,19 @@ async function quickSave(tag, previous = null) {
     f5ToFileUpdateMs: fileUpdated ? elapsedMs : null,
     f5NoFileUpdateObservedWithinMs: fileUpdated ? null : elapsedMs,
     fileUpdated,
+    f5StartedAtMs,
     persistenceInstrumentationInstalled: persistenceInstrumentation.installed,
     idbfsSyncsAfterCommand: persistentSyncs,
+    f5ToIdbfsSyncStartMs: fileUpdated ? syncObservation.f5ToSyncStartMs : null,
+    f5ToIdbfsSyncCompleteMs: fileUpdated ? syncObservation.f5ToSyncCompleteMs : null,
     idbfsWaitAfterFileUpdateMs: fileUpdated ? syncWaitElapsedMs : null,
     idbfsWaitTimedOut: fileUpdated && persistenceInstrumentation.installed ? syncWaitTimedOut : null,
+    persistenceAtCommandStart: {
+      syncPending: marks.syncPendingAtStart,
+      gameUnsaved: marks.gameUnsavedAtStart,
+      persistencePending: marks.persistencePendingAtStart
+    },
+    persistenceAfterSyncWait: syncObservation,
     frameEffects
   };
   fs.writeFileSync(path.join(out, tag + '-save-snapshot.json'), JSON.stringify(value, null, 2));
@@ -216,10 +248,12 @@ async function installPersistenceInstrumentation() {
         if (settled) return;
         settled = true;
         state.persistenceSyncPending = Math.max(0, state.persistenceSyncPending - 1);
+        const finishedAt = performance.now();
         state.persistenceSyncs.push({
           populate: !!populate,
           startedAtMs: Number(startedAt.toFixed(2)),
-          durationMs: Number((performance.now() - startedAt).toFixed(2)),
+          finishedAtMs: Number(finishedAt.toFixed(2)),
+          durationMs: Number((finishedAt - startedAt).toFixed(2)),
           success: !error,
           error: error ? String(error) : null
         });
@@ -404,10 +438,38 @@ async function main() {
 
   const fixtureResult = captured.result;
   let savedFiles = [];
-  if (fixtureResult?.saves) savedFiles = Object.entries(fixtureResult.saves).map(([name, values]) => {
-    const bytes = Buffer.from(values);
-    return { name, bytes: bytes.length, sha256: crypto.createHash('sha256').update(bytes).digest('hex') };
-  });
+  let savedGameState = null;
+  if (fixtureResult?.saves) {
+    savedFiles = Object.entries(fixtureResult.saves).map(([name, values]) => {
+      const bytes = Buffer.from(values);
+      return { name, bytes: bytes.length, sha256: crypto.createHash('sha256').update(bytes).digest('hex') };
+    });
+    const saveEntry = Object.entries(fixtureResult.saves).find(([name]) => name.endsWith('.sav'));
+    if (saveEntry) {
+      try {
+        const raw = Buffer.from(saveEntry[1]).toString('utf8');
+        const startAt = raw.indexOf('{');
+        const save = JSON.parse(startAt >= 0 ? raw.slice(startAt) : raw);
+        const player = save.player || {};
+        const messages = save.player_messages?.messages || [];
+        const effects = player.effects || {};
+        savedGameState = {
+          turn: save.turn ?? null,
+          activity: player.activity?.type ?? null,
+          location: player.location ?? null,
+          moves: player.moves ?? null,
+          sleepEffects: Object.keys(effects).filter(id => /sleep|tired|lack_sleep/i.test(id)),
+          perfMessages: messages.filter(entry => String(entry.message || '').startsWith('[perf]')).map(entry => ({
+            turn: entry.turn, message: entry.message
+          })),
+          activityMessages: messages.filter(entry => /眠りに落ちました|目が覚めました|読み終えました|レベル5に上昇しました/.test(String(entry.message || '')))
+            .slice(-20).map(entry => ({turn: entry.turn, message: entry.message}))
+        };
+      } catch (error) {
+        savedGameState = { available: false, parseError: String(error) };
+      }
+    }
+  }
   let preInterruptScreenshot = null;
   if (typeof fixtureResult?.beforeInterrupt === 'string' && /^[a-z0-9_-]+\.png$/i.test(fixtureResult.beforeInterrupt)) {
     preInterruptScreenshot = fixtureResult.beforeInterrupt;
@@ -428,7 +490,8 @@ async function main() {
       changedPositionFields: before.available && after.available ? Object.keys(after.position || {}).filter(key => JSON.stringify(before.position?.[key]) !== JSON.stringify(after.position?.[key])) : [],
       note: 'Missing save snapshots are unavailable, not zero movement.' },
     runtime, visualScaleComparison, fixture: fixtureResult ? { mode: fixtureResult.mode, variant: fixtureResult.variant, renderer: fixtureResult.renderer,
-      heapBytes: fixtureResult.heap, error: fixtureResult.error || '', reading: fixtureResult.reading || null, savedFiles,
+      heapBytes: fixtureResult.heap, error: fixtureResult.error || '', reading: fixtureResult.reading || null,
+      savedFiles, savedGameState,
       beforeInterruptScreenshot: preInterruptScreenshot ? path.basename(preInterruptScreenshot) : null } : null,
     capturedScreens: captured.screens, fixtureScreens, captureResultReceived: !!fixtureResult, captureOther: captured.other, pageErrors, requestFailures, console: consoleLog };
   fs.writeFileSync(path.join(out, 'measurement.json'), JSON.stringify(result, null, 2));
@@ -443,8 +506,11 @@ async function main() {
     '- HTML Terminus font check: ' + display.fonts.terminusCheck, '- Movement: ' + movementText,
     '- Pre-movement save stability: ' + JSON.stringify(result.movement.beforeSave?.saveTiming || {}),
     '- F5 to observed save-file update ms: ' + result.movement.afterSave?.saveTiming?.f5ToFileUpdateMs + (result.movement.afterSave?.saveTiming?.fileUpdated ? '' : ' (no file update observed; censored at timeout)'),
+    '- F5→IDBFS start/end ms: ' + JSON.stringify({start:result.movement.afterSave?.saveTiming?.f5ToIdbfsSyncStartMs,complete:result.movement.afterSave?.saveTiming?.f5ToIdbfsSyncCompleteMs,settled:result.movement.afterSave?.saveTiming?.persistenceAfterSyncWait}),
     '- IDBFS sync hook: ' + JSON.stringify(persistenceInstrumentation) + '; post-movement syncs: ' + JSON.stringify(result.movement.afterSave?.saveTiming?.idbfsSyncsAfterCommand || []),
     '- Save RAF intervals/Long Tasks: ' + JSON.stringify(result.movement.afterSave?.saveTiming?.frameEffects || {}),
+    '- Activity performance messages: ' + JSON.stringify(result.fixture?.savedGameState?.perfMessages || []),
+    '- Activity messages: ' + JSON.stringify(result.fixture?.savedGameState?.activityMessages || []),
     '- Reading result: ' + reading,
     '- Movement RAF monitor intervals p50/p95/p99/max ms: ' + [f.p50, f.p95, f.p99, f.max].join(' / '),
     '- Movement RAF monitor intervals >50/>100/>250 ms: ' + [f.over50, f.over100, f.over250].join(' / '),
