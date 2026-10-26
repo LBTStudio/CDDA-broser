@@ -189,9 +189,9 @@ static void run_case( const std::size_t count )
     {
         std::vector<result_item> work;
         std::unordered_set<vehicle *> connected;
-        work.reserve( on_map.size() );
         allocations = bytes_allocated = 0;
         measuring = true;
+        work.reserve( on_map.size() );
         for( std::size_t i = 0; i < count; ++i ) {
             vehicle *veh = on_map[i];
             work.emplace_back( veh, true );
