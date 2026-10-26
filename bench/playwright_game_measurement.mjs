@@ -98,7 +98,7 @@ async function snapshotSave() {
   }, profile);
 }
 
-async function quickSave(tag, previous = null) {
+async function quickSave(tag, previous = null, updateTimeoutMs = 7000) {
   const beforeCommand = previous || await snapshotSave();
   const syncStartCount = await page.evaluate(() => window.__cddaMeasure?.persistenceSyncs?.length || 0);
   const marks = await page.evaluate(() => {
@@ -122,7 +122,7 @@ async function quickSave(tag, previous = null) {
       snapshot.bytes !== beforeCommand.bytes || snapshot.mtimeMs !== beforeCommand.mtimeMs ||
       JSON.stringify(snapshot.position) !== JSON.stringify(beforeCommand.position);
   };
-  while (!changed(value) && now() - started < 7000) { await pause(250); value = await snapshotSave(); }
+  while (!changed(value) && now() - started < updateTimeoutMs) { await pause(250); value = await snapshotSave(); }
   const elapsedMs = Number((now() - started).toFixed(2));
   const fileUpdated = changed(value);
   const syncWaitStarted = now();
@@ -182,7 +182,13 @@ async function quickSave(tag, previous = null) {
   value.saveTiming = {
     f5ToFileUpdateMs: fileUpdated ? elapsedMs : null,
     f5NoFileUpdateObservedWithinMs: fileUpdated ? null : elapsedMs,
+    noFileUpdateReason: fileUpdated ? null : (
+      !marks.gameUnsavedAtStart && !marks.persistencePendingAtStart && marks.syncPendingAtStart === 0
+        ? 'no pending changes at F5; likely a no-op save'
+        : 'no virtual-file update observed within timeout'
+    ),
     fileUpdated,
+    updateObservationTimeoutMs: updateTimeoutMs,
     f5StartedAtMs,
     persistenceInstrumentationInstalled: persistenceInstrumentation.installed,
     idbfsSyncsAfterCommand: persistentSyncs,
@@ -414,7 +420,7 @@ async function main() {
   });
   const after = await quickSave('after-keyup', before);
   await pause(500);
-  const afterSettle = await quickSave('after-keyup-settle', after);
+  const afterSettle = await quickSave('after-keyup-settle', after, 1800);
   const postReleaseTurnDelta = after.available && afterSettle.available &&
     Number.isFinite(after.turn) && Number.isFinite(afterSettle.turn) ? afterSettle.turn - after.turn : null;
   const postReleasePositionFields = after.available && afterSettle.available
@@ -519,7 +525,8 @@ async function main() {
       (result.movement.postReleaseTurnDelta ?? 'unavailable') + '; position fields changed after quiet interval: ' +
       (result.movement.postReleasePositionFields.join(', ') || 'none observed'),
     '- Pre-movement save stability: ' + JSON.stringify(result.movement.beforeSave?.saveTiming || {}),
-    '- F5 to observed save-file update ms: ' + result.movement.afterSave?.saveTiming?.f5ToFileUpdateMs + (result.movement.afterSave?.saveTiming?.fileUpdated ? '' : ' (no file update observed; censored at timeout)'),
+    '- F5 to observed save-file update ms: ' + result.movement.afterSave?.saveTiming?.f5ToFileUpdateMs + (result.movement.afterSave?.saveTiming?.fileUpdated ? '' : ' (' + result.movement.afterSave?.saveTiming?.noFileUpdateReason + '; timeout ' + result.movement.afterSave?.saveTiming?.updateObservationTimeoutMs + ' ms)'),
+    '- Post-release follow-up save: ' + JSON.stringify(result.movement.afterSettleSave?.saveTiming || {}),
     '- F5→IDBFS start/end ms: ' + JSON.stringify({start:result.movement.afterSave?.saveTiming?.f5ToIdbfsSyncStartMs,complete:result.movement.afterSave?.saveTiming?.f5ToIdbfsSyncCompleteMs,settled:result.movement.afterSave?.saveTiming?.persistenceAfterSyncWait}),
     '- IDBFS sync hook: ' + JSON.stringify(persistenceInstrumentation) + '; post-movement syncs: ' + JSON.stringify(result.movement.afterSave?.saveTiming?.idbfsSyncsAfterCommand || []),
     '- Save RAF intervals/Long Tasks: ' + JSON.stringify(result.movement.afterSave?.saveTiming?.frameEffects || {}),
