@@ -4,7 +4,7 @@
 
 CDDA Playwright browser measurements Workflowは、指定されたGitHub Pages上のブラウザ版CDDAを7つの配布ファイルごとにダウンロードし、隔離したChromiumプロファイルで起動します。既存ユーザーのセーブ・MOD・設定は流用しません。既存の real_activity_fixture.py が試験専用の初期条件を作成し、実際の配布WebAssemblyを実行します。
 
-Actionsから手動実行できます。base_urlは測定対象の配信先、scenarioは read4 / sleep / read / all、rendererは game / software / opengles2 / compare です。allは読書レベル4→5と睡眠を個別に実行し、compareは同じシナリオをsoftwareとopengles2で比較します。pushとpull_requestでも関連ファイルの変更時に計測します。
+Actionsから手動実行できます。base_urlは測定対象の配信先、scenarioは read4 / sleep / read / all、rendererは game / software / opengles2 / compare です。allは読書レベル4→5と睡眠を個別に実行し、compareは同じシナリオをsoftwareとopengles2で比較します。pushとpull_requestでも関連ファイルの変更時に配信版を計測します。また、Build CDDA 0.I WebAssembly Workflowがmainで成功終了すると、同じrunに保存された cdda-0I-web-bundle 成果物を直接ダウンロードして測定します。これによりPagesへの反映待ちやキャッシュと切り離して、フルビルド直後のソース成果物を測定できます。ビルド失敗時は計測を開始しません。
 
 ## 記録する内容
 
