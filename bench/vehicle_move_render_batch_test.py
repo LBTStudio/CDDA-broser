@@ -43,7 +43,7 @@ assert vehmove.index("check_vehicle_zones( get_abs_sub().z() )") < vehmove.index
 move_vehicle = between(
     map_source,
     "vehicle *map::move_vehicle( vehicle &veh",
-    "int map::vehicle_vehicle_collision(",
+    "float map::vehicle_vehicle_collision(",
 )
 deferred = """cdda_web_vehicle_move_redraw_pending = true;
             handle_key_blocking_activity( /* skip_idle_refresh = */ true );"""
