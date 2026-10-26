@@ -259,7 +259,12 @@ async function main() {
     fixtureScreens.push({ file: filename, bytes: fs.statSync(destination).size, source: 'Playwright page screenshot' });
     return filename;
   });
-  await page.addInitScript(() => {
+  await page.exposeBinding('__cddaCaptureFixtureResult', async (_source, payload) => {
+    captured.result = payload;
+    fs.writeFileSync(path.join(out, 'fixture-result-full.json'), JSON.stringify(payload));
+    return true;
+  });
+  await page.addInitScript(() => {}
     const state = window.__cddaMeasure = { frameTimes: [], tasks: [], keys: [], persistenceSyncs: [], persistenceSyncPending: 0 };
     const original = window.requestAnimationFrame.bind(window);
     window.requestAnimationFrame = callback => original(time => {
@@ -269,7 +274,7 @@ async function main() {
     window.addEventListener('keydown', event => {
       const item = { key: event.key, repeat: !!event.repeat, at: performance.now(), frameMs: null };
       if (state.keys.length < 5000) state.keys.push(item);
-      requestAnimationFrame(time => { item.frameMs = Number((time - item.at).toFixed(2)); });
+      requestAnimationFrame(() => { item.frameMs = Math.max(0, Number((performance.now() - item.at).toFixed(2))); });
     }, true);
     window.addEventListener('keyup', event => { if (state.keys.length < 5000) state.keys.push({ key: event.key, type: 'keyup', at: performance.now() }); }, true);
     try {
