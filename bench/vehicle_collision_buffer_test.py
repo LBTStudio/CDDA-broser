@@ -107,7 +107,7 @@ static void run_case( std::size_t parts, std::size_t hits )
         // Mirrors the production rule: just_detect does not reserve, and
         // the vector is reserved only on the first actual collision.
         if( optimized.empty() ) {
-            optimized.reserve( std::min<std::size_t>( parts, 16 ) );
+            optimized.reserve( std::min<std::size_t>( parts, 4 ) );
         }
         optimized.push_back( Collision{} );
     }
