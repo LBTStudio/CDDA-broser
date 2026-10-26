@@ -145,7 +145,7 @@ async function main() {
   page.on('crash', () => newGameReject(new Error('Chromium page crashed')));
   newGameTimer = setTimeout(() => newGameReject(new Error('No fixture:newgame marker in 180 seconds')), 180000);
 
-  const port = server.address().port, fixture = 'fixture-' + scenario + '.html', bootStarted = now();
+  const port = server.address().port, fixture = 'fixture-' + profile + '.html', bootStarted = now();
   await page.goto('http://127.0.0.1:' + port + '/' + fixture, { waitUntil: 'domcontentloaded', timeout: 180000 });
   const newGameMessage = await newGameSeen;
   const bootMs = Number((now() - bootStarted).toFixed(2));
