@@ -111,9 +111,19 @@ zone_manager_path = path.with_name("clzones.cpp")
 zone_manager_source = zone_manager_path.read_text(encoding="utf-8")
 old_zone_call = "    auto vzones = here.get_vehicle_zones( here.get_abs_sub().z() );"
 new_zone_call = "    auto vzones = here.get_vehicle_zones( here.get_abs_sub().z(), /* refresh_cache = */ false );"
-if zone_manager_source.count(old_zone_call) != 1:
-    raise SystemExit("ERROR: cache_vzones source anchor did not match exactly once")
-zone_manager_source = zone_manager_source.replace(old_zone_call, new_zone_call, 1)
+zone_fn_signature = "void zone_manager::cache_vzones( map *pmap )"
+next_fn_signature = "std::unordered_set<tripoint_abs_ms> zone_manager::get_point_set("
+if zone_manager_source.count(zone_fn_signature) != 1 or zone_manager_source.count(next_fn_signature) != 1:
+    raise SystemExit("ERROR: cache_vzones function boundaries changed")
+zone_fn_start = zone_manager_source.index(zone_fn_signature)
+zone_fn_end = zone_manager_source.index(next_fn_signature, zone_fn_start)
+zone_fn = zone_manager_source[zone_fn_start:zone_fn_end]
+if zone_fn.count(old_zone_call) != 1:
+    raise SystemExit("ERROR: cache_vzones-local source anchor did not match exactly once")
+zone_fn = zone_fn.replace(old_zone_call, new_zone_call, 1)
+zone_manager_source = (
+    zone_manager_source[:zone_fn_start] + zone_fn + zone_manager_source[zone_fn_end:]
+)
 
 helper = """// Match std::map<vehicle *, bool>'s pointer ordering and merge semantics
 // without allocating one red-black-tree node per vehicle on every turn.
