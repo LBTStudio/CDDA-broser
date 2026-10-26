@@ -81,12 +81,30 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install pinned Playwright and Chromium
+      - name: Cache Playwright and npm downloads
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/ms-playwright
+            ~/.npm
+          key: ${{ runner.os }}-cdda-playwright-1.55.0-${{ hashFiles('.github/workflows/browser-measurement.yml') }}
+          restore-keys: |
+            ${{ runner.os }}-cdda-playwright-1.55.0-
+
+      - name: Install pinned Playwright package
+        timeout-minutes: 5
         run: |
           set -euo pipefail
           npm init -y
           npm install --no-save --package-lock=false playwright@1.55.0
-          npx playwright install --with-deps chromium
+
+      - name: Install Chromium system dependencies
+        timeout-minutes: 5
+        run: npx playwright install-deps chromium
+
+      - name: Install pinned Chromium
+        timeout-minutes: 5
+        run: npx playwright install chromium
 
       - name: Download the exact deployed bundle under test
         if: ${{ github.event_name != 'workflow_run' }}
