@@ -14,4 +14,4 @@ The synthetic benchmark demonstrates only vector capacity behavior. It is not an
 
 ## Trade-off
 
-For a single collision on a large vehicle, reserving 16 entries can request more bytes than a single geometric vector growth would. The 4-entry cap bounds that overhead while reducing repeated reallocations in multi-hit scenarios. If real-vehicle profiling shows that multi-hit cases are not a bottleneck, this optimization should not be retained solely on the synthetic benchmark.
+For a single collision on a large vehicle, reserving 4 entries can request more bytes than a single geometric vector growth would. The 4-entry cap bounds that overhead while reducing repeated reallocations in multi-hit scenarios. If real-vehicle profiling shows that multi-hit cases are not a bottleneck, this optimization should not be retained solely on the synthetic benchmark.
