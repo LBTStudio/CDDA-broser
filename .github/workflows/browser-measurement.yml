@@ -1,0 +1,169 @@
+name: CDDA Playwright browser measurements
+
+on:
+  workflow_dispatch:
+    inputs:
+      base_url:
+        description: "Public deployed bundle URL (the seven asset hashes are recorded)"
+        required: true
+        default: "https://lbtstudio.github.io/CDDA-broser/"
+        type: string
+      scenario:
+        description: "Real-game scenario; all runs reading and sleep independently"
+        required: true
+        default: "all"
+        type: choice
+        options:
+          - "all"
+          - "read4"
+          - "sleep"
+          - "read"
+      renderer:
+        description: "Renderer setting used by the isolated test profile"
+        required: true
+        default: "game"
+        type: choice
+        options:
+          - "game"
+          - "software"
+          - "opengles2"
+          - "compare"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/browser-measurement.yml"
+      - "bench/playwright_game_measurement.mjs"
+      - "bench/sample_chromium_memory.sh"
+      - "bench/real_activity_fixture.py"
+      - "docs/measurements/PLAYWRIGHT.md"
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/browser-measurement.yml"
+      - "bench/playwright_game_measurement.mjs"
+      - "bench/sample_chromium_memory.sh"
+      - "bench/real_activity_fixture.py"
+      - "docs/measurements/PLAYWRIGHT.md"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cdda-browser-measurement-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  measure:
+    name: Playwright real-bundle measurement
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      CDDA_BASE_URL: ${{ github.event.inputs.base_url || 'https://lbtstudio.github.io/CDDA-broser/' }}
+      CDDA_SCENARIO: ${{ github.event.inputs.scenario || 'read4' }}
+      CDDA_RENDERER: ${{ github.event.inputs.renderer || 'game' }}
+    steps:
+      - name: Checkout measurement harness
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install pinned Playwright and Chromium
+        run: |
+          set -euo pipefail
+          npm init -y
+          npm install --no-save --package-lock=false playwright@1.55.0
+          npx playwright install --with-deps chromium
+
+      - name: Download the exact deployed bundle under test
+        env:
+          BASE_URL: ${{ github.event.inputs.base_url || 'https://lbtstudio.github.io/CDDA-broser/' }}
+        run: |
+          set -euo pipefail
+          case "$BASE_URL" in
+            https://*) ;;
+            *) echo "BASE_URL must use https://" >&2; exit 1 ;;
+          esac
+          BUNDLE="$GITHUB_WORKSPACE/bench/out/browser-measurement/bundle"
+          mkdir -p "$BUNDLE"
+          BASE_URL="${BASE_URL%/}"
+          for asset in index.html cataclysm-tiles.js cataclysm-tiles.wasm cataclysm-tiles.data cataclysm-tiles.data.js Terminus.ttf favicon.ico; do
+            echo "[download] $asset"
+            curl --fail --location --silent --show-error --retry 3 --retry-all-errors \
+              -H 'Cache-Control: no-cache' "$BASE_URL/$asset" -o "$BUNDLE/$asset"
+            test -s "$BUNDLE/$asset"
+          done
+          (cd "$BUNDLE" && sha256sum *) | tee "$GITHUB_WORKSPACE/bench/out/browser-measurement/bundle-sha256.txt"
+          {
+            echo "## Downloaded published bundle"
+            echo ""
+            echo "- Requested URL: $BASE_URL"
+            echo "- Harness commit: $GITHUB_SHA"
+            echo "- The measurements test the downloaded deployment, not an unbuilt PR's C++ changes."
+            echo ""
+            sed 's/^/- Asset: /' "$GITHUB_WORKSPACE/bench/out/browser-measurement/bundle-sha256.txt"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Run isolated real-game measurements
+        id: measure
+        run: |
+          set -uo pipefail
+          BUNDLE="$GITHUB_WORKSPACE/bench/out/browser-measurement/bundle"
+          OUT="$GITHUB_WORKSPACE/bench/out/browser-measurement"
+          case "$CDDA_SCENARIO" in
+            all) scenarios=(read4 sleep) ;;
+            read4|read|sleep) scenarios=("$CDDA_SCENARIO") ;;
+            *) echo "Unsupported scenario: $CDDA_SCENARIO" >&2; exit 2 ;;
+          esac
+          case "$CDDA_RENDERER" in
+            compare) renderers=(software opengles2) ;;
+            game|software|opengles2) renderers=("$CDDA_RENDERER") ;;
+            *) echo "Unsupported renderer: $CDDA_RENDERER" >&2; exit 2 ;;
+          esac
+          overall=0
+          for scenario in "${scenarios[@]}"; do
+            for renderer in "${renderers[@]}"; do
+              echo "[fixture] scenario=$scenario renderer=$renderer"
+              if ! python3 bench/real_activity_fixture.py "$BUNDLE" "$scenario" 0 "$renderer"; then
+                overall=1
+                continue
+              fi
+              node bench/playwright_game_measurement.mjs "$BUNDLE" "$scenario" "$renderer" "$CDDA_BASE_URL" &
+              runner_pid=$!
+              bash bench/sample_chromium_memory.sh "$OUT/chromium-memory-$scenario-$renderer.tsv" "$runner_pid" &
+              memory_pid=$!
+              if wait "$runner_pid"; then
+                scenario_status=0
+              else
+                scenario_status=$?
+                overall=1
+              fi
+              wait "$memory_pid" || true
+              echo "[fixture] scenario=$scenario renderer=$renderer exit=$scenario_status"
+              if [[ -f "$OUT/$scenario-$renderer/summary.md" ]]; then
+                cat "$OUT/$scenario-$renderer/summary.md" >> "$GITHUB_STEP_SUMMARY"
+                echo "" >> "$GITHUB_STEP_SUMMARY"
+              fi
+            done
+          done
+          exit "$overall"
+
+      - name: Upload measurements, browser traces and screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cdda-playwright-measurement-${{ github.run_id }}
+          path: |
+            bench/out/browser-measurement/*-*/*
+            bench/out/browser-measurement/chromium-memory-*.tsv
+            bench/out/browser-measurement/bundle-sha256.txt
+          if-no-files-found: warn
+          retention-days: 30
+          compression-level: 6
