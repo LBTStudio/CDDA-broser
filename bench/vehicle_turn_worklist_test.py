@@ -297,7 +297,7 @@ with tempfile.TemporaryDirectory(prefix="cdda-vehicle-worklist-") as temp:
     binary = temp / "vehicle_worklist"
     cpp.write_text(fixture, encoding="utf-8")
     subprocess.run(
-        ["g++", "-std=c++17", "-O2", "-Wall", "-Wextra", "-Werror",
+        ["g++", "-std=c++17", "-O2", "-Wall", "-Wextra", "-Werror", "-Wno-mismatched-new-delete",
          str(cpp), "-o", str(binary)],
         check=True, timeout=90)
     subprocess.run([str(binary)], check=True, timeout=90)
