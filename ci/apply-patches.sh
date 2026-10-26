@@ -86,6 +86,9 @@ python3 "$SCRIPT_DIR/optimize_vehicle_turn_worklist.py" "$PWD/src/map.cpp"
 echo "[PATCH] vehicle-move-render-batch (source-anchored)"
 python3 "$SCRIPT_DIR/optimize_vehicle_move_render_batch.py" "$PWD/src/map.cpp"
 
+echo "[PATCH] vehicle-collision-buffer (source-anchored)"
+python3 "$SCRIPT_DIR/optimize_vehicle_collision_buffer.py" "$PWD/src/map.cpp"
+
 echo "[PATCH] fire-neighbor-stack-buffer (source-anchored)"
 python3 "$SCRIPT_DIR/optimize_fire_neighbor_buffer.py" "$PWD/src/map_field.cpp"
 
@@ -312,6 +315,7 @@ python3 "$SCRIPT_DIR/../bench/visible_creature_position_test.py" "$PWD"
 python3 "$SCRIPT_DIR/../bench/large_entity_churn_test.py" "$PWD"
 python3 "$SCRIPT_DIR/../bench/vehicle_turn_worklist_test.py" "$PWD"
 python3 "$SCRIPT_DIR/../bench/vehicle_move_render_batch_test.py" "$PWD"
+python3 "$SCRIPT_DIR/../bench/vehicle_collision_buffer_test.py" "$PWD"
 python3 "$SCRIPT_DIR/../bench/fire_neighbor_buffer_test.py" "$PWD"
 python3 "$SCRIPT_DIR/../bench/gas_spread_buffer_test.py" "$PWD"
 python3 "$SCRIPT_DIR/../bench/wind_blocker_neighbor_reuse_test.py" "$PWD"
