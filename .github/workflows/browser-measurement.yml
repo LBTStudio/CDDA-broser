@@ -54,7 +54,7 @@ permissions:
   actions: read
 
 concurrency:
-  group: cdda-browser-measurement-${{ github.ref }}
+  group: cdda-browser-measurement-${{ github.event.pull_request.number || github.event.workflow_run.id || github.run_id }}
   cancel-in-progress: true
 
 jobs:
