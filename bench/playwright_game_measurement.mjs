@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
 import { chromium } from 'playwright';
+import { ACTIVE_MOVEMENT_STALL_LIMIT_MS, assertMovementResponsive, createBrowserHealth } from './browser_health.mjs';
 
 const bundle = path.resolve(process.argv[2] || '.');
 const scenario = process.argv[3] || 'read4';
@@ -23,6 +24,8 @@ const out = path.join(outputRoot, scenario + '-' + renderer);
 fs.mkdirSync(out, { recursive: true });
 const captured = { screens: [], result: null, other: [] };
 const consoleLog = [], pageErrors = [], requestFailures = [];
+const browserHealth = createBrowserHealth();
+let lastRuntimeStats = null;
 const mime = { '.html':'text/html; charset=utf-8', '.js':'text/javascript; charset=utf-8', '.wasm':'application/wasm', '.data':'application/octet-stream', '.json':'application/json; charset=utf-8', '.ttf':'font/ttf', '.ico':'image/x-icon', '.png':'image/png' };
 const now = () => Number(process.hrtime.bigint()) / 1e6;
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -350,7 +353,13 @@ async function main() {
   });
   page.on('pageerror', error => pageErrors.push(String(error?.stack || error)));
   page.on('requestfailed', request => requestFailures.push({ url: request.url(), failure: request.failure()?.errorText || 'unknown' }));
-  page.on('crash', () => newGameReject(new Error('Chromium page crashed')));
+  page.on('crash', () => {
+    const error = new Error('Chromium page crashed');
+    browserHealth.notePageCrash(now(), error.message);
+    // Reject the startup wait if initialization has not completed. The persistent
+    // health guard below also catches crashes after that promise has settled.
+    newGameReject(error);
+  });
   newGameTimer = setTimeout(() => newGameReject(new Error('No fixture:newgame marker in 180 seconds')), 180000);
 
   const port = server.address().port, fixture = 'fixture-' + profile + '.html', bootStarted = now();
@@ -451,6 +460,9 @@ async function main() {
     function frameStatsInPage(values) { return { count: values.length, p50: percentileInPage(values, .50), p95: percentileInPage(values, .95), p99: percentileInPage(values, .99),
       max: values.length ? Number(Math.max(...values).toFixed(2)) : null, over50: values.filter(v => v > 50).length, over100: values.filter(v => v > 100).length, over250: values.filter(v => v > 250).length }; }
   }, { start, end });
+  lastRuntimeStats = runtime;
+  assertMovementResponsive(runtime.movement.frameMonitorIntervalMs);
+  browserHealth.assertNoPageCrash();
 
   const fixtureResult = captured.result;
   let savedFiles = [];
@@ -506,7 +518,8 @@ async function main() {
       turnDelta: before.available && after.available && Number.isFinite(before.turn) && Number.isFinite(after.turn) ? after.turn - before.turn : null,
       changedPositionFields: before.available && after.available ? Object.keys(after.position || {}).filter(key => JSON.stringify(before.position?.[key]) !== JSON.stringify(after.position?.[key])) : [],
       note: 'Movement delta is based on save snapshots. postReleaseTurnDelta compares saves immediately after keyup and after a 500ms quiet interval.' },
-    runtime, visualScaleComparison, fixture: fixtureResult ? { mode: fixtureResult.mode, variant: fixtureResult.variant, renderer: fixtureResult.renderer,
+    runtime, browserHealth: browserHealth.snapshot(), activeMovementStallLimitMs: ACTIVE_MOVEMENT_STALL_LIMIT_MS,
+    visualScaleComparison, fixture: fixtureResult ? { mode: fixtureResult.mode, variant: fixtureResult.variant, renderer: fixtureResult.renderer,
       heapBytes: fixtureResult.heap, error: fixtureResult.error || '', reading: fixtureResult.reading || null,
       savedFiles, savedGameState,
       beforeInterruptScreenshot: preInterruptScreenshot ? path.basename(preInterruptScreenshot) : null } : null,
@@ -538,6 +551,8 @@ async function main() {
     '- Input-to-next-frame p50/p95/max ms: ' + [m.keydownToNextFrameMs.p50, m.keydownToNextFrameMs.p95, m.keydownToNextFrameMs.max].join(' / '),
     '- Whole-run Long Tasks: ' + runtime.longTaskCount + ', total ' + runtime.longTaskMs.total + ' ms, max ' + runtime.longTaskMs.max + ' ms',
     '- Canvas captures: ' + captured.screens.length + '; page errors: ' + pageErrors.length,
+    '- Browser crash history: ' + JSON.stringify(browserHealth.snapshot()),
+    '- Active movement stall threshold ms: ' + ACTIVE_MOVEMENT_STALL_LIMIT_MS,
     '- Text scaling A/B: same static canvas image at 75% CSS size, pixelated vs auto interpolation',
     '- Playwright fixture screenshots: ' + fixtureScreens.length,
     '', '## Interpretation limits', '', '- GitHub Actions values are not a physical 4GB Chromebook benchmark.',
@@ -551,6 +566,7 @@ async function main() {
   if (bundleFiles.some(file => file.missing)) throw new Error('Missing one or more deployed bundle assets');
   if (!fixtureResult) throw new Error('No game fixture result payload');
   if (pageErrors.length) throw new Error('Browser page errors: ' + pageErrors.length);
+  browserHealth.assertNoPageCrash();
 }
 
 try { await main(); }
@@ -587,7 +603,8 @@ catch (error) {
     await page.content().then(html => fs.writeFileSync(path.join(out, 'failure-page.html'), html)).catch(() => {});
   }
   const payload = { at: new Date().toISOString(), scenario, renderer, baseUrl,
-    error: String(error?.stack || error), browserDiagnostics, console: consoleLog, pageErrors, requestFailures,
+    error: String(error?.stack || error), browserDiagnostics, browserHealth: browserHealth.snapshot(),
+    lastRuntimeStats, console: consoleLog, pageErrors, requestFailures,
     capturedScreens: captured.screens, captureResultReceived: !!captured.result };
   fs.writeFileSync(path.join(out, 'failure.json'), JSON.stringify(payload, null, 2));
   console.error('BROWSER FAILURE DIAGNOSTICS ' + JSON.stringify(payload, null, 2));
