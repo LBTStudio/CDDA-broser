@@ -249,10 +249,43 @@ async function main() {
 
 try { await main(); }
 catch (error) {
-  fs.writeFileSync(path.join(out, 'failure.json'), JSON.stringify({ at: new Date().toISOString(), scenario, renderer, baseUrl,
-    error: String(error?.stack || error), console: consoleLog, pageErrors, requestFailures,
-    capturedScreens: captured.screens, captureResultReceived: !!captured.result }, null, 2));
-  console.error(error); process.exitCode = 1;
+  let browserDiagnostics = null;
+  if (page) {
+    browserDiagnostics = await page.evaluate(() => {
+      const canvas = document.querySelector('canvas');
+      const loading = document.querySelector('#loading-message');
+      const fatal = document.querySelector('#error-overlay');
+      const detail = document.querySelector('#error-detail');
+      const module = window.Module || null;
+      return {
+        href: location.href,
+        title: document.title,
+        readyState: document.readyState,
+        bodyText: (document.body?.innerText || '').slice(0, 5000),
+        loadingText: loading?.textContent || null,
+        loadingDisplay: loading ? getComputedStyle(loading).display : null,
+        errorOverlayDisplay: fatal ? getComputedStyle(fatal).display : null,
+        fatalDetail: detail?.textContent || null,
+        canvas: canvas ? { width: canvas.width, height: canvas.height,
+          rect: (() => { const r = canvas.getBoundingClientRect(); return {x:r.x,y:r.y,width:r.width,height:r.height}; })(),
+          imageRendering: getComputedStyle(canvas).imageRendering } : null,
+        modulePresent: !!module,
+        moduleRuntimeInitialized: module?.calledRun ?? null,
+        moduleDependencies: module?.totalDependencies ?? null,
+        wasmMemoryBytes: module?.HEAPU8?.length ?? window.HEAPU8?.length ?? null,
+        fsPresent: !!(module?.FS || window.FS),
+        fixtureFinished: !!document.querySelector('#fixture-finished')
+      };
+    }).catch(diagError => ({ evaluateError: String(diagError) }));
+    await page.screenshot({ path: path.join(out, 'failure-page.png'), fullPage: true, timeout: 10000 }).catch(() => {});
+    await page.content().then(html => fs.writeFileSync(path.join(out, 'failure-page.html'), html)).catch(() => {});
+  }
+  const payload = { at: new Date().toISOString(), scenario, renderer, baseUrl,
+    error: String(error?.stack || error), browserDiagnostics, console: consoleLog, pageErrors, requestFailures,
+    capturedScreens: captured.screens, captureResultReceived: !!captured.result };
+  fs.writeFileSync(path.join(out, 'failure.json'), JSON.stringify(payload, null, 2));
+  console.error('BROWSER FAILURE DIAGNOSTICS ' + JSON.stringify(payload, null, 2));
+  process.exitCode = 1;
 } finally {
   if (newGameTimer) clearTimeout(newGameTimer);
   if (context && tracing) await context.tracing.stop({ path: path.join(out, 'playwright-trace.zip') }).catch(() => {});
