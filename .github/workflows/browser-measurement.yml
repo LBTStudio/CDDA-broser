@@ -28,6 +28,10 @@ on:
           - "software"
           - "opengles2"
           - "compare"
+  workflow_run:
+    workflows: ["Build CDDA 0.I WebAssembly"]
+    types: [completed]
+    branches: [main]
   push:
     branches: [main]
     paths:
@@ -47,6 +51,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: cdda-browser-measurement-${{ github.ref }}
@@ -54,11 +59,12 @@ concurrency:
 
 jobs:
   measure:
+    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
     name: Playwright real-bundle measurement
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
-      CDDA_BASE_URL: ${{ github.event.inputs.base_url || 'https://lbtstudio.github.io/CDDA-broser/' }}
+      CDDA_BASE_URL: ${{ github.event_name == 'workflow_run' && format('https://github.com/LBTStudio/CDDA-broser/actions/runs/{0}', github.event.workflow_run.id) || github.event.inputs.base_url || 'https://lbtstudio.github.io/CDDA-broser/' }}
       CDDA_SCENARIO: ${{ github.event.inputs.scenario || 'read4' }}
       CDDA_RENDERER: ${{ github.event.inputs.renderer || 'game' }}
     steps:
@@ -83,6 +89,7 @@ jobs:
           npx playwright install --with-deps chromium
 
       - name: Download the exact deployed bundle under test
+        if: ${{ github.event_name != 'workflow_run' }}
         env:
           BASE_URL: ${{ github.event.inputs.base_url || 'https://lbtstudio.github.io/CDDA-broser/' }}
         run: |
@@ -107,6 +114,34 @@ jobs:
             echo "- Requested URL: $BASE_URL"
             echo "- Harness commit: $GITHUB_SHA"
             echo "- The measurements test the downloaded deployment, not an unbuilt PR's C++ changes."
+            echo ""
+            sed 's/^/- Asset: /' "$GITHUB_WORKSPACE/bench/out/browser-measurement/bundle-sha256.txt"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Download exact bundle from the completed full build
+        if: ${{ github.event_name == 'workflow_run' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: cdda-0I-web-bundle
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: bench/out/browser-measurement/bundle
+
+      - name: Verify full-build artifact and record its fingerprint
+        if: ${{ github.event_name == 'workflow_run' }}
+        run: |
+          set -euo pipefail
+          BUNDLE="$GITHUB_WORKSPACE/bench/out/browser-measurement/bundle"
+          for asset in index.html cataclysm-tiles.js cataclysm-tiles.wasm cataclysm-tiles.data cataclysm-tiles.data.js Terminus.ttf favicon.ico; do
+            test -s "$BUNDLE/$asset" || { echo "::error::Missing full-build artifact asset: $asset"; exit 1; }
+          done
+          (cd "$BUNDLE" && sha256sum *) | tee "$GITHUB_WORKSPACE/bench/out/browser-measurement/bundle-sha256.txt"
+          {
+            echo "## Exact WebAssembly build artifact"
+            echo ""
+            echo "- Source workflow run: https://github.com/LBTStudio/CDDA-broser/actions/runs/${{ github.event.workflow_run.id }}"
+            echo "- Source commit: ${{ github.event.workflow_run.head_sha }}"
+            echo "- This run tests the build artifact itself, independent of Pages cache/deployment timing."
             echo ""
             sed 's/^/- Asset: /' "$GITHUB_WORKSPACE/bench/out/browser-measurement/bundle-sha256.txt"
           } >> "$GITHUB_STEP_SUMMARY"
