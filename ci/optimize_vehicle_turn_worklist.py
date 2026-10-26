@@ -82,6 +82,39 @@ if source.count(old_zone_cache) != 1:
     raise SystemExit("ERROR: expected unconditional vehicle-zone refresh did not match exactly once")
 source = source.replace(old_zone_cache, new_zone_cache, 1)
 
+# Do not let map::get_vehicle_zones recursively rebuild the cache while
+# zone_manager::cache_vzones is already rebuilding it.
+header_path = path.with_name("map.h")
+header = header_path.read_text(encoding="utf-8")
+old_header_decl = "        std::vector<zone_data *> get_vehicle_zones( int zlev );"
+new_header_decl = "        std::vector<zone_data *> get_vehicle_zones( int zlev, bool refresh_cache = true );"
+if header.count(old_header_decl) != 1:
+    raise SystemExit("ERROR: expected map::get_vehicle_zones declaration did not match exactly once")
+header = header.replace(old_header_decl, new_header_decl, 1)
+
+old_get_zones_signature = "std::vector<zone_data *> map::get_vehicle_zones( const int zlev )"
+new_get_zones_signature = "std::vector<zone_data *> map::get_vehicle_zones( const int zlev, bool refresh_cache )"
+if source.count(old_get_zones_signature) != 1:
+    raise SystemExit("ERROR: expected map::get_vehicle_zones definition did not match exactly once")
+source = source.replace(old_get_zones_signature, new_get_zones_signature, 1)
+old_recursive_refresh = """    if( rebuild ) {
+        zone_manager::get_manager().cache_vzones();
+    }"""
+new_recursive_refresh = """    if( rebuild && refresh_cache ) {
+        zone_manager::get_manager().cache_vzones();
+    }"""
+if source.count(old_recursive_refresh) != 1:
+    raise SystemExit("ERROR: expected vehicle-zone recursive refresh did not match exactly once")
+source = source.replace(old_recursive_refresh, new_recursive_refresh, 1)
+
+zone_manager_path = path.with_name("clzones.cpp")
+zone_manager_source = zone_manager_path.read_text(encoding="utf-8")
+old_zone_call = "    auto vzones = here.get_vehicle_zones( here.get_abs_sub().z() );"
+new_zone_call = "    auto vzones = here.get_vehicle_zones( here.get_abs_sub().z(), /* refresh_cache = */ false );"
+if zone_manager_source.count(old_zone_call) != 1:
+    raise SystemExit("ERROR: cache_vzones source anchor did not match exactly once")
+zone_manager_source = zone_manager_source.replace(old_zone_call, new_zone_call, 1)
+
 helper = """// Match std::map<vehicle *, bool>'s pointer ordering and merge semantics
 // without allocating one red-black-tree node per vehicle on every turn.
 template<typename WorkRange, typename ProcessFn>
@@ -127,6 +160,15 @@ if "veh->process_effects();\n        veh->recalculate_enchantment_cache();\n    
     raise SystemExit("ERROR: vehicle post-movement processing order changed")
 if source.count("if( check_vehicle_zones( get_abs_sub().z() ) ) {") != 1:
     raise SystemExit("ERROR: vehicle-zone refresh is not guarded by the upstream dirty flag")
+if source.count("if( rebuild && refresh_cache ) {") != 1:
+    raise SystemExit("ERROR: nested vehicle-zone cache rebuild is still unconditional")
+if "std::vector<zone_data *> map::get_vehicle_zones( const int zlev, bool refresh_cache )" not in source:
+    raise SystemExit("ERROR: explicit vehicle-zone refresh control is missing")
+if "here.get_vehicle_zones( here.get_abs_sub().z(), /* refresh_cache = */ false );" not in zone_manager_source:
+    raise SystemExit("ERROR: cache_vzones can still recursively request its own rebuild")
 
+# Write only after all source anchors have been checked and all transforms succeeded.
 path.write_text(source, encoding="utf-8")
+header_path.write_text(header, encoding="utf-8")
+zone_manager_path.write_text(zone_manager_source, encoding="utf-8")
 print("PASS: vehicle turn worklist now uses contiguous storage with std::map-compatible order and merge semantics")
