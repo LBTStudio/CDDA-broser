@@ -162,6 +162,20 @@ async function main() {
   await page.screenshot({ path: path.join(out, 'game-start-page.png'), fullPage: true, animations: 'disabled' }).catch(error => consoleLog.push({ type: 'screenshot-error', text: String(error) }));
   await page.locator('#canvas').focus().catch(() => {});
   const before = await quickSave('before-movement');
+  // Controlled compositor A/B: keep the same rendered game frame and change
+  // only the CSS interpolation used when the canvas is scaled by the browser.
+  // This does not touch CDDA's renderer, settings, or save data.
+  const imageRenderingInline = await page.locator('#canvas').evaluate(el => el.style.imageRendering);
+  await page.locator('#canvas').evaluate(el => { el.style.imageRendering = 'pixelated'; });
+  await page.screenshot({ path: path.join(out, 'text-scale-pixelated.png'), fullPage: true, animations: 'disabled' });
+  await page.locator('#canvas').evaluate(el => { el.style.imageRendering = 'auto'; });
+  await page.screenshot({ path: path.join(out, 'text-scale-auto.png'), fullPage: true, animations: 'disabled' });
+  await page.locator('#canvas').evaluate((el, value) => { el.style.imageRendering = value; }, imageRenderingInline);
+  const visualScaleComparison = {
+    originalInlineValue: imageRenderingInline || '',
+    captured: ['text-scale-pixelated.png', 'text-scale-auto.png'],
+    note: 'Same game frame and canvas pixels; only CSS image-rendering interpolation differs. Review visually.'
+  };
   const start = await page.evaluate(() => ({ frame: window.__cddaMeasure.frames.length, task: window.__cddaMeasure.tasks.length, key: window.__cddaMeasure.keys.length }));
   const movementStarted = now();
   await page.keyboard.down('l');
@@ -216,7 +230,7 @@ async function main() {
       turnDelta: before.available && after.available && Number.isFinite(before.turn) && Number.isFinite(after.turn) ? after.turn - before.turn : null,
       changedPositionFields: before.available && after.available ? Object.keys(after.position || {}).filter(key => JSON.stringify(before.position?.[key]) !== JSON.stringify(after.position?.[key])) : [],
       note: 'Missing save snapshots are unavailable, not zero movement.' },
-    runtime, fixture: fixtureResult ? { mode: fixtureResult.mode, variant: fixtureResult.variant, renderer: fixtureResult.renderer,
+    runtime, visualScaleComparison, fixture: fixtureResult ? { mode: fixtureResult.mode, variant: fixtureResult.variant, renderer: fixtureResult.renderer,
       heapBytes: fixtureResult.heap, error: fixtureResult.error || '', reading: fixtureResult.reading || null, savedFiles,
       beforeInterruptScreenshot: preInterruptScreenshot ? path.basename(preInterruptScreenshot) : null } : null,
     capturedScreens: captured.screens, captureResultReceived: !!fixtureResult, captureOther: captured.other, pageErrors, requestFailures, console: consoleLog };
@@ -235,6 +249,7 @@ async function main() {
     '- Input-to-next-frame p50/p95/max ms: ' + [m.keydownToNextFrameMs.p50, m.keydownToNextFrameMs.p95, m.keydownToNextFrameMs.max].join(' / '),
     '- Whole-run Long Tasks: ' + runtime.longTaskCount + ', total ' + runtime.longTaskMs.total + ' ms, max ' + runtime.longTaskMs.max + ' ms',
     '- Canvas captures: ' + captured.screens.length + '; page errors: ' + pageErrors.length,
+    '- Text scaling A/B screenshots: text-scale-pixelated.png vs text-scale-auto.png (same frame, CSS interpolation only)',
     '', '## Interpretation limits', '', '- GitHub Actions values are not a physical 4GB Chromebook benchmark.',
     '- RAF/Long Task time includes browser runtime, game processing, drawing, and measurement overhead; it is not pure turn CPU time.',
     '- JS heap is not Wasm heap or total browser RAM; RSS/PSS is sampled separately.',
