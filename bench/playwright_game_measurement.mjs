@@ -323,19 +323,25 @@ async function main() {
     return true;
   });
   await page.addInitScript(() => {
-    const state = window.__cddaMeasure = { frameTimes: [], tasks: [], keys: [], persistenceSyncs: [], persistenceSyncPending: 0 };
+    const state = window.__cddaMeasure = { frameTimes: [], frameMonitorTickCount: 0, frameMonitorStartAt: null, tasks: [], keys: [], persistenceSyncs: [], persistenceSyncPending: 0 };
     const nativeRaf = window.requestAnimationFrame.bind(window);
     let frameMonitorActive = false;
     state.startFrameMonitor = () => {
-      if (frameMonitorActive) return;
+      if (frameMonitorActive) return state.frameMonitorStartAt;
       state.frameTimes.length = 0;
+      state.frameMonitorTickCount = 0;
       frameMonitorActive = true;
+      // Anchor the first interval so a stall immediately after start is visible.
+      state.frameMonitorStartAt = performance.now();
+      state.frameTimes.push(state.frameMonitorStartAt);
       const tick = time => {
         if (!frameMonitorActive) return;
+        state.frameMonitorTickCount += 1;
         if (state.frameTimes.length < 30000) state.frameTimes.push(time);
         nativeRaf(tick);
       };
       nativeRaf(tick);
+      return state.frameMonitorStartAt;
     };
     state.stopFrameMonitor = () => { frameMonitorActive = false; };
     // Preserve browser/game RAF behavior; the independent monitor records once
@@ -416,8 +422,8 @@ async function main() {
   await comparisonPage.close();
   const start = await page.evaluate(() => {
     const state = window.__cddaMeasure;
-    state.startFrameMonitor();
-    return { at: performance.now(), task: state.tasks.length, key: state.keys.length };
+    const frameStartAt = state.startFrameMonitor();
+    return { at: performance.now(), frameStartAt, task: state.tasks.length, key: state.keys.length };
   });
   const movementStarted = now();
   await page.keyboard.down('l');
@@ -430,8 +436,12 @@ async function main() {
   await pause(100);
   const end = await page.evaluate(() => {
     const state = window.__cddaMeasure;
+    const at = performance.now();
     state.stopFrameMonitor();
-    return { at: performance.now(), task: state.tasks.length, key: state.keys.length, frameTimes: state.frameTimes.slice() };
+    // Close the measurement interval so a stall immediately before this sample
+    // is counted even if the next RAF callback never ran.
+    return { at, task: state.tasks.length, key: state.keys.length,
+      frameMonitorTickCount: state.frameMonitorTickCount, frameTimes: [...state.frameTimes, at] };
   });
   const after = await quickSave('after-keyup', before);
   await pause(500);
@@ -449,15 +459,15 @@ async function main() {
     const movementFrames = [];
     for (let i = 1; i < movementTimes.length; i++) {
       const from = movementTimes[i - 1], to = movementTimes[i];
-      if (from >= marks.start.at && to <= marks.end.at) movementFrames.push(to - from);
+      if (from >= (marks.start.frameStartAt ?? marks.start.at) && to <= marks.end.at) movementFrames.push(to - from);
     }
     const movementTasks = tasks.filter(task => task.start >= marks.start.at && task.start <= marks.end.at);
     const movementKeys = keys.filter(item => item.at >= marks.start.at && item.at <= marks.end.at && (item.key === 'l' || item.key === 'L'));
     const latency = movementKeys.filter(item => Number.isFinite(item.frameMs)).map(item => item.frameMs);
-    return { movementFrameMonitorIntervals: movementFrames.length, movementFrameMonitorIntervalMs: frameStatsInPage(movementFrames),
+    return { movementFrameMonitorIntervals: movementFrames.length, movementFrameMonitorIntervalMs: { ...frameStatsInPage(movementFrames), tickCount: marks.end.frameMonitorTickCount },
       longTaskCount: tasks.length, longTaskMs: { total: Number(tasks.reduce((a, b) => a + b.duration, 0).toFixed(2)),
         max: tasks.length ? Number(Math.max(...tasks.map(t => t.duration)).toFixed(2)) : null, over100: tasks.filter(t => t.duration > 100).length },
-      movement: { frameMonitorIntervals: movementFrames.length, frameMonitorIntervalMs: frameStatsInPage(movementFrames), longTaskCount: movementTasks.length,
+      movement: { frameMonitorIntervals: movementFrames.length, frameMonitorIntervalMs: { ...frameStatsInPage(movementFrames), tickCount: marks.end.frameMonitorTickCount }, longTaskCount: movementTasks.length,
         longTaskTotalMs: Number(movementTasks.reduce((a, b) => a + b.duration, 0).toFixed(2)),
         keyEvents: movementKeys.length, keydowns: movementKeys.filter(item => item.type !== 'keyup').length,
         keydownToNextFrameMs: { p50: percentileInPage(latency, .50), p95: percentileInPage(latency, .95), max: latency.length ? Number(Math.max(...latency).toFixed(2)) : null } },
