@@ -29,7 +29,7 @@ let lastRuntimeStats = null;
 const mime = { '.html':'text/html; charset=utf-8', '.js':'text/javascript; charset=utf-8', '.wasm':'application/wasm', '.data':'application/octet-stream', '.json':'application/json; charset=utf-8', '.ttf':'font/ttf', '.ico':'image/x-icon', '.png':'image/png' };
 const now = () => Number(process.hrtime.bigint()) / 1e6;
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
-let browser, context, page, tracing = false, newGameResolve, newGameReject, newGameTimer;
+let browser, context, page, tracing = false, browserClosing = false, newGameResolve, newGameReject, newGameTimer;
 const newGameSeen = new Promise((resolve, reject) => { newGameResolve = resolve; newGameReject = reject; });
 
 const server = http.createServer((req, res) => {
@@ -296,6 +296,12 @@ function frameStats(values) {
 async function main() {
   await new Promise((resolve, reject) => server.listen(0, '127.0.0.1', error => error ? reject(error) : resolve()));
   browser = await chromium.launch({ headless: true, args: ['--no-sandbox', '--disable-dev-shm-usage', '--enable-webgl', '--use-gl=angle', '--use-angle=swiftshader'] });
+  browser.on('disconnected', () => {
+    if (browserClosing) return;
+    const error = new Error('Chromium browser disconnected unexpectedly');
+    browserHealth.noteBrowserDisconnect(now(), error.message);
+    newGameReject(error);
+  });
   context = await browser.newContext({ viewport: { width: 1365, height: 768 }, deviceScaleFactor: 1 });
   await context.tracing.start({ screenshots: true, snapshots: true, sources: false }); tracing = true;
   page = await context.newPage();
@@ -462,7 +468,7 @@ async function main() {
   }, { start, end });
   lastRuntimeStats = runtime;
   assertMovementResponsive(runtime.movement.frameMonitorIntervalMs);
-  browserHealth.assertNoPageCrash();
+  browserHealth.assertNoBrowserFailure();
 
   const fixtureResult = captured.result;
   let savedFiles = [];
@@ -566,7 +572,7 @@ async function main() {
   if (bundleFiles.some(file => file.missing)) throw new Error('Missing one or more deployed bundle assets');
   if (!fixtureResult) throw new Error('No game fixture result payload');
   if (pageErrors.length) throw new Error('Browser page errors: ' + pageErrors.length);
-  browserHealth.assertNoPageCrash();
+  browserHealth.assertNoBrowserFailure();
 }
 
 try { await main(); }
@@ -612,6 +618,9 @@ catch (error) {
 } finally {
   if (newGameTimer) clearTimeout(newGameTimer);
   if (context && tracing) await context.tracing.stop({ path: path.join(out, 'playwright-trace.zip') }).catch(() => {});
-  if (browser) await browser.close().catch(() => {});
+  if (browser) {
+    browserClosing = true;
+    await browser.close().catch(() => {});
+  }
   await new Promise(resolve => server.close(() => resolve())).catch(() => {});
 }
