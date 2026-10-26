@@ -24,7 +24,7 @@ def function(text, signature):
     start = text.index(signature)
     # Function bodies begin on their own line; this avoids mistaking a lambda
     # brace in the function body for the start of the function itself.
-    opening = text.index("\\n{\\n", start) + 1
+    opening = text.index("\n{\n", start) + 1
     depth, pos = 1, opening + 1
     while depth:
         depth += (text[pos] == "{") - (text[pos] == "}")
