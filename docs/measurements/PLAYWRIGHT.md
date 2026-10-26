@@ -10,8 +10,8 @@ Actionsから手動実行できます。base_urlは測定対象の配信先、sc
 
 - 配布ファイル7点のSHA-256、サイズ、測定URL。
 - 新規ゲーム開始ログまでの時間、ブラウザ例外、失敗リクエスト。
-- Canvas内部解像度とCSS表示サイズ、拡大率、image-rendering、HTMLシェルのフォント読込状態。同一ゲーム画面で `image-rendering: pixelated` と `auto` を切り替えた比較画像も採取し、ブラウザ側の拡大補間の影響を目視比較する。
-- 移動キー長押し中のフレーム間隔p50/p95/p99/最大値、50/100/250ms超の停止回数、keydownから次フレームまでの時間。
+- Canvas内部解像度とCSS表示サイズ、拡大率、image-rendering、HTMLシェルのフォント読込状態。Playwrightのコンポジタから取得した同一の静止Canvas画像を75%サイズで表示し、`image-rendering: pixelated` と `auto` で比較画像を作る。これにより同じゲーム画面を使ってブラウザ側の拡大補間の影響を比較する。
+- 移動キー長押し中のrequestAnimationFrameコールバック間隔p50/p95/p99/最大値、50/100/250ms超の間隔数、keydownから次コールバックまでの時間。計測区間の前に始まった長い間隔を混ぜないよう、時刻で区間を切り出す。
 - PerformanceObserverで観測したLong Taskの件数・総時間・最大時間。
 - 可能な場合に、キー押下前後のクイックセーブからターン数と位置関連フィールドの差分。
 - F5押下から仮想ファイルの保存内容が更新されるまでの時間、保存中のフレーム停止、`FS.syncfs`の完了時間・失敗有無。ゲーム内部のファイル更新とIndexedDBへの永続化を別々に記録。
@@ -19,13 +19,13 @@ Actionsから手動実行できます。base_urlは測定対象の配信先、sc
 - Chromium関連プロセスのRSS/PSSを1秒間隔で採取した記録。
 - Playwright trace、コンソールログ、構造化されたmeasurement.json。
 
-成果物はActionsのartifact cdda-playwright-measurement-<run id>に30日間保存します。measurement.jsonが構造化データ、summary.mdが短い要約です。Canvas画像とPlaywright traceを併用して表示と停止箇所をレビューできます。`text-scale-pixelated.png` と `text-scale-auto.png` はゲーム内の画素そのものを変えずにCSSの拡大補間だけを変えた比較画像で、文字の崩れがブラウザ拡大によるものか、ゲーム内で生成された字形なのかを切り分ける助けになります。
+成果物はActionsのartifact cdda-playwright-measurement-<run id>に30日間保存します。measurement.jsonが構造化データ、summary.mdが短い要約です。Canvas画像とPlaywright traceを併用して表示と停止箇所をレビューできます。`text-scale-pixelated.png` と `text-scale-auto.png` は同じ静止Canvas画像をCSSで75%に縮小した比較画像です。CanvasのWebGL描画状態によって `canvas.toDataURL()` が真っ黒になることがあるため、画面キャプチャはPlaywrightのコンポジタ経由で採取します。
 
 ## 解釈上の制約
 
 1. 測定対象はbase_urlから取得した配布物です。C++の差分はフルビルド・公開されていなければ計測対象に含まれません。PR上の計測も既定では現行のPages配布物を測ります。アセットSHAを記録して、測定対象の違いを取り違えないようにします。
 2. GitHub ActionsのUbuntu runnerは4GB Chromebookの再現環境ではありません。相対比較やボトルネック探索には使えますが、実機の待ち時間・RAM・成功率を保証しません。
-3. requestAnimationFrame間隔とLong Taskはブラウザ、ゲームのC++処理、描画、計測処理を含みます。純粋な1ターンCPU時間ではありません。ゲーム内ターン差分・[perf]ログと分けて評価します。
+3. requestAnimationFrame間隔とLong Taskはブラウザ、ゲームのC++処理、描画、計測処理を含みます。RAFの呼び出し間隔は描画FPSそのものではなく、アイドル待ちや確認ダイアログでも長くなるため、実際の画面・ターン差分・[perf]ログと合わせて評価します。純粋な1ターンCPU時間とは区別します。
 4. Chromium RSS合計は共有ページを重複計上し得ます。PSSも読み取れたChromium関連プロセスだけの合計で、OS全体のピークRAMではありません。
 5. キー押下から次フレームまでの時間は入力応答の代理指標です。保存前後の差分が取れない場合、入力イベント数だけを根拠に「移動した」と判断しません。
 6. 自動OCRや文字列の正誤判定は行いません。日本語の崩れはスクリーンショットを目視し、文字列破損・欠字・字幅・輪郭に分類します。HTMLのTerminusフォント確認はゲーム内タイルの字形保証ではありません。
@@ -44,7 +44,7 @@ Canvasの実サイズ、CSS表示サイズ、拡大率、image-rendering、選�
 
 ### セーブと長時間活動
 
-読書・睡眠の実ゲーム観測、ターン差分、保存された活動状態、描画停止、Long Task、Chromiumメモリを別々に見ます。ゲーム内部のファイル直列化とIndexedDBへの永続化は違う段階です。保存高速化のために保存を間引いたり、ターン・AI・乱数消費を省略したりしません。
+読書・睡眠の実ゲーム観測、ターン差分、保存された活動状態、描画停止、Long Task、Chromiumメモリを別々に見ます。F5前に既存の保存処理が終わるまで待ってから入力を計測し、F5後に保存ファイルの変化が検出されなかった場合は遅延の実測値ではなく「期限内に更新を確認できず」として扱います。ゲーム内部のファイル直列化とIndexedDBへの永続化は違う段階です。保存高速化のために保存を間引いたり、ターン・AI・乱数消費を省略したりしません。
 
 ## 再現性
 
