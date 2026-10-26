@@ -6,6 +6,7 @@ substeps. This test protects the optimization's scope and keeps event pumping
 and all ordinary/native refresh paths intact.
 """
 from pathlib import Path
+import re
 import sys
 
 root = Path(sys.argv[1]).resolve()
@@ -54,11 +55,10 @@ assert move_vehicle.count("handle_key_blocking_activity( /* skip_idle_refresh = 
 assert header_source.count(
     "void handle_key_blocking_activity( bool skip_idle_refresh = false );"
 ) == 1
-handle = between(
-    turn_source,
-    "void handle_key_blocking_activity( bool skip_idle_refresh )",
-    "namespace\n{\nvoid monmove()",
-)
+handle_start = turn_source.index("void handle_key_blocking_activity( bool skip_idle_refresh )")
+handle_closing = re.search(r"(?m)^}[ \\t]*$", turn_source[handle_start:])
+assert handle_closing is not None, "handler must remain a complete top-level function"
+handle = turn_source[handle_start:handle_start + handle_closing.end()]
 assert "if( !skip_idle_refresh ) {\n            refresh_display();\n        }" in handle
 assert "inp_mngr.pump_events();" in handle
 # Blocking activity/destination refreshes must remain unconditional.
