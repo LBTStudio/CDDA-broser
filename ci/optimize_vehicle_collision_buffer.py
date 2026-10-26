@@ -23,7 +23,7 @@ rotor_old = """                    } else {
 rotor_new = """                    } else {
                         if( colls.empty() ) {
                             colls.reserve( std::min<std::size_t>(
-                                               static_cast<std::size_t>( part_count() ), 16 ) );
+                                               static_cast<std::size_t>( part_count() ), 4 ) );
                         }
                         colls.push_back( rotor_coll );
                     }"""
@@ -34,7 +34,7 @@ main_new = """        if( !just_detect && colls.empty() ) {
             // Reserve only after a real collision is found. Clear-road driving
             // keeps the upstream zero-allocation fast path.
             colls.reserve( std::min<std::size_t>(
-                               static_cast<std::size_t>( part_count() ), 16 ) );
+                               static_cast<std::size_t>( part_count() ), 4 ) );
         }
         colls.push_back( coll );
 
