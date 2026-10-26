@@ -10,10 +10,13 @@ const bundle = path.resolve(process.argv[2] || '.');
 const scenario = process.argv[3] || 'read4';
 const renderer = process.argv[4] || 'game';
 const baseUrl = process.argv[5] || 'https://lbtstudio.github.io/CDDA-broser/';
-const profile = scenario + '_z0'; // The workflow passes population=0 to set the renderer.
+const population = Number(process.argv[6] ?? '0');
+const profile = scenario + '_z' + population;
 if (!fs.existsSync(path.join(bundle, 'index.html'))) throw new Error('Missing bundle index.html');
 if (!['read4', 'read', 'sleep'].includes(scenario)) throw new Error('Unsupported scenario: ' + scenario);
 if (!['game', 'software', 'opengles2'].includes(renderer)) throw new Error('Unsupported renderer: ' + renderer);
+if (!Number.isInteger(population) || population < 0 || population > 200) throw new Error('Population must be an integer between 0 and 200');
+if (population !== 0 && scenario !== 'sleep') throw new Error('Monster population stress is only valid for the sleep scenario');
 
 const outputRoot = path.resolve('bench/out/browser-measurement');
 const out = path.join(outputRoot, scenario + '-' + renderer);
@@ -418,7 +421,7 @@ async function main() {
     return fs.existsSync(file) ? { name, bytes: fs.statSync(file).size } : { name, missing: true };
   });
   const result = { schemaVersion: 1, measuredAt: new Date().toISOString(), targetUrl: baseUrl, browserVersion: browser.version(),
-    nodeVersion: process.version, scenario, renderer, bundleFiles, bootToNewGameMs: bootMs, newGameMessage, display,
+    nodeVersion: process.version, scenario, renderer, population, bundleFiles, bootToNewGameMs: bootMs, newGameMessage, display,
     persistenceInstrumentation,
     movement: { elapsedMs: movementMs, beforeSave: before, afterSave: after,
       turnDelta: before.available && after.available && Number.isFinite(before.turn) && Number.isFinite(after.turn) ? after.turn - before.turn : null,
