@@ -83,7 +83,10 @@ async function snapshotSave() {
           const data = JSON.parse(raw.slice(start));
           const player = data.player || {};
           const position = Object.fromEntries(Object.entries(player).filter(([key]) => /pos|location|moves/i.test(key)).slice(0, 40));
-          candidates.push({ world, file: name, turn: data.turn ?? null, activity: player.activity?.type ?? null, position, bytes: raw.length });
+          const fullPath = dir + '/' + name;
+          const stat = fs.stat(fullPath);
+          candidates.push({ world, file: name, turn: data.turn ?? null, activity: player.activity?.type ?? null,
+            position, bytes: stat.size, mtimeMs: stat.mtime?.getTime?.() ?? null });
         }
       }
       candidates.sort((a, b) => (b.turn ?? -1) - (a.turn ?? -1));
@@ -92,13 +95,107 @@ async function snapshotSave() {
   }, profile);
 }
 
-async function quickSave(tag) {
-  await page.keyboard.press('F5').catch(() => {});
+async function quickSave(tag, previous = null) {
+  const beforeCommand = previous || await snapshotSave();
+  const syncStartCount = await page.evaluate(() => window.__cddaMeasure?.persistenceSyncs?.length || 0);
+  const marks = await page.evaluate(() => ({ frame: window.__cddaMeasure.frames.length, task: window.__cddaMeasure.tasks.length }));
   const started = now();
+  await page.keyboard.press('F5').catch(error => consoleLog.push({ type: 'save-key-error', text: String(error) }));
   let value = await snapshotSave();
-  while (!value.available && now() - started < 7000) { await pause(400); value = await snapshotSave(); }
+  const changed = snapshot => {
+    if (!snapshot?.available) return false;
+    if (!beforeCommand?.available) return true;
+    return snapshot.world !== beforeCommand.world || snapshot.file !== beforeCommand.file ||
+      snapshot.turn !== beforeCommand.turn || snapshot.activity !== beforeCommand.activity ||
+      snapshot.bytes !== beforeCommand.bytes || snapshot.mtimeMs !== beforeCommand.mtimeMs ||
+      JSON.stringify(snapshot.position) !== JSON.stringify(beforeCommand.position);
+  };
+  while (!changed(value) && now() - started < 7000) { await pause(250); value = await snapshotSave(); }
+  const fileUpdateElapsedMs = Number((now() - started).toFixed(2));
+  const fileUpdated = changed(value);
+  const syncWaitStarted = now();
+  let syncWaitTimedOut = false;
+  if (fileUpdated && persistenceInstrumentation.installed) {
+    try {
+      await page.waitForFunction(startCount =>
+        (window.__cddaMeasure?.persistenceSyncs || []).slice(startCount).some(entry => !entry.populate),
+        syncStartCount, { timeout: 5000 });
+    } catch (_) { syncWaitTimedOut = true; }
+  }
+  const persistentSyncs = await page.evaluate(startCount =>
+    (window.__cddaMeasure?.persistenceSyncs || []).slice(startCount).filter(entry => !entry.populate),
+    syncStartCount);
+  const syncWaitElapsedMs = Number((now() - syncWaitStarted).toFixed(2));
+  const frameEffects = await page.evaluate(m => {
+    const state = window.__cddaMeasure, frames = state.frames.slice(m.frame), tasks = state.tasks.slice(m.task);
+    const percentile = (values, q) => {
+      const sorted = [...values].sort((a,b) => a-b);
+      return sorted.length ? Number(sorted[Math.min(sorted.length - 1, Math.ceil(q * sorted.length) - 1)].toFixed(2)) : null;
+    };
+    return {
+      frameGapCount: frames.length, frameGapP95Ms: percentile(frames, .95),
+      frameGapMaxMs: frames.length ? Number(Math.max(...frames).toFixed(2)) : null,
+      frameGapsOver50Ms: frames.filter(v => v > 50).length,
+      frameGapsOver100Ms: frames.filter(v => v > 100).length,
+      longTaskCount: tasks.length,
+      longTaskTotalMs: Number(tasks.reduce((sum, entry) => sum + entry.duration, 0).toFixed(2)),
+      longTaskMaxMs: tasks.length ? Number(Math.max(...tasks.map(entry => entry.duration)).toFixed(2)) : null
+    };
+  }, marks);
+  if (!value || typeof value !== 'object') value = { available: false, reason: 'no save snapshot' };
+  value.saveTiming = {
+    f5ToFileUpdateMs: fileUpdateElapsedMs,
+    fileUpdated,
+    persistenceInstrumentationInstalled: persistenceInstrumentation.installed,
+    idbfsSyncsAfterCommand: persistentSyncs,
+    idbfsWaitAfterFileUpdateMs: fileUpdated ? syncWaitElapsedMs : null,
+    idbfsWaitTimedOut: fileUpdated && persistenceInstrumentation.installed ? syncWaitTimedOut : null,
+    frameEffects
+  };
   fs.writeFileSync(path.join(out, tag + '-save-snapshot.json'), JSON.stringify(value, null, 2));
   return value;
+}
+
+let persistenceInstrumentation = { installed: false, reason: 'not attempted' };
+
+async function installPersistenceInstrumentation() {
+  persistenceInstrumentation = await page.evaluate(() => {
+    const fs = window.Module?.FS || window.FS;
+    const state = window.__cddaMeasure;
+    if (!fs || typeof fs.syncfs !== 'function' || !state) {
+      return { installed: false, reason: 'Emscripten FS.syncfs or measurement state unavailable' };
+    }
+    if (state.persistenceHookInstalled) return { installed: true, reason: 'already installed' };
+    state.persistenceSyncs = [];
+    const originalSyncfs = fs.syncfs;
+    fs.syncfs = function(populate, callback) {
+      const startedAt = performance.now();
+      let settled = false;
+      const finish = error => {
+        if (settled) return;
+        settled = true;
+        state.persistenceSyncs.push({
+          populate: !!populate,
+          startedAtMs: Number(startedAt.toFixed(2)),
+          durationMs: Number((performance.now() - startedAt).toFixed(2)),
+          success: !error,
+          error: error ? String(error) : null
+        });
+      };
+      const wrapped = typeof callback === 'function' ? function(error) {
+        finish(error);
+        return callback(error);
+      } : callback;
+      try {
+        return originalSyncfs.call(this, populate, wrapped);
+      } catch (error) {
+        finish(error);
+        throw error;
+      }
+    };
+    state.persistenceHookInstalled = true;
+    return { installed: true, reason: 'wrapped real Emscripten FS.syncfs' };
+  }).catch(error => ({ installed: false, reason: String(error) }));
 }
 
 function percentile(values, q) {
@@ -150,6 +247,7 @@ async function main() {
   const newGameMessage = await newGameSeen;
   const bootMs = Number((now() - bootStarted).toFixed(2));
   clearTimeout(newGameTimer);
+  await installPersistenceInstrumentation();
   const display = await page.evaluate(() => {
     const canvas = document.querySelector('canvas'), rect = canvas?.getBoundingClientRect(), style = canvas ? getComputedStyle(canvas) : null;
     return { language: document.documentElement.lang, viewport: { width: innerWidth, height: innerHeight, dpr: devicePixelRatio },
@@ -184,7 +282,7 @@ async function main() {
   await pause(500);
   const movementMs = Number((now() - movementStarted).toFixed(2));
   const end = await page.evaluate(() => ({ frame: window.__cddaMeasure.frames.length, task: window.__cddaMeasure.tasks.length, key: window.__cddaMeasure.keys.length }));
-  const after = await quickSave('after-movement');
+  const after = await quickSave('after-movement', before);
   await page.screenshot({ path: path.join(out, 'after-long-press-page.png'), fullPage: true, animations: 'disabled' }).catch(error => consoleLog.push({ type: 'screenshot-error', text: String(error) }));
   await page.waitForSelector('#fixture-finished', { timeout: 220000 });
   await page.waitForTimeout(300);
@@ -226,6 +324,7 @@ async function main() {
   });
   const result = { schemaVersion: 1, measuredAt: new Date().toISOString(), targetUrl: baseUrl, browserVersion: browser.version(),
     nodeVersion: process.version, scenario, renderer, bundleFiles, bootToNewGameMs: bootMs, newGameMessage, display,
+    persistenceInstrumentation,
     movement: { elapsedMs: movementMs, beforeSave: before, afterSave: after,
       turnDelta: before.available && after.available && Number.isFinite(before.turn) && Number.isFinite(after.turn) ? after.turn - before.turn : null,
       changedPositionFields: before.available && after.available ? Object.keys(after.position || {}).filter(key => JSON.stringify(before.position?.[key]) !== JSON.stringify(after.position?.[key])) : [],
@@ -243,7 +342,11 @@ async function main() {
   const summary = ['# CDDA Playwright browser measurement', '', '- Target: ' + baseUrl, '- Captured: ' + result.measuredAt,
     '- Scenario/renderer: ' + scenario + ' / ' + renderer, '- Browser version: ' + result.browserVersion,
     '- Boot to new-game log: ' + bootMs + ' ms', '- Canvas: ' + JSON.stringify(display.canvas),
-    '- HTML Terminus font check: ' + display.fonts.terminusCheck, '- Movement: ' + movementText, '- Reading result: ' + reading,
+    '- HTML Terminus font check: ' + display.fonts.terminusCheck, '- Movement: ' + movementText,
+    '- F5 to save-file update ms (before/after): ' + [result.movement.beforeSave?.saveTiming?.f5ToFileUpdateMs, result.movement.afterSave?.saveTiming?.f5ToFileUpdateMs].join(' / '),
+    '- IDBFS sync hook: ' + JSON.stringify(persistenceInstrumentation) + '; post-movement syncs: ' + JSON.stringify(result.movement.afterSave?.saveTiming?.idbfsSyncsAfterCommand || []),
+    '- Save-frame gaps: ' + JSON.stringify(result.movement.afterSave?.saveTiming?.frameEffects || {}),
+    '- Reading result: ' + reading,
     '- Movement frame p50/p95/p99/max ms: ' + [f.p50, f.p95, f.p99, f.max].join(' / '),
     '- Movement frame gaps >50/>100/>250 ms: ' + [f.over50, f.over100, f.over250].join(' / '),
     '- Input-to-next-frame p50/p95/max ms: ' + [m.keydownToNextFrameMs.p50, m.keydownToNextFrameMs.p95, m.keydownToNextFrameMs.max].join(' / '),
