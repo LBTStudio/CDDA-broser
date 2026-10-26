@@ -402,14 +402,24 @@ async function main() {
   await page.keyboard.down('l');
   for (let i = 0; i < 18; i++) { await pause(80); await page.keyboard.down('l'); }
   await page.keyboard.up('l');
-  await pause(500);
-  const movementMs = Number((now() - movementStarted).toFixed(2));
+  const keyUpAt = now();
+  const keyHoldElapsedMs = Number((keyUpAt - movementStarted).toFixed(2));
+  // Let the event loop drain briefly, save immediately after key release, then
+  // save again after a quiet 500ms interval to detect residual queued movement.
+  await pause(100);
   const end = await page.evaluate(() => {
     const state = window.__cddaMeasure;
     state.stopFrameMonitor();
     return { at: performance.now(), task: state.tasks.length, key: state.keys.length, frameTimes: state.frameTimes.slice() };
   });
-  const after = await quickSave('after-movement', before);
+  const after = await quickSave('after-keyup', before);
+  await pause(500);
+  const afterSettle = await quickSave('after-keyup-settle', after);
+  const postReleaseTurnDelta = after.available && afterSettle.available &&
+    Number.isFinite(after.turn) && Number.isFinite(afterSettle.turn) ? afterSettle.turn - after.turn : null;
+  const postReleasePositionFields = after.available && afterSettle.available
+    ? Object.keys(afterSettle.position || {}).filter(key => JSON.stringify(after.position?.[key]) !== JSON.stringify(afterSettle.position?.[key]))
+    : [];
   await page.screenshot({ path: path.join(out, 'after-long-press-page.png'), fullPage: true, animations: 'disabled' }).catch(error => consoleLog.push({ type: 'screenshot-error', text: String(error) }));
 
   const runtime = await page.evaluate(marks => {
@@ -485,10 +495,11 @@ async function main() {
   const result = { schemaVersion: 1, measuredAt: new Date().toISOString(), targetUrl: baseUrl, browserVersion: browser.version(),
     nodeVersion: process.version, scenario, renderer, population, bundleFiles, bootToNewGameMs: bootMs, newGameMessage, display,
     persistenceInstrumentation,
-    movement: { elapsedMs: movementMs, beforeSave: before, afterSave: after,
+    movement: { elapsedMs: keyHoldElapsedMs, keyUpAtMs: Number(keyUpAt.toFixed(2)), beforeSave: before, afterSave: after,
+      afterSettleSave: afterSettle, postReleaseTurnDelta, postReleasePositionFields,
       turnDelta: before.available && after.available && Number.isFinite(before.turn) && Number.isFinite(after.turn) ? after.turn - before.turn : null,
       changedPositionFields: before.available && after.available ? Object.keys(after.position || {}).filter(key => JSON.stringify(before.position?.[key]) !== JSON.stringify(after.position?.[key])) : [],
-      note: 'Missing save snapshots are unavailable, not zero movement.' },
+      note: 'Movement delta is based on save snapshots. postReleaseTurnDelta compares saves immediately after keyup and after a 500ms quiet interval.' },
     runtime, visualScaleComparison, fixture: fixtureResult ? { mode: fixtureResult.mode, variant: fixtureResult.variant, renderer: fixtureResult.renderer,
       heapBytes: fixtureResult.heap, error: fixtureResult.error || '', reading: fixtureResult.reading || null,
       savedFiles, savedGameState,
@@ -504,6 +515,9 @@ async function main() {
     '- Scenario/renderer: ' + scenario + ' / ' + renderer, '- Browser version: ' + result.browserVersion,
     '- Boot to new-game log: ' + bootMs + ' ms', '- Canvas: ' + JSON.stringify(display.canvas),
     '- HTML Terminus font check: ' + display.fonts.terminusCheck, '- Movement: ' + movementText,
+    '- Key hold wall time ms: ' + result.movement.elapsedMs + '; post-release turn delta after quiet interval: ' +
+      (result.movement.postReleaseTurnDelta ?? 'unavailable') + '; position fields changed after quiet interval: ' +
+      (result.movement.postReleasePositionFields.join(', ') || 'none observed'),
     '- Pre-movement save stability: ' + JSON.stringify(result.movement.beforeSave?.saveTiming || {}),
     '- F5 to observed save-file update ms: ' + result.movement.afterSave?.saveTiming?.f5ToFileUpdateMs + (result.movement.afterSave?.saveTiming?.fileUpdated ? '' : ' (no file update observed; censored at timeout)'),
     '- F5→IDBFS start/end ms: ' + JSON.stringify({start:result.movement.afterSave?.saveTiming?.f5ToIdbfsSyncStartMs,complete:result.movement.afterSave?.saveTiming?.f5ToIdbfsSyncCompleteMs,settled:result.movement.afterSave?.saveTiming?.persistenceAfterSyncWait}),
