@@ -80,6 +80,9 @@ python3 "$SCRIPT_DIR/skip_empty_monster_death_sweep.py" "$PWD/src/creature_track
 echo "[PATCH] vectorize-large-vehicle-submaps (source-anchored)"
 python3 "$SCRIPT_DIR/optimize_vehicle_submap_collection.py" "$PWD/src/map.cpp"
 
+echo "[PATCH] vehicle-turn-worklist (source-anchored)"
+python3 "$SCRIPT_DIR/optimize_vehicle_turn_worklist.py" "$PWD/src/map.cpp"
+
 echo "[PATCH] fire-neighbor-stack-buffer (source-anchored)"
 python3 "$SCRIPT_DIR/optimize_fire_neighbor_buffer.py" "$PWD/src/map_field.cpp"
 
@@ -111,6 +114,7 @@ grep -q "CDDA_ON_IDBFS_MOUNTED"                    src/main.cpp
 grep -q "pagehide"                                 src/main.cpp
 grep -q "CDDA_SET_TEXT_INPUT"                      src/sdltiles.cpp
 grep -q "cdda_web_wants_ime"                       src/sdltiles.cpp
+grep -q "for_each_unique_vehicle_turn_work_item" src/map.cpp
 grep -q "web_data_cache_root"                      src/json_loader.cpp
 grep -q "assume_immutable_root"                    src/flexbuffer_cache.cpp
 
@@ -300,6 +304,7 @@ python3 "$SCRIPT_DIR/../bench/nearby_items_hash_test.py" "$PWD"
 python3 "$SCRIPT_DIR/../bench/mapbuffer_fixed_array_test.py" "$PWD"
 python3 "$SCRIPT_DIR/../bench/visible_creature_position_test.py" "$PWD"
 python3 "$SCRIPT_DIR/../bench/large_entity_churn_test.py" "$PWD"
+python3 "$SCRIPT_DIR/../bench/vehicle_turn_worklist_test.py" "$PWD"
 python3 "$SCRIPT_DIR/../bench/fire_neighbor_buffer_test.py" "$PWD"
 python3 "$SCRIPT_DIR/../bench/gas_spread_buffer_test.py" "$PWD"
 python3 "$SCRIPT_DIR/../bench/wind_blocker_neighbor_reuse_test.py" "$PWD"
@@ -326,4 +331,4 @@ bash "$SCRIPT_DIR/../bench/run_all_status_test.sh"
 python3 "$SCRIPT_DIR/../bench/link_cache_fingerprint_test.py"
 python3 "$SCRIPT_DIR/../bench/workflow_safety_test.py"
 
-echo "[VERIFY] OK: パッチ適用・ランタイム・IME・保存・MOD ZIP資源制限・活動ペーシング・オフライン依存・ベンチ終了状態・リンクキャッシュ・ワークフロー同期/公開ガードの回帰テストが合格"
+echo "[VERIFY] OK: パッチ適用・車両ターンworklist・ランタイム・IME・保存・MOD ZIP資源制限・活動ペーシング・オフライン依存・ベンチ終了状態・リンクキャッシュ・ワークフロー同期/公開ガードの回帰テストが合格"
