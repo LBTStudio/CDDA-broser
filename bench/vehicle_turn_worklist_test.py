@@ -97,10 +97,41 @@ new_zone_cache = """    // Vehicle movement marks loot-zone positions dirty. Do 
     }"""
 assert old_zone_cache in old_turn, "upstream vehicle-zone refresh block changed"
 assert new_zone_cache in new_turn, "dirty-guarded vehicle-zone refresh missing"
-normalized_turn = new_turn.replace(new_block, old_block, 1).replace(
+# The browser-only redraw batching is allowed to wrap the entry/exit of
+# map::vehmove; normalize those two blocks as well before checking the rest.
+new_entry = """void map::vehmove()
+{
+#if defined(EMSCRIPTEN) || defined(__EMSCRIPTEN__)
+    const bool cdda_web_outermost_vehicle_move = !cdda_web_vehicle_move_batch_active;
+    if( cdda_web_outermost_vehicle_move ) {
+        cdda_web_vehicle_move_redraw_pending = false;
+    }
+    cdda_web_vehicle_move_batch_active = true;
+#endif
+    // give vehicles movement points"""
+old_entry = """void map::vehmove()
+{
+    // give vehicles movement points"""
+assert new_entry in new_turn, "browser vehicle-move entry batch missing"
+normalized_turn = new_turn.replace(new_entry, old_entry, 1)
+new_zone_with_flush = new_zone_cache + """
+
+#if defined(EMSCRIPTEN) || defined(__EMSCRIPTEN__)
+    cdda_web_vehicle_move_batch_active = !cdda_web_outermost_vehicle_move;
+    if( cdda_web_outermost_vehicle_move && cdda_web_vehicle_move_redraw_pending ) {
+        cdda_web_vehicle_move_redraw_pending = false;
+        // The browser cannot paint synchronously between vehicle substeps.
+        // Present the final board once, after all movement and zone updates.
+        ui_manager::redraw_invalidated();
+        refresh_display();
+    }
+#endif"""
+assert new_zone_with_flush in normalized_turn, "browser vehicle-move exit batch missing"
+normalized_turn = normalized_turn.replace(new_zone_with_flush, old_zone_cache, 1)
+normalized_turn = normalized_turn.replace(new_block, old_block, 1).replace(
     new_zone_cache, old_zone_cache, 1)
 assert normalized_turn == old_turn, (
-    "map::vehmove changed outside the approved worklist / zone-cache blocks")
+    "map::vehmove changed outside the approved worklist, zone-cache, and redraw-batch blocks")
 assert "check_vehicle_zones( get_abs_sub().z() )" in new_turn
 assert "zone_manager::get_manager().cache_vzones( this );" in new_zone_cache
 
