@@ -247,6 +247,18 @@ async function main() {
   context = await browser.newContext({ viewport: { width: 1365, height: 768 }, deviceScaleFactor: 1 });
   await context.tracing.start({ screenshots: true, snapshots: true, sources: false }); tracing = true;
   page = await context.newPage();
+  let fixtureScreenshotSequence = 0;
+  const fixtureScreens = [];
+  await page.exposeBinding('__cddaCaptureFixtureScreenshot', async (source, label) => {
+    const normalized = String(label || 'fixture').toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '') || 'fixture';
+    const filename = normalized === 'before-interruption'
+      ? 'before-interruption.png'
+      : 'fixture-' + normalized + '-' + (++fixtureScreenshotSequence) + '.png';
+    const destination = path.join(out, filename);
+    await source.page.screenshot({ path: destination, fullPage: true, animations: 'disabled', timeout: 30000 });
+    fixtureScreens.push({ file: filename, bytes: fs.statSync(destination).size, source: 'Playwright page screenshot' });
+    return filename;
+  });
   await page.addInitScript(() => {
     const state = window.__cddaMeasure = { frameTimes: [], tasks: [], keys: [], persistenceSyncs: [], persistenceSyncPending: 0 };
     const original = window.requestAnimationFrame.bind(window);
@@ -292,49 +304,65 @@ async function main() {
   });
   await page.screenshot({ path: path.join(out, 'game-start-page.png'), fullPage: true, animations: 'disabled' }).catch(error => consoleLog.push({ type: 'screenshot-error', text: String(error) }));
 
-  // Let the activity fixture finish before injecting movement keys. Mixing a
-  // movement test into the fixture's pre-read idle window can move the player
-  // away from the book/light and invalidate the reading benchmark.
+  // Wait until the fixture's save/persistence work is stable; don't inject
+  // movement keys while an earlier F5 operation still owns the game loop.
   await page.waitForSelector('#fixture-finished', { state: 'attached', timeout: 260000 });
   await page.waitForTimeout(300);
+  const stableBefore = await waitForStableSave(30000);
+  const before = await snapshotSave();
+  before.saveTiming = { preMovementSaveSettled: stableBefore.settled, preMovementSaveWaitMs: stableBefore.elapsedMs,
+    persistenceFlags: stableBefore.flags };
+  fs.writeFileSync(path.join(out, 'before-movement-save-snapshot.json'), JSON.stringify(before, null, 2));
   await page.locator('#canvas').focus().catch(() => {});
-  const before = await quickSave('before-movement');
 
-  // Controlled compositor A/B: keep the same rendered game frame and change
-  // only the CSS interpolation used when the canvas is scaled by the browser.
-  // This does not touch CDDA's renderer, settings, or save data.
-  const imageRenderingInline = await page.locator('#canvas').evaluate(el => el.style.imageRendering);
-  await page.locator('#canvas').evaluate(el => { el.style.imageRendering = 'pixelated'; });
-  await page.screenshot({ path: path.join(out, 'text-scale-pixelated.png'), fullPage: true, animations: 'disabled' });
-  await page.locator('#canvas').evaluate(el => { el.style.imageRendering = 'auto'; });
-  await page.screenshot({ path: path.join(out, 'text-scale-auto.png'), fullPage: true, animations: 'disabled' });
-  await page.locator('#canvas').evaluate((el, value) => { el.style.imageRendering = value; }, imageRenderingInline);
+  // Capture the actual compositor output through Playwright; WebGL
+  // canvas.toDataURL() can be black when preserveDrawingBuffer is disabled.
+  // Both A/B screenshots use this same static capture, scaled to 75%.
+  const canvasSource = path.join(out, 'canvas-scale-source.png');
+  await page.locator('#canvas').screenshot({ path: canvasSource, animations: 'disabled', timeout: 30000 });
+  const sourceData = fs.readFileSync(canvasSource).toString('base64');
+  const comparisonPage = await context.newPage();
+  await comparisonPage.setContent('<!doctype html><meta charset="utf-8"><style>html,body{margin:0;background:#111;display:grid;place-items:center;width:100%;height:100%;overflow:hidden}img{width:1024px;height:576px;object-fit:fill}</style><img id="comparison" alt="static game canvas snapshot" src="data:image/png;base64,' + sourceData + '">');
+  await comparisonPage.locator('#comparison').evaluate(el => el.style.setProperty('image-rendering', 'pixelated', 'important'));
+  await comparisonPage.screenshot({ path: path.join(out, 'text-scale-pixelated.png'), animations: 'disabled' });
+  await comparisonPage.locator('#comparison').evaluate(el => el.style.setProperty('image-rendering', 'auto', 'important'));
+  await comparisonPage.screenshot({ path: path.join(out, 'text-scale-auto.png'), animations: 'disabled' });
   const visualScaleComparison = {
-    originalInlineValue: imageRenderingInline || '',
-    captured: ['text-scale-pixelated.png', 'text-scale-auto.png'],
-    note: 'Same game frame and canvas pixels; only CSS image-rendering interpolation differs. Review visually.'
+    source: path.basename(canvasSource), captured: ['text-scale-pixelated.png', 'text-scale-auto.png'],
+    viewportScale: 1024 / 1365,
+    note: 'Both screenshots display the same static canvas screenshot at 75% scale; only CSS interpolation differs.'
   };
-  const start = await page.evaluate(() => ({ frame: window.__cddaMeasure.frames.length, task: window.__cddaMeasure.tasks.length, key: window.__cddaMeasure.keys.length }));
+  await comparisonPage.close();
+  const start = await page.evaluate(() => ({ at: performance.now(), task: window.__cddaMeasure.tasks.length, key: window.__cddaMeasure.keys.length }));
   const movementStarted = now();
   await page.keyboard.down('l');
   for (let i = 0; i < 18; i++) { await pause(80); await page.keyboard.down('l'); }
   await page.keyboard.up('l');
   await pause(500);
   const movementMs = Number((now() - movementStarted).toFixed(2));
-  const end = await page.evaluate(() => ({ frame: window.__cddaMeasure.frames.length, task: window.__cddaMeasure.tasks.length, key: window.__cddaMeasure.keys.length }));
+  const end = await page.evaluate(() => ({ at: performance.now(), task: window.__cddaMeasure.tasks.length, key: window.__cddaMeasure.keys.length }));
   const after = await quickSave('after-movement', before);
   await page.screenshot({ path: path.join(out, 'after-long-press-page.png'), fullPage: true, animations: 'disabled' }).catch(error => consoleLog.push({ type: 'screenshot-error', text: String(error) }));
 
   const runtime = await page.evaluate(marks => {
-    const state = window.__cddaMeasure, frames = state.frames, tasks = state.tasks, keys = state.keys;
-    const movementFrames = frames.slice(marks.start.frame, marks.end.frame);
-    const movementTasks = tasks.slice(marks.start.task, marks.end.task);
-    const movementKeys = keys.slice(marks.start.key, marks.end.key).filter(item => item.key === 'l' || item.key === 'L');
+    const state = window.__cddaMeasure, tasks = state.tasks, keys = state.keys;
+    const intervalsInRange = (fromAt, toAt) => {
+      const intervals = [];
+      for (let i = 1; i < state.frameTimes.length; i++) {
+        const from = state.frameTimes[i - 1], to = state.frameTimes[i];
+        if (from >= fromAt && to <= toAt) intervals.push(to - from);
+      }
+      return intervals;
+    };
+    const wholeFrames = intervalsInRange(-Infinity, performance.now());
+    const movementFrames = intervalsInRange(marks.start.at, marks.end.at);
+    const movementTasks = tasks.filter(task => task.start >= marks.start.at && task.start <= marks.end.at);
+    const movementKeys = keys.filter(item => item.at >= marks.start.at && item.at <= marks.end.at && (item.key === 'l' || item.key === 'L'));
     const latency = movementKeys.filter(item => Number.isFinite(item.frameMs)).map(item => item.frameMs);
-    return { frameCount: frames.length, frameIntervalMs: frameStatsInPage(frames),
+    return { rafIntervalCount: wholeFrames.length, rafCallbackIntervalMs: frameStatsInPage(wholeFrames),
       longTaskCount: tasks.length, longTaskMs: { total: Number(tasks.reduce((a, b) => a + b.duration, 0).toFixed(2)),
         max: tasks.length ? Number(Math.max(...tasks.map(t => t.duration)).toFixed(2)) : null, over100: tasks.filter(t => t.duration > 100).length },
-      movement: { frameIntervalMs: frameStatsInPage(movementFrames), longTaskCount: movementTasks.length,
+      movement: { rafIntervalCount: movementFrames.length, rafCallbackIntervalMs: frameStatsInPage(movementFrames), longTaskCount: movementTasks.length,
         longTaskTotalMs: Number(movementTasks.reduce((a, b) => a + b.duration, 0).toFixed(2)),
         keyEvents: movementKeys.length, keydowns: movementKeys.filter(item => item.type !== 'keyup').length,
         keydownToNextFrameMs: { p50: percentileInPage(latency, .50), p95: percentileInPage(latency, .95), max: latency.length ? Number(Math.max(...latency).toFixed(2)) : null } },
@@ -351,9 +379,11 @@ async function main() {
     return { name, bytes: bytes.length, sha256: crypto.createHash('sha256').update(bytes).digest('hex') };
   });
   let preInterruptScreenshot = null;
-  if (fixtureResult?.beforeInterrupt?.startsWith('data:image/png;base64,')) {
-    preInterruptScreenshot = path.join(out, 'before-interruption.png');
-    fs.writeFileSync(preInterruptScreenshot, Buffer.from(fixtureResult.beforeInterrupt.slice(22), 'base64'));
+  if (typeof fixtureResult?.beforeInterrupt === 'string' && /^[a-z0-9_-]+\.png$/i.test(fixtureResult.beforeInterrupt)) {
+    preInterruptScreenshot = fixtureResult.beforeInterrupt;
+  } else if (fixtureResult?.beforeInterrupt?.startsWith('data:image/png;base64,')) {
+    preInterruptScreenshot = 'before-interruption.png';
+    fs.writeFileSync(path.join(out, preInterruptScreenshot), Buffer.from(fixtureResult.beforeInterrupt.slice(22), 'base64'));
   }
   const assets = ['index.html', 'cataclysm-tiles.js', 'cataclysm-tiles.wasm', 'cataclysm-tiles.data', 'cataclysm-tiles.data.js', 'Terminus.ttf', 'favicon.ico'];
   const bundleFiles = assets.map(name => {
@@ -370,29 +400,32 @@ async function main() {
     runtime, visualScaleComparison, fixture: fixtureResult ? { mode: fixtureResult.mode, variant: fixtureResult.variant, renderer: fixtureResult.renderer,
       heapBytes: fixtureResult.heap, error: fixtureResult.error || '', reading: fixtureResult.reading || null, savedFiles,
       beforeInterruptScreenshot: preInterruptScreenshot ? path.basename(preInterruptScreenshot) : null } : null,
-    capturedScreens: captured.screens, captureResultReceived: !!fixtureResult, captureOther: captured.other, pageErrors, requestFailures, console: consoleLog };
+    capturedScreens: captured.screens, fixtureScreens, captureResultReceived: !!fixtureResult, captureOther: captured.other, pageErrors, requestFailures, console: consoleLog };
   fs.writeFileSync(path.join(out, 'measurement.json'), JSON.stringify(result, null, 2));
   const movementText = result.movement.turnDelta === null ? 'unavailable (no parseable save delta)' :
     'turn delta ' + result.movement.turnDelta + '; position fields changed: ' + (result.movement.changedPositionFields.join(', ') || 'none observed');
   const reading = result.fixture?.reading ? 'turns ' + result.fixture.reading.gameSecondsBetweenSaves + '; observation ' +
     Math.round(result.fixture.reading.observationMs) + ' ms; reached level 5: ' + result.fixture.reading.reachedLevel5 : 'not applicable';
-  const m = runtime.movement, f = m.frameIntervalMs;
+  const m = runtime.movement, f = m.rafCallbackIntervalMs;
   const summary = ['# CDDA Playwright browser measurement', '', '- Target: ' + baseUrl, '- Captured: ' + result.measuredAt,
     '- Scenario/renderer: ' + scenario + ' / ' + renderer, '- Browser version: ' + result.browserVersion,
     '- Boot to new-game log: ' + bootMs + ' ms', '- Canvas: ' + JSON.stringify(display.canvas),
     '- HTML Terminus font check: ' + display.fonts.terminusCheck, '- Movement: ' + movementText,
-    '- F5 to save-file update ms (before/after): ' + [result.movement.beforeSave?.saveTiming?.f5ToFileUpdateMs, result.movement.afterSave?.saveTiming?.f5ToFileUpdateMs].join(' / '),
+    '- Pre-movement save stability: ' + JSON.stringify(result.movement.beforeSave?.saveTiming || {}),
+    '- F5 to observed save-file update ms: ' + result.movement.afterSave?.saveTiming?.f5ToFileUpdateMs + (result.movement.afterSave?.saveTiming?.fileUpdated ? '' : ' (no file update observed; censored at timeout)'),
     '- IDBFS sync hook: ' + JSON.stringify(persistenceInstrumentation) + '; post-movement syncs: ' + JSON.stringify(result.movement.afterSave?.saveTiming?.idbfsSyncsAfterCommand || []),
-    '- Save-frame gaps: ' + JSON.stringify(result.movement.afterSave?.saveTiming?.frameEffects || {}),
+    '- Save RAF intervals/Long Tasks: ' + JSON.stringify(result.movement.afterSave?.saveTiming?.frameEffects || {}),
     '- Reading result: ' + reading,
-    '- Movement frame p50/p95/p99/max ms: ' + [f.p50, f.p95, f.p99, f.max].join(' / '),
-    '- Movement frame gaps >50/>100/>250 ms: ' + [f.over50, f.over100, f.over250].join(' / '),
+    '- Movement RAF callback intervals p50/p95/p99/max ms: ' + [f.p50, f.p95, f.p99, f.max].join(' / '),
+    '- Movement RAF callback intervals >50/>100/>250 ms: ' + [f.over50, f.over100, f.over250].join(' / '),
     '- Input-to-next-frame p50/p95/max ms: ' + [m.keydownToNextFrameMs.p50, m.keydownToNextFrameMs.p95, m.keydownToNextFrameMs.max].join(' / '),
     '- Whole-run Long Tasks: ' + runtime.longTaskCount + ', total ' + runtime.longTaskMs.total + ' ms, max ' + runtime.longTaskMs.max + ' ms',
     '- Canvas captures: ' + captured.screens.length + '; page errors: ' + pageErrors.length,
-    '- Text scaling A/B screenshots: text-scale-pixelated.png vs text-scale-auto.png (same frame, CSS interpolation only)',
+    '- Text scaling A/B: same static canvas image at 75% CSS size, pixelated vs auto interpolation',
+    '- Playwright fixture screenshots: ' + fixtureScreens.length,
     '', '## Interpretation limits', '', '- GitHub Actions values are not a physical 4GB Chromebook benchmark.',
-    '- RAF/Long Task time includes browser runtime, game processing, drawing, and measurement overhead; it is not pure turn CPU time.',
+    '- RAF intervals are callback-to-callback timing, not a guaranteed display-FPS metric; idle waits and activity modals can create long gaps.',
+    '- Long Task time includes browser runtime, game processing, drawing, and measurement overhead; it is not pure turn CPU time.',
     '- JS heap is not Wasm heap or total browser RAM; RSS/PSS is sampled separately.',
     '- Movement is confirmed only if before/after save data is available.', '- Canvas images require visual review; UTF-8/font resource success does not prove glyph correctness.',
     '', 'Full JSON: measurement.json', ''].join('\n');
