@@ -26,14 +26,27 @@ assert.equal(disconnected.snapshot().browserDisconnectCount, 1);
 assert.throws(() => disconnected.assertNoBrowserFailure(), /Chromium browser disconnected unexpectedly/);
 
 assert.equal(ACTIVE_MOVEMENT_STALL_LIMIT_MS, 5000);
-assert.doesNotThrow(() => assertMovementResponsive({ count: 4, max: 4999.99 }));
+assert.doesNotThrow(() => assertMovementResponsive({ count: 4, max: 4999.99, tickCount: 4 }));
 assert.throws(
-  () => assertMovementResponsive({ count: 4, max: ACTIVE_MOVEMENT_STALL_LIMIT_MS }),
+  () => assertMovementResponsive({ count: 4, max: ACTIVE_MOVEMENT_STALL_LIMIT_MS, tickCount: 4 }),
   /Severe main-thread stall during active movement/
 );
 assert.throws(
-  () => assertMovementResponsive({ count: 0, max: null }),
+  () => assertMovementResponsive({ count: 0, max: null, tickCount: 0 }),
   /No RAF intervals observed/
 );
+assert.throws(
+  () => assertMovementResponsive({ count: 1, max: 100, tickCount: 0 }),
+  /No RAF intervals observed/
+);
+
+// Protect the measurement boundary logic: include the pre-first-frame and
+// post-last-frame gaps, and expose the number of actual RAF callbacks.
+import fs from 'node:fs';
+const runnerSource = fs.readFileSync(new URL('./playwright_game_measurement.mjs', import.meta.url), 'utf8');
+assert.match(runnerSource, /state\.frameTimes\.push\(state\.frameMonitorStartAt\)/);
+assert.match(runnerSource, /frameTimes: \[\.\.\.state\.frameTimes, at\]/);
+assert.match(runnerSource, /marks\.start\.frameStartAt/);
+assert.match(runnerSource, /tickCount: marks\.end\.frameMonitorTickCount/);
 
 console.log('PASS browser health guards: persistent crash failure, severe movement stall, and invalid RAF samples');
