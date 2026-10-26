@@ -3,7 +3,7 @@
 ## What the runtime measurement now fails on
 
 - Any Chromium page-crash event and any unexpected browser-process disconnect are retained in the health state and checked again after the gameplay measurement. The event handling no longer relies solely on rejecting the startup promise, which may already have resolved.
-- The active movement window must yield at least one valid independent RAF interval.
+- The active movement window must yield at least one real independent RAF callback. The interval calculation includes start and end boundary samples, so it can count a pause immediately before the first frame or immediately before measurement ends.
 - A maximum RAF-monitor interval of 5,000 ms or longer during active movement fails the run as a severe main-thread stall. The measured interval and browser failure history are included in success output; failure output keeps the last runtime statistics and browser failure history for diagnosis.
 - Existing unhandled page-error checks remain fatal.
 
