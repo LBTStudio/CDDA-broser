@@ -264,7 +264,7 @@ async function main() {
     fs.writeFileSync(path.join(out, 'fixture-result-full.json'), JSON.stringify(payload));
     return true;
   });
-  await page.addInitScript(() => {}
+  await page.addInitScript(() => {
     const state = window.__cddaMeasure = { frameTimes: [], tasks: [], keys: [], persistenceSyncs: [], persistenceSyncPending: 0 };
     const original = window.requestAnimationFrame.bind(window);
     window.requestAnimationFrame = callback => original(time => {
