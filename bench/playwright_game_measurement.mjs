@@ -98,7 +98,7 @@ async function snapshotSave() {
 async function quickSave(tag, previous = null) {
   const beforeCommand = previous || await snapshotSave();
   const syncStartCount = await page.evaluate(() => window.__cddaMeasure?.persistenceSyncs?.length || 0);
-  const marks = await page.evaluate(() => ({ frame: window.__cddaMeasure.frames.length, task: window.__cddaMeasure.tasks.length }));
+  const marks = await page.evaluate(() => ({ at: performance.now(), task: window.__cddaMeasure.tasks.length }));
   const started = now();
   await page.keyboard.press('F5').catch(error => consoleLog.push({ type: 'save-key-error', text: String(error) }));
   let value = await snapshotSave();
@@ -111,7 +111,7 @@ async function quickSave(tag, previous = null) {
       JSON.stringify(snapshot.position) !== JSON.stringify(beforeCommand.position);
   };
   while (!changed(value) && now() - started < 7000) { await pause(250); value = await snapshotSave(); }
-  const fileUpdateElapsedMs = Number((now() - started).toFixed(2));
+  const elapsedMs = Number((now() - started).toFixed(2));
   const fileUpdated = changed(value);
   const syncWaitStarted = now();
   let syncWaitTimedOut = false;
@@ -127,16 +127,20 @@ async function quickSave(tag, previous = null) {
     syncStartCount);
   const syncWaitElapsedMs = Number((now() - syncWaitStarted).toFixed(2));
   const frameEffects = await page.evaluate(m => {
-    const state = window.__cddaMeasure, frames = state.frames.slice(m.frame), tasks = state.tasks.slice(m.task);
+    const state = window.__cddaMeasure, tasks = state.tasks.slice(m.task), intervals = [];
+    for (let i = 1; i < state.frameTimes.length; i++) {
+      const from = state.frameTimes[i - 1], to = state.frameTimes[i];
+      if (from >= m.at && to <= performance.now()) intervals.push(to - from);
+    }
     const percentile = (values, q) => {
       const sorted = [...values].sort((a,b) => a-b);
       return sorted.length ? Number(sorted[Math.min(sorted.length - 1, Math.ceil(q * sorted.length) - 1)].toFixed(2)) : null;
     };
     return {
-      frameGapCount: frames.length, frameGapP95Ms: percentile(frames, .95),
-      frameGapMaxMs: frames.length ? Number(Math.max(...frames).toFixed(2)) : null,
-      frameGapsOver50Ms: frames.filter(v => v > 50).length,
-      frameGapsOver100Ms: frames.filter(v => v > 100).length,
+      rafIntervalsMeasured: intervals.length, rafIntervalP95Ms: percentile(intervals, .95),
+      rafIntervalMaxMs: intervals.length ? Number(Math.max(...intervals).toFixed(2)) : null,
+      rafIntervalsOver50Ms: intervals.filter(v => v > 50).length,
+      rafIntervalsOver100Ms: intervals.filter(v => v > 100).length,
       longTaskCount: tasks.length,
       longTaskTotalMs: Number(tasks.reduce((sum, entry) => sum + entry.duration, 0).toFixed(2)),
       longTaskMaxMs: tasks.length ? Number(Math.max(...tasks.map(entry => entry.duration)).toFixed(2)) : null
@@ -144,7 +148,8 @@ async function quickSave(tag, previous = null) {
   }, marks);
   if (!value || typeof value !== 'object') value = { available: false, reason: 'no save snapshot' };
   value.saveTiming = {
-    f5ToFileUpdateMs: fileUpdateElapsedMs,
+    f5ToFileUpdateMs: fileUpdated ? elapsedMs : null,
+    f5NoFileUpdateObservedWithinMs: fileUpdated ? null : elapsedMs,
     fileUpdated,
     persistenceInstrumentationInstalled: persistenceInstrumentation.installed,
     idbfsSyncsAfterCommand: persistentSyncs,
@@ -154,6 +159,31 @@ async function quickSave(tag, previous = null) {
   };
   fs.writeFileSync(path.join(out, tag + '-save-snapshot.json'), JSON.stringify(value, null, 2));
   return value;
+}
+
+async function waitForStableSave(timeoutMs = 20000) {
+  const started = now();
+  let lastSignature = null, stable = 0, value = null, lastFlags = {};
+  while (now() - started < timeoutMs) {
+    value = await snapshotSave();
+    lastFlags = await page.evaluate(() => ({
+      pendingSyncs: window.__cddaMeasure?.persistenceSyncPending || 0,
+      gameUnsaved: !!window.game_unsaved,
+      persistencePending: !!window.cdda_persistence_pending
+    }));
+    const signature = JSON.stringify(value.available ? {
+      world: value.world, file: value.file, turn: value.turn, activity: value.activity,
+      bytes: value.bytes, mtimeMs: value.mtimeMs, position: value.position
+    } : value);
+    if (value.available && signature === lastSignature && lastFlags.pendingSyncs === 0 &&
+        !lastFlags.gameUnsaved && !lastFlags.persistencePending) {
+      stable++;
+      if (stable >= 2) return { settled: true, elapsedMs: Number((now() - started).toFixed(2)), snapshot: value, flags: lastFlags };
+    } else stable = 0;
+    lastSignature = signature;
+    await pause(500);
+  }
+  return { settled: false, elapsedMs: Number((now() - started).toFixed(2)), snapshot: value, flags: lastFlags };
 }
 
 let persistenceInstrumentation = { installed: false, reason: 'not attempted' };
@@ -166,14 +196,17 @@ async function installPersistenceInstrumentation() {
       return { installed: false, reason: 'Emscripten FS.syncfs or measurement state unavailable' };
     }
     if (state.persistenceHookInstalled) return { installed: true, reason: 'already installed' };
-    state.persistenceSyncs = [];
+    state.persistenceSyncs = state.persistenceSyncs || [];
+    state.persistenceSyncPending = state.persistenceSyncPending || 0;
     const originalSyncfs = fs.syncfs;
     fs.syncfs = function(populate, callback) {
       const startedAt = performance.now();
       let settled = false;
+      state.persistenceSyncPending++;
       const finish = error => {
         if (settled) return;
         settled = true;
+        state.persistenceSyncPending = Math.max(0, state.persistenceSyncPending - 1);
         state.persistenceSyncs.push({
           populate: !!populate,
           startedAtMs: Number(startedAt.toFixed(2)),
@@ -215,11 +248,11 @@ async function main() {
   await context.tracing.start({ screenshots: true, snapshots: true, sources: false }); tracing = true;
   page = await context.newPage();
   await page.addInitScript(() => {
-    const state = window.__cddaMeasure = { frames: [], tasks: [], keys: [] }; let lastFrame = null;
+    const state = window.__cddaMeasure = { frameTimes: [], tasks: [], keys: [], persistenceSyncs: [], persistenceSyncPending: 0 };
     const original = window.requestAnimationFrame.bind(window);
     window.requestAnimationFrame = callback => original(time => {
-      if (lastFrame !== null && state.frames.length < 30000) state.frames.push(time - lastFrame);
-      lastFrame = time; callback(time);
+      if (state.frameTimes.length < 30000) state.frameTimes.push(time);
+      callback(time);
     });
     window.addEventListener('keydown', event => {
       const item = { key: event.key, repeat: !!event.repeat, at: performance.now(), frameMs: null };
