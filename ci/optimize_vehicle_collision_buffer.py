@@ -3,7 +3,7 @@
 
 Unlike reserving in map::move_vehicle(), this does not allocate at all for
 ordinary collision-free movement. just_detect remains allocation behavior as
-upstream (one candidate can be returned immediately). A 16-entry initial cap
+upstream (one candidate can be returned immediately). A 4-entry initial cap
 limits memory over-reservation for large vehicles with only one hit; vector
 growth remains available for exceptional multi-collision cases.
 """
