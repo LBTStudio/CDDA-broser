@@ -77,7 +77,9 @@ jobs:
     if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
     name: Playwright real-bundle measurement
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # PRs run four renderer comparisons plus four isolated population stress scenarios.
+    # Keep the whole matrix and artifact upload inside one explicit job budget.
+    timeout-minutes: 60
     env:
       CDDA_BASE_URL: ${{ github.event.inputs.base_url || 'https://lbtstudio.github.io/CDDA-broser/' }}
       CDDA_SCENARIO: ${{ github.event.inputs.scenario || 'all' }}
