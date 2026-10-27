@@ -6,7 +6,7 @@ import http from 'node:http';
 import path from 'node:path';
 import { chromium } from 'playwright';
 import { ACTIVE_MOVEMENT_STALL_LIMIT_MS, assertMovementResponsive, createBrowserHealth } from './browser_health.mjs';
-import { classifyRequestFailures, validateActiveRenderer, validateFixtureOutcome } from './measurement_contract.mjs';
+import { classifyRequestFailures, extractWasmHeapSamples, validateActiveRenderer, validateFixtureOutcome } from './measurement_contract.mjs';
 
 const bundle = path.resolve(process.argv[2] || '.');
 const scenario = process.argv[3] || 'read4';
@@ -620,15 +620,27 @@ async function main() {
   const fixtureValidation = validateFixtureOutcome({ scenario, population, renderer, fixtureResult, savedGameState });
   const requestFailureValidation = classifyRequestFailures(requestFailures);
   const activeRendererValidation = validateActiveRenderer({ renderer, consoleMessages: consoleLog });
+  const wasmHeapProfile = extractWasmHeapSamples(consoleLog);
+  const expectedHeapSampleCount = population > 0 ? 30 : 15;
+  const wasmHeapSampleValidation = {
+    ok: wasmHeapProfile.sampleCount >= expectedHeapSampleCount,
+    expectedMinimum: expectedHeapSampleCount, actual: wasmHeapProfile.sampleCount
+  };
+  const webglFallbackWarnings = consoleLog.filter(entry => /Automatic fallback to software WebGL/i.test(String(entry.text || '')));
+  const webglFallback = {
+    measuredPageWarnings: webglFallbackWarnings.filter(entry => entry.phase !== 'reload-restore').length,
+    restorePageWarnings: webglFallbackWarnings.filter(entry => entry.phase === 'reload-restore').length,
+    detectedOnMeasuredPage: webglFallbackWarnings.some(entry => entry.phase !== 'reload-restore')
+  };
   const assets = ['index.html', 'cataclysm-tiles.js', 'cataclysm-tiles.wasm', 'cataclysm-tiles.data', 'cataclysm-tiles.data.js', 'Terminus.ttf', 'favicon.ico'];
   const bundleFiles = assets.map(name => {
     const file = path.join(bundle, name);
     return fs.existsSync(file) ? { name, bytes: fs.statSync(file).size } : { name, missing: true };
   });
-  const result = { schemaVersion: 2, measuredAt: new Date().toISOString(),
+  const result = { schemaVersion: 3, measuredAt: new Date().toISOString(),
     targetUrl: measurementSource.kind === 'published-pages' ? (measurementSource.targetUrl || baseUrl) : null,
     source: measurementSource, fixtureValidation, requestFailureValidation, activeRendererValidation,
-    reloadRestoreValidation, browserVersion: browser.version(),
+    wasmHeapProfile, wasmHeapSampleValidation, webglFallback, reloadRestoreValidation, browserVersion: browser.version(),
     nodeVersion: process.version, scenario, renderer, population, bundleFiles, bootToNewGameMs: bootMs, newGameMessage, display,
     persistenceInstrumentation,
     movement: { elapsedMs: keyHoldElapsedMs, keyUpAtMs: Number(keyUpAt.toFixed(2)), beforeSave: before, afterSave: after,
@@ -673,6 +685,11 @@ async function main() {
     '- Fixture acceptance: ' + (fixtureValidation.ok ? 'PASS' : 'FAIL') + '; failures: ' + JSON.stringify(fixtureValidation.failures),
     '- Active SDL renderer: ' + (activeRendererValidation.ok ? 'PASS' : 'FAIL') +
       '; requested=' + activeRendererValidation.requested + '; actual=' + JSON.stringify(activeRendererValidation.actual),
+    '- Wasm HEAPU8 length samples: ' + wasmHeapProfile.sampleCount + '; initial/peak/final bytes=' +
+      [wasmHeapProfile.initialBytes, wasmHeapProfile.peakBytes, wasmHeapProfile.finalBytes].join('/') +
+      '; growth transitions=' + JSON.stringify(wasmHeapProfile.growthTransitions),
+    '- WebGL software fallback warning: measured page=' + webglFallback.measuredPageWarnings +
+      '; restore page=' + webglFallback.restorePageWarnings,
     '- Save reload/restore: ' + (reloadRestoreValidation.ok ? 'PASS' : 'FAIL') + '; checks: ' + JSON.stringify(reloadRestoreValidation.checks || reloadRestoreValidation.error),
     '- Request failure triage: ' + (requestFailureValidation.ok ? 'PASS' : 'FAIL') + '; allowed: ' + requestFailureValidation.allowed.length + '; unexpected: ' + JSON.stringify(requestFailureValidation.unexpected),
     '- Canvas captures: ' + captured.screens.length + '; page errors: ' + pageErrors.length,
@@ -692,6 +709,7 @@ async function main() {
   if (!fixtureResult) throw new Error('No game fixture result payload');
   if (!fixtureValidation.ok) throw new Error('Real-game fixture acceptance failed: ' + JSON.stringify(fixtureValidation.failures));
   if (!activeRendererValidation.ok) throw new Error('Active SDL renderer mismatch: ' + JSON.stringify(activeRendererValidation.failures));
+  if (!wasmHeapSampleValidation.ok) throw new Error('Wasm heap sampling incomplete: ' + JSON.stringify(wasmHeapSampleValidation));
   if (!requestFailureValidation.ok) throw new Error('Unexpected browser request failures: ' + JSON.stringify(requestFailureValidation.unexpected));
   if (!reloadRestoreValidation.ok) throw new Error('Save reload/restore verification failed: ' + JSON.stringify(reloadRestoreValidation));
   if (pageErrors.length) throw new Error('Browser page errors: ' + pageErrors.length);
