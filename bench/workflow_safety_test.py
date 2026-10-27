@@ -71,7 +71,7 @@ assert "CDDA_WASM_SIMD" in (root / "ci/tune-makefile.sh").read_text(encoding="ut
 assert "artifact_run_id:" in measure_workflow
 assert "github.event_name == 'pull_request' && 'compare'" in measure_workflow
 assert 'GITHUB_EVENT_NAME" == "pull_request' in measure_workflow
-assert "population=128" in measure_workflow
+assert "for population in 32 64 128 200; do" in measure_workflow
 assert "Download exact bundle from the selected full build" in measure_workflow
 assert "github.event.inputs.artifact_run_id" in measure_workflow
 assert "measurement-source.json" in measure_workflow
@@ -114,6 +114,8 @@ contract = (root / "bench/measurement_contract.mjs").read_text(encoding="utf-8")
 assert "validateFixtureOutcome" in runner and "classifyRequestFailures" in runner
 assert "validateActiveRenderer" in runner
 assert "activeRendererValidation.ok" in runner
+assert "extractWasmHeapSamples" in runner and "wasmHeapSampleValidation.ok" in runner
+assert "webglFallback" in runner
 assert "population-monster-count" in (root / "bench/measurement_contract.mjs").read_text(encoding="utf-8")
 assert "fixtureValidation.ok" in runner and "requestFailureValidation.ok" in runner
 assert "reloadRestoreValidation" in runner
@@ -128,4 +130,6 @@ assert "known Emscripten data-package request abort" in contract
 assert "measurement_contract_test.mjs" in (root / "ci/apply-patches.sh").read_text(encoding="utf-8")
 fixture_source = (root / "bench/real_activity_fixture.py").read_text(encoding="utf-8")
 assert "sampleCount = population > 0 ? 30 : 15" in fixture_source
+assert "bytes.length < 2000000" in fixture_source
+assert "extractWasmHeapSamples" in contract
 print("PASS docs consistency: synchronized workflows, build provenance, artifact identity, binary safety, and strict game-measurement acceptance")
