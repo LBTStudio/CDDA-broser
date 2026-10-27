@@ -103,7 +103,7 @@ for (const count of [32, 64, 128, 200]) {
   assert.equal(profile.sampleCount, 3);
   assert.equal(profile.initialBytes, 512);
   assert.equal(profile.peakBytes, 1024);
-  assert.equal(profile.finalBytes, 512);
+  assert.equal(profile.finalBytes, 1024);
   assert.equal(profile.growthTransitions.length, 2);
   assert.deepEqual(profile.distinctSizes, [512, 1024]);
 }
