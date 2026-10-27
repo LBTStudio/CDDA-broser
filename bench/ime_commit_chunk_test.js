@@ -29,6 +29,10 @@ assert(bridge.includes("st.commits.shift();"), "a commit is removed only after i
 assert(!bridge.includes("while( EM_ASM_INT("), "one pump must not drain all text events at once");
 assert(!bridge.includes("while( remaining > 0 )"), "one pump must not enqueue dozens of SDL text events");
 assert.equal((bridge.match(/SDL_PushEvent\( &commit_event \)/g) || []).length, 1);
+assert(bridge.includes("commit_event.text.windowID = SDL_GetWindowID( window.get() );"),
+  "committed text events must target the SDL window so ImGui accepts long input");
+assert(bridge.includes("edit_event.edit.windowID = SDL_GetWindowID( window.get() );"),
+  "composition preview events must target the SDL window");
 assert(shell.includes("window.cddaImeState = { commits: [], commitOffset: 0, preview: null };"));
 assert(shell.includes("window.cddaImeState.commitOffset = 0;"), "closing a field must discard its partial commit");
 
