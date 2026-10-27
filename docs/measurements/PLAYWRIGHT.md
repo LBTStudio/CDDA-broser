@@ -21,7 +21,7 @@ Actionsから手動実行できます。base_urlは測定対象の配信先、sc
 - Chromium関連プロセスのRSS/PSSを1秒間隔で採取した記録。
 - Playwright trace、コンソールログ、構造化されたmeasurement.json。
 
-成果物はActionsのartifact cdda-playwright-measurement-<run id>に30日間保存します。measurement.jsonが構造化データ、summary.mdが短い要約です。Canvas画像とPlaywright traceを併用して表示と停止箇所をレビューできます。`measurement-source.json` には、公開URL計測か特定ビルド成果物か、ビルド実行ID、コミットSHA、計測ハーネスのSHA、7配布ファイルのハッシュを記録します。新しいビルドは別の `cdda-build-provenance` artifactに Emscripten版、Asyncify/JSPI、リンク最適化、SIMD設定を記録します。過去ビルドに構成情報がない場合は、出所のSHAは確認できても設定同定は未確認として残します。
+成果物はActionsのartifact cdda-playwright-measurement-<run id>に30日間保存します。measurement.jsonが構造化データ、summary.mdが短い要約です。Canvas画像とPlaywright traceを併用して表示と停止箇所をレビューできます。`measurement-source.json` には、公開URL計測か特定ビルド成果物か、ビルド実行ID、コミットSHA、計測ハーネスのSHA、公開版では7つの主要配布ファイル、ビルドartifactでは追加のネストされたファイルも含めたハッシュを記録します。新しいビルドは別の `cdda-build-provenance` artifactに Emscripten版、Asyncify/JSPI、リンク最適化、SIMD設定を記録します。過去ビルドに構成情報がない場合は、出所のSHAは確認できても設定同定は未確認として残します。
 
 計測終了時には、起動・セーブ・描画・入力の記録だけでなく、fixtureの期待状態も検査します。`read4` は保存されたスキルレベル5到達と読書終了、`sleep` は14,400ターン経過と覚醒メッセージ、両者ともキャラクター保存とゲーム活動の終了を要求します。予期しないリクエスト失敗もCI失敗とし、実測で確認された `cataclysm-tiles.data` の `net::ERR_ABORTED` だけを限定的に許容して記録します。さらに、最初の計測タブを閉じてプロフィールの排他ロックを解放した後、同じブラウザコンテキスト内の新しいページで同じプロフィールを再度開き、IndexedDB/IDBFSからワールド名・キャラクターセーブ名・ターン・活動・座標が一致することを検証します。復元できない、または値が違う場合は計測を失敗にします。この追加タブの初期化はChromiumメモリ採取区間にも含まれるため、メモリピークはゲーム中だけのピークではなく、再読み込み検証時のピークも含みます。これらは回帰検出を強化するもので、実機のストレージ消去・ブラウザ終了後の復元耐久性まで保証するものではありません。`text-scale-pixelated.png` と `text-scale-auto.png` は同じ静止Canvas画像をCSSで75%に縮小した比較画像です。CanvasのWebGL描画状態によって `canvas.toDataURL()` が真っ黒になることがあるため、画面キャプチャはPlaywrightのコンポジタ経由で採取します。
 
