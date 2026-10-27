@@ -71,4 +71,23 @@ assert "CDDA_WASM_SIMD" in (root / "ci/tune-makefile.sh").read_text(encoding="ut
 assert "artifact_run_id:" in measure_workflow
 assert "Download exact bundle from the selected full build" in measure_workflow
 assert "github.event.inputs.artifact_run_id" in measure_workflow
-print("PASS docs consistency: workflows, scalar-default SIMD experiment, exact-build measurement, and existing safety guards")
+assert "measurement-source.json" in measure_workflow
+assert "SOURCE_COMMIT_SHA" in measure_workflow
+assert "cdda-build-provenance" in workflow
+assert "build-provenance.json" in workflow
+assert "cdda-build-provenance" in measure_workflow
+
+# The generated binary is checked regardless of deployment mode. Experimental
+# artifacts use deploy_pages=false, but must not bypass the V8 function-size guard.
+verify_step = workflow.split("      - name: Verify linked binary", 1)[1].split("      - name: Upload linked binary", 1)[0]
+assert "if:" not in verify_step, "binary verification must run for unpublished experimental builds"
+
+runner = (root / "bench/playwright_game_measurement.mjs").read_text(encoding="utf-8")
+contract = (root / "bench/measurement_contract.mjs").read_text(encoding="utf-8")
+assert "validateFixtureOutcome" in runner and "classifyRequestFailures" in runner
+assert "fixtureValidation.ok" in runner and "requestFailureValidation.ok" in runner
+assert "reading-reached-level-five" in contract
+assert "sleep-wake-message" in contract
+assert "known Emscripten data-package request abort" in contract
+assert "measurement_contract_test.mjs" in (root / "ci/apply-patches.sh").read_text(encoding="utf-8")
+print("PASS docs consistency: synchronized workflows, build provenance, artifact identity, binary safety, and strict game-measurement acceptance")
