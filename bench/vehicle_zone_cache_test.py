@@ -39,7 +39,7 @@ assert vehmove.count("bool vehicle_zones_dirty = false;") == 1, (
     "vehicle::vehmove must perform one cross-z vehicle-zone dirty scan"
 )
 scan_start = vehmove.index("bool vehicle_zones_dirty = false;")
-scan_end = vehmove.index("if( vehicle_zones_dirty ||", scan_start)
+scan_end = vehmove.index("if( zone_manager::get_manager().vehicle_zone_cache_dirty() )", scan_start)
 scan = vehmove[scan_start:scan_end]
 assert "for( int zlev = -OVERMAP_DEPTH; zlev <= OVERMAP_HEIGHT; ++zlev )" in scan
 assert "const level_cache *cache = get_cache_lazy( zlev );" in scan, (
@@ -52,11 +52,12 @@ assert "vehicle_zones_dirty = true;" in scan
 assert "check_vehicle_zones( get_abs_sub().z() )" not in vehmove, (
     "checking only the active z-level can miss a vehicle that moved vertically"
 )
-rebuild_start = vehmove.index("if( vehicle_zones_dirty ||", scan_start)
+rebuild_start = vehmove.index("if( vehicle_zones_dirty )", scan_end)
 rebuild_end = vehmove.index("}", rebuild_start)
 rebuild = vehmove[rebuild_start:rebuild_end]
 assert "zone_manager::get_manager().cache_vzones( this );" in rebuild
 assert scan_start < rebuild_start
+assert "vehicle_zones_dirty = true;" in vehmove[scan_end:rebuild_start]
 
 assert "bool vzone_cache_dirty_ = false;" in zone_header
 assert "bool vehicle_zone_cache_dirty() const { return vzone_cache_dirty_; }" in zone_header
