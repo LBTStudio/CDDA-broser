@@ -21,7 +21,7 @@ Actionsから手動実行できます。base_urlは測定対象の配信先、sc
 - Chromium関連プロセスのRSS/PSSを1秒間隔で採取した記録。
 - Playwright trace、コンソールログ、構造化されたmeasurement.json。
 
-成果物はActionsのartifact cdda-playwright-measurement-<run id>に30日間保存します。measurement.jsonが構造化データ、summary.mdが短い要約です。Canvas画像とPlaywright traceを併用して表示と停止箇所をレビューできます。`text-scale-pixelated.png` と `text-scale-auto.png` は同じ静止Canvas画像をCSSで75%に縮小した比較画像です。CanvasのWebGL描画状態によって `canvas.toDataURL()` が真っ黒になることがあるため、画面キャプチャはPlaywrightのコンポジタ経由で採取します。
+成果物はActionsのartifact cdda-playwright-measurement-<run id>に30日間保存します。measurement.jsonが構造化データ、summary.mdが短い要約です。Canvas画像とPlaywright traceを併用して表示と停止箇所をレビューできます。`text-scale-pixelated.png` と `text-scale-auto.png` は同じ静止Canvas画像をCSSで75%に縮小した比較画像です。 これとは別に、`live-canvas-850x645-pixelated.png` と `live-canvas-850x645-auto.png` は、ブラウザの実viewportを850×645へ変更したライブゲームCanvasの比較画像です。計測JSONにはCanvas内部寸法、CSS矩形、scaleX/scaleY、DPR、image-rendering、復元後viewportを記録します。これは表示方式を診断するための計測で、CSS既定値は変更しません。CanvasのWebGL描画状態によって `canvas.toDataURL()` が真っ黒になることがあるため、画面キャプチャはPlaywrightのコンポジタ経由で採取します。
 
 ## 解釈上の制約
 
