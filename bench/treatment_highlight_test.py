@@ -11,7 +11,7 @@ import sys
 
 root = Path(sys.argv[1]).resolve()
 source = (root / "src/character_body.cpp").read_text(encoding="utf-8")
-start = source.index("    uilist bmenu;", source.index("default_selection_treatment_rank"))
+start = source.index("    uilist bmenu;", source.index("max_bp_name_len"))
 end = source.index("    bmenu.hilight_disabled = true;", start)
 menu_setup = source[start:end]
 
