@@ -24,6 +24,7 @@ steps = [
 ]
 positions = [live_capture.find(step) for step in steps]
 result_serialization = runner.find("visualScaleComparison, liveViewportComparison, fixture:")
+assert result_serialization > capture_start, "live viewport data must be stored in measurement.json"
 assert all(position >= 0 for position in positions), (
     "live viewport capture steps or result serialization are missing"
 )
