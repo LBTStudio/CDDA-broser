@@ -90,7 +90,7 @@ new_zone_cache = """    // Vehicles can cross z-levels during one turn. A moved 
             }
         }
     }
-    if( zone_manager::get_manager().vehicle_zone_cache_dirty() ) {
+    if( zone_manager::get_manager().vehicle_zone_cache_dirty( get_abs_sub().z() ) ) {
         vehicle_zones_dirty = true;
     }
     if( vehicle_zones_dirty ) {
@@ -133,12 +133,14 @@ old_zone_cache_field = """        std::unordered_map<std::string, std::unordered
         std::unordered_set<tripoint_abs_ms> get_point_set( const zone_type_id &type,"""
 new_zone_cache_field = """        std::unordered_map<std::string, std::unordered_set<tripoint_abs_ms>> vzone_cache;
         bool vzone_cache_dirty_ = false; // NOLINT(cata-serialize)
+        int vzone_cache_z_ = 0; // NOLINT(cata-serialize)
+        bool vzone_cache_z_initialized_ = false; // NOLINT(cata-serialize)
         std::unordered_set<tripoint_abs_ms> get_point_set( const zone_type_id &type,"""
 if zone_header.count(old_zone_cache_field) != 1:
     raise SystemExit("ERROR: expected vehicle-zone cache member did not match exactly once")
 zone_header = zone_header.replace(old_zone_cache_field, new_zone_cache_field, 1)
 old_zone_cache_getter = "        void cache_vzones( map *pmap = nullptr );"
-new_zone_cache_getter = old_zone_cache_getter + "\n        bool vehicle_zone_cache_dirty() const { return vzone_cache_dirty_; }"
+new_zone_cache_getter = old_zone_cache_getter + "\n        bool vehicle_zone_cache_dirty( const int zlev ) const {\n            return vzone_cache_dirty_ || !vzone_cache_z_initialized_ || vzone_cache_z_ != zlev;\n        }"
 if zone_header.count(old_zone_cache_getter) != 1:
     raise SystemExit("ERROR: expected cache_vzones declaration did not match exactly once")
 zone_header = zone_header.replace(old_zone_cache_getter, new_zone_cache_getter, 1)
@@ -153,7 +155,7 @@ old_clear = """void zone_manager::clear()
     area_cache.clear();
     vzone_cache.clear();
 }"""
-new_clear = old_clear.replace("    vzone_cache.clear();", "    vzone_cache.clear();\n    vzone_cache_dirty_ = false;")
+new_clear = old_clear.replace("    vzone_cache.clear();", "    vzone_cache.clear();\n    vzone_cache_dirty_ = false;\n    vzone_cache_z_initialized_ = false;")
 if zone_manager_source.count(old_clear) != 1:
     raise SystemExit("ERROR: expected zone_manager::clear body did not match exactly once")
 zone_manager_source = zone_manager_source.replace(old_clear, new_clear, 1)
@@ -188,7 +190,7 @@ if "vzone_cache_dirty_ = false;" not in zone_fn:
     pos = zone_fn.rfind("}")
     if pos < 0:
         raise SystemExit("ERROR: could not find cache_vzones final brace")
-    zone_fn = zone_fn[:pos] + "    vzone_cache_dirty_ = false;\n" + zone_fn[pos:]
+    zone_fn = zone_fn[:pos] + "    vzone_cache_dirty_ = false;\n    vzone_cache_z_ = here.get_abs_sub().z();\n    vzone_cache_z_initialized_ = true;\n" + zone_fn[pos:]
 zone_manager_source = (
     zone_manager_source[:zone_fn_start] + zone_fn + zone_manager_source[zone_fn_end:]
 )
@@ -244,7 +246,7 @@ if "const level_cache *cache = get_cache_lazy( zlev );" not in source:
     raise SystemExit("ERROR: cross-level vehicle-zone scan must not allocate unloaded level caches")
 if "if( veh->refresh_zones() ) {" not in source:
     raise SystemExit("ERROR: dirty vehicle-zone refresh is missing")
-if "if( zone_manager::get_manager().vehicle_zone_cache_dirty() ) {" not in source:
+if "if( zone_manager::get_manager().vehicle_zone_cache_dirty( get_abs_sub().z() ) ) {" not in source:
     raise SystemExit("ERROR: vehicle-zone edit dirty flag check is missing")
 if "if( vehicle_zones_dirty ) {" not in source:
     raise SystemExit("ERROR: vehicle-zone cache rebuild is not conditional on actual refresh")
