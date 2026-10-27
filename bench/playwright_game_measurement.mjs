@@ -12,6 +12,13 @@ const scenario = process.argv[3] || 'read4';
 const renderer = process.argv[4] || 'game';
 const baseUrl = process.argv[5] || 'https://lbtstudio.github.io/CDDA-broser/';
 const population = Number(process.argv[6] ?? '0');
+const displayProfile = process.argv[7] || 'desktop';
+const displayProfiles = {
+  desktop: { width: 1365, height: 768, deviceScaleFactor: 1 },
+  'chromebook-compact': { width: 860, height: 645, deviceScaleFactor: 1 },
+  'chromebook-dpr2': { width: 860, height: 645, deviceScaleFactor: 2 },
+};
+if (!Object.hasOwn(displayProfiles, displayProfile)) throw new Error('Unsupported display profile: ' + displayProfile);
 const profile = scenario + '_z' + population;
 if (!fs.existsSync(path.join(bundle, 'index.html'))) throw new Error('Missing bundle index.html');
 if (!['read4', 'read', 'sleep'].includes(scenario)) throw new Error('Unsupported scenario: ' + scenario);
@@ -20,7 +27,7 @@ if (!Number.isInteger(population) || population < 0 || population > 200) throw n
 if (population !== 0 && scenario !== 'sleep') throw new Error('Monster population stress is only valid for the sleep scenario');
 
 const outputRoot = path.resolve('bench/out/browser-measurement');
-const out = path.join(outputRoot, scenario + '-' + renderer);
+const out = path.join(outputRoot, scenario + '-' + renderer + '-' + displayProfile);
 fs.mkdirSync(out, { recursive: true });
 const captured = { screens: [], result: null, other: [] };
 const consoleLog = [], pageErrors = [], requestFailures = [];
@@ -302,7 +309,8 @@ async function main() {
     browserHealth.noteBrowserDisconnect(now(), error.message);
     newGameReject(error);
   });
-  context = await browser.newContext({ viewport: { width: 1365, height: 768 }, deviceScaleFactor: 1 });
+  const displayConfig = displayProfiles[displayProfile];
+  context = await browser.newContext({ viewport: { width: displayConfig.width, height: displayConfig.height }, deviceScaleFactor: displayConfig.deviceScaleFactor });
   await context.tracing.start({ screenshots: true, snapshots: true, sources: false }); tracing = true;
   page = await context.newPage();
   let fixtureScreenshotSequence = 0;
@@ -526,8 +534,8 @@ async function main() {
     const file = path.join(bundle, name);
     return fs.existsSync(file) ? { name, bytes: fs.statSync(file).size } : { name, missing: true };
   });
-  const result = { schemaVersion: 1, measuredAt: new Date().toISOString(), targetUrl: baseUrl, browserVersion: browser.version(),
-    nodeVersion: process.version, scenario, renderer, population, bundleFiles, bootToNewGameMs: bootMs, newGameMessage, display,
+  const result = { schemaVersion: 2, measuredAt: new Date().toISOString(), targetUrl: baseUrl, browserVersion: browser.version(),
+    nodeVersion: process.version, scenario, renderer, population, displayProfile, requestedDisplay: displayConfig, bundleFiles, bootToNewGameMs: bootMs, newGameMessage, display,
     persistenceInstrumentation,
     movement: { elapsedMs: keyHoldElapsedMs, keyUpAtMs: Number(keyUpAt.toFixed(2)), beforeSave: before, afterSave: after,
       afterSettleSave: afterSettle, postReleaseTurnDelta, postReleasePositionFields,
@@ -547,7 +555,8 @@ async function main() {
     Math.round(result.fixture.reading.observationMs) + ' ms; reached level 5: ' + result.fixture.reading.reachedLevel5 : 'not applicable';
   const m = runtime.movement, f = m.frameMonitorIntervalMs;
   const summary = ['# CDDA Playwright browser measurement', '', '- Target: ' + baseUrl, '- Captured: ' + result.measuredAt,
-    '- Scenario/renderer: ' + scenario + ' / ' + renderer, '- Browser version: ' + result.browserVersion,
+    '- Scenario/renderer/display profile: ' + scenario + ' / ' + renderer + ' / ' + displayProfile,
+    '- Requested viewport/DPR: ' + JSON.stringify(displayConfig), '- Browser version: ' + result.browserVersion,
     '- Boot to new-game log: ' + bootMs + ' ms', '- Canvas: ' + JSON.stringify(display.canvas),
     '- HTML Terminus font check: ' + display.fonts.terminusCheck, '- Movement: ' + movementText,
     '- Key hold wall time ms: ' + result.movement.elapsedMs + '; post-release turn delta after quiet interval: ' +
@@ -570,6 +579,7 @@ async function main() {
     '- Browser crash history: ' + JSON.stringify(browserHealth.snapshot()),
     '- Active movement stall threshold ms: ' + ACTIVE_MOVEMENT_STALL_LIMIT_MS,
     '- Text scaling A/B: same static canvas image at 75% CSS size, pixelated vs auto interpolation',
+    '- Display profile is a controlled Chromium viewport/DPR simulation, not a physical Chromebook or ChromeOS GPU benchmark.',
     '- Playwright fixture screenshots: ' + fixtureScreens.length,
     '', '## Interpretation limits', '', '- GitHub Actions values are not a physical 4GB Chromebook benchmark.',
     '- RAF monitor intervals are the independent monitor loop’s callback cadence, not confirmed physical display FPS; idle waits and activity modals can create long gaps.',

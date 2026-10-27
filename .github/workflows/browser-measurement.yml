@@ -39,6 +39,16 @@ on:
           - "64"
           - "128"
           - "200"
+      display_profile:
+        description: "Chromium viewport and device scale factor; compact profiles approximate Chromebook-sized layouts"
+        required: true
+        default: "compare"
+        type: choice
+        options:
+          - "desktop"
+          - "chromebook-compact"
+          - "chromebook-dpr2"
+          - "compare"
   workflow_run:
     workflows: ["Build CDDA 0.I WebAssembly"]
     types: [completed]
@@ -79,6 +89,7 @@ jobs:
       CDDA_SCENARIO: ${{ github.event.inputs.scenario || 'all' }}
       CDDA_RENDERER: ${{ github.event.inputs.renderer || 'game' }}
       CDDA_POPULATION: ${{ github.event.inputs.population || '0' }}
+      CDDA_DISPLAY_PROFILE: ${{ github.event.inputs.display_profile || 'chromebook-compact' }}
     steps:
       - name: Checkout measurement harness
         uses: actions/checkout@v4
@@ -192,6 +203,11 @@ jobs:
             game|software|opengles2) renderers=("$CDDA_RENDERER") ;;
             *) echo "Unsupported renderer: $CDDA_RENDERER" >&2; exit 2 ;;
           esac
+          case "$CDDA_DISPLAY_PROFILE" in
+            compare) display_profiles=(desktop chromebook-compact chromebook-dpr2) ;;
+            desktop|chromebook-compact|chromebook-dpr2) display_profiles=("$CDDA_DISPLAY_PROFILE") ;;
+            *) echo "Unsupported display profile: $CDDA_DISPLAY_PROFILE" >&2; exit 2 ;;
+          esac
           case "$CDDA_POPULATION" in
             0|32|64|128|200) ;;
             *) echo "Unsupported population count: $CDDA_POPULATION" >&2; exit 2 ;;
@@ -200,7 +216,7 @@ jobs:
             echo "Population stress mode currently requires scenario=sleep to keep reading benchmarks uncontaminated." >&2
             exit 2
           fi
-          echo "- Scenario: $CDDA_SCENARIO; renderer: $CDDA_RENDERER; cloaked monster population: $CDDA_POPULATION" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Scenario: $CDDA_SCENARIO; renderer: $CDDA_RENDERER; cloaked monster population: $CDDA_POPULATION; display profiles: ${display_profiles[*]}" >> "$GITHUB_STEP_SUMMARY"
           overall=0
           for scenario in "${scenarios[@]}"; do
             for renderer in "${renderers[@]}"; do
@@ -209,22 +225,25 @@ jobs:
                 overall=1
                 continue
               fi
-              node bench/playwright_game_measurement.mjs "$BUNDLE" "$scenario" "$renderer" "$CDDA_BASE_URL" "$CDDA_POPULATION" &
-              runner_pid=$!
-              bash bench/sample_chromium_memory.sh "$OUT/chromium-memory-$scenario-$renderer.tsv" "$runner_pid" &
-              memory_pid=$!
-              if wait "$runner_pid"; then
-                scenario_status=0
-              else
-                scenario_status=$?
-                overall=1
-              fi
-              wait "$memory_pid" || true
-              echo "[fixture] scenario=$scenario renderer=$renderer exit=$scenario_status"
-              if [[ -f "$OUT/$scenario-$renderer/summary.md" ]]; then
-                cat "$OUT/$scenario-$renderer/summary.md" >> "$GITHUB_STEP_SUMMARY"
-                echo "" >> "$GITHUB_STEP_SUMMARY"
-              fi
+              for display_profile in "${display_profiles[@]}"; do
+                echo "[fixture] scenario=$scenario renderer=$renderer display_profile=$display_profile"
+                node bench/playwright_game_measurement.mjs "$BUNDLE" "$scenario" "$renderer" "$CDDA_BASE_URL" "$CDDA_POPULATION" "$display_profile" &
+                runner_pid=$!
+                bash bench/sample_chromium_memory.sh "$OUT/chromium-memory-$scenario-$renderer-$display_profile.tsv" "$runner_pid" &
+                memory_pid=$!
+                if wait "$runner_pid"; then
+                  scenario_status=0
+                else
+                  scenario_status=$?
+                  overall=1
+                fi
+                wait "$memory_pid" || true
+                echo "[fixture] scenario=$scenario renderer=$renderer display_profile=$display_profile exit=$scenario_status"
+                if [[ -f "$OUT/$scenario-$renderer-$display_profile/summary.md" ]]; then
+                  cat "$OUT/$scenario-$renderer-$display_profile/summary.md" >> "$GITHUB_STEP_SUMMARY"
+                  echo "" >> "$GITHUB_STEP_SUMMARY"
+                fi
+              done
             done
           done
           exit "$overall"
