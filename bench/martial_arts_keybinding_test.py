@@ -1,72 +1,54 @@
 #!/usr/bin/env python3
-"""Regression test for the browser build's martial-style and close-door keys.
+"""Regression test for the martial-style screen's compatible-weapon hint.
 
-Run against the patched CDDA source tree:
+Run against the patched CDDA 0.I source tree:
     python3 bench/martial_arts_keybinding_test.py /path/to/patched/cdda
+
+This checks action ownership and dynamic key-label generation. It intentionally
+does not impose a global key assignment: existing user keybindings may differ.
 """
 import json
 from pathlib import Path
 import sys
 
 root = Path(sys.argv[1]).resolve()
+source = (root / "src/character.cpp").read_text(encoding="utf-8")
+start = source.index("bool character_martial_arts::pick_style")
+end = source.index("kmenu.query();", start)
+menu = source[start:end]
+
+assert 'ctxt.register_action( "SHOW_DESCRIPTION" );' in menu
+assert 'ctxt.get_desc( "SHOW_DESCRIPTION" )' in menu
+assert "technique details and compatible weapons" in menu
+assert 'kmenu.input_category = "MELEE_STYLE_PICKER";' in menu
+assert 'kmenu.additional_actions.emplace_back( "SHOW_DESCRIPTION", translation() );' in menu
+
 bindings = json.loads((root / "data/raw/keybindings.json").read_text(encoding="utf-8"))
-
-def entries(action, category="DEFAULTMODE"):
-    return [entry for entry in bindings
-            if entry.get("id") == action and entry.get("category") == category]
-
-style_entries = entries("pick_style")
-close_entries = entries("close")
-chat_entries = entries("chat")
-assert style_entries, "Missing DEFAULTMODE pick_style binding"
-assert close_entries, "Missing DEFAULTMODE close-door binding"
-assert chat_entries, "Missing DEFAULTMODE chat binding"
-
-def key_specs(rows):
-    return [
-        (b.get("input_method"), b.get("key"), tuple(sorted(b.get("mod", []))))
-        for row in rows
-        for b in row.get("bindings", [])
-    ]
-
-style_keys = key_specs(style_entries)
-close_keys = key_specs(close_entries)
-chat_keys = key_specs(chat_entries)
-
-# Preserve upstream alternatives while adding plain c for the reported control.
-assert ("keyboard_char", "_", ()) in style_keys, style_keys
-assert ("keyboard_code", "-", ("shift",)) in style_keys, style_keys
-assert ("keyboard_code", "c", ()) in style_keys, (
-    "plain c must select martial arts style in DEFAULTMODE"
-)
-
-# Avoid a conflicting binding: Alt+C closes doors; Shift+C remains NPC chat.
-assert ("keyboard_code", "c", ("alt",)) in close_keys, (
-    "Alt+C must close doors after plain c is assigned to martial style"
-)
-assert not any(key == "c" and not mods for _, key, mods in close_keys), close_keys
-assert ("keyboard_code", "c", ("shift",)) in chat_keys or        ("keyboard_char", "C", ()) in chat_keys, chat_keys
-
-# Only pick_style may own unmodified c within DEFAULTMODE.
-owners = [
-    row.get("id")
-    for row in bindings
-    if row.get("category") == "DEFAULTMODE"
-    and any(
-        b.get("key") == "c"
-        and not b.get("mod")
-        and b.get("input_method") in ("keyboard_any", "keyboard_code", "keyboard_char")
-        for b in row.get("bindings", [])
-    )
+description = [
+    row for row in bindings
+    if row.get("id") == "SHOW_DESCRIPTION"
+    and row.get("category") == "MELEE_STYLE_PICKER"
 ]
-assert owners == ["pick_style"], f"unmodified c has conflicting DEFAULTMODE owners: {owners}"
+assert len(description) == 1, (
+    "The compatible-weapon hint must resolve through the style-picker's "
+    "SHOW_DESCRIPTION action, not the global pick_style action."
+)
+binding_specs = [
+    (entry.get("input_method"), entry.get("key"), tuple(sorted(entry.get("mod", []))))
+    for row in description
+    for entry in row.get("bindings", [])
+]
+assert binding_specs, "SHOW_DESCRIPTION needs a binding in MELEE_STYLE_PICKER"
 
-# The browser SDL bridge must preserve Alt and Shift when translating events.
-sdl = (root / "src/sdltiles.cpp").read_text(encoding="utf-8")
-assert "if( keysym.mod & KMOD_SHIFT )" in sdl
-assert "evt.modifiers.emplace( keymod_t::shift );" in sdl
-assert "if( keysym.mod & KMOD_ALT )" in sdl
-assert "evt.modifiers.emplace( keymod_t::alt );" in sdl
-assert "evt.sequence.emplace_back( keysym.sym );" in sdl
+# The global action for opening the style picker must not be modified here.
+style = [
+    row for row in bindings
+    if row.get("id") == "pick_style" and row.get("category") == "DEFAULTMODE"
+]
+assert style, "Missing DEFAULTMODE pick_style action"
+assert not any(
+    entry.get("key", "").lower() == "c" and not entry.get("mod")
+    for row in style for entry in row.get("bindings", [])
+), "Do not reassign plain c to the global pick_style action"
 
-print("PASS: c selects martial style; Alt+C closes doors; Shift+C remains for chat")
+print("PASS: compatible-weapon hint uses the style-picker-local SHOW_DESCRIPTION action")
