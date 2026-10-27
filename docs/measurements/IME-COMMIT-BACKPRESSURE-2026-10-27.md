@@ -33,3 +33,10 @@ text chunks even when the committed text fit in the original buffer.
 
 These are source-derived and controlled-fixture tests. They are not a full
 browser IME usability test or a full WebAssembly product build.
+
+
+## 統合再検証：入力FIFO修正との併用
+
+入力FIFOの出所フラグと順序維持は PR #72 で main に統合された。このIME修正はそのFIFOを前提に、未処理入力が残っている間は次のIMEチャンクを投入せず、1回のイベントポンプで1個だけSDLテキストイベントを発行する。
+
+そのため、PR #72 統合前の成功ログだけでは両変更の共存を保証しない。統合後のPR実行では、パッチを上流0.Iへ適用する順序、FIFO回帰、4,095バイト超のASCII/CJK/絵文字、イベント上限・NUL終端・遅延compositionendによるフィールド終了後の再投入防止を一緒に検査する。ソース由来の試験が通っても、実Chromebookの日本語IME操作とフルWebAssemblyビルドは別の検証項目として残す。
