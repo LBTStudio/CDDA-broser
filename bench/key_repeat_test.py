@@ -47,6 +47,7 @@ assert get_input.count('CheckMessages();') == get_input.count('drain_pending_inp
 assert 'drain_pending_input_if_idle' not in pump
 assert pump.index('CheckMessages();') < pump.index('return_pending_input( last_input );')
 assert 'last_input_from_pending_queue = true;' in helpers
+assert check.count('last_input_from_pending_queue = true;') == 1, 'final normalizer must mark dequeued input'
 assert 'if( last_input_from_pending_queue )' in helpers
 # Native source must still follow the original keyup/keydown switches.
 assert 'last_input = sdl_keysym_to_keycode_evt( ev.key.keysym );' in check
