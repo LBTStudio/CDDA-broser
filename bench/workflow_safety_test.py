@@ -69,6 +69,9 @@ assert "CDDA_WASM_SIMD" in workflow
 assert 'echo "| WebAssembly SIMD | $CDDA_WASM_SIMD |"' in workflow
 assert "CDDA_WASM_SIMD" in (root / "ci/tune-makefile.sh").read_text(encoding="utf-8")
 assert "artifact_run_id:" in measure_workflow
+assert "github.event_name == 'pull_request' && 'compare'" in measure_workflow
+assert 'GITHUB_EVENT_NAME" == "pull_request' in measure_workflow
+assert "population=128" in measure_workflow
 assert "Download exact bundle from the selected full build" in measure_workflow
 assert "github.event.inputs.artifact_run_id" in measure_workflow
 assert "measurement-source.json" in measure_workflow
@@ -114,9 +117,12 @@ assert "reloadRestoreValidation" in runner
 assert "persistentProfile = 'perf_' + profile" in runner
 assert "fill(persistentProfile)" in runner
 assert "moves-preserved" in runner
+assert "population === 0 ? scenario + '-' + renderer : scenario + '-' + renderer + '-z' + population" in runner
 assert "Save reload/restore verification failed" in runner
 assert "reading-reached-level-five" in contract
 assert "sleep-wake-message" in contract
 assert "known Emscripten data-package request abort" in contract
 assert "measurement_contract_test.mjs" in (root / "ci/apply-patches.sh").read_text(encoding="utf-8")
+fixture_source = (root / "bench/real_activity_fixture.py").read_text(encoding="utf-8")
+assert "sampleCount = population > 0 ? 30 : 15" in fixture_source
 print("PASS docs consistency: synchronized workflows, build provenance, artifact identity, binary safety, and strict game-measurement acceptance")
