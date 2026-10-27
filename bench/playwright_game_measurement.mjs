@@ -526,6 +526,9 @@ async function main() {
   // mount the same profile in a fresh page. This verifies IndexedDB/IDBFS
   // restore rather than merely re-reading the first page's in-memory MEMFS.
   let reloadRestoreValidation;
+  // The fixture intentionally prefixes its isolated profile with "perf_".
+  // Re-open that exact profile, not a separate empty profile without the prefix.
+  const persistentProfile = 'perf_' + profile;
   const latestSavedSnapshot = afterSettle?.available ? afterSettle : after;
   const expectedReloadSave = {
     world: latestSavedSnapshot.world, file: latestSavedSnapshot.file,
@@ -552,7 +555,7 @@ async function main() {
       waitUntil: 'domcontentloaded', timeout: 180000
     });
     await restorePage.locator('#profile-start').waitFor({ state: 'visible', timeout: 120000 });
-    await restorePage.locator('#profile-input').fill(profile);
+    await restorePage.locator('#profile-input').fill(persistentProfile);
     await restorePage.locator('#profile-start').click();
     await restorePage.waitForFunction(profileName => {
       const fs = window.Module?.FS || window.FS;
@@ -563,7 +566,7 @@ async function main() {
         return fs.readdir(base).some(world => world !== '.' && world !== '..' &&
           fs.readdir(base + '/' + world).some(name => name.endsWith('.sav')));
       } catch (_) { return false; }
-    }, profile, { timeout: 120000, polling: 250 });
+    }, persistentProfile, { timeout: 120000, polling: 250 });
     const restored = await restorePage.evaluate(profileName => {
       const fs = window.Module?.FS || window.FS;
       const base = '/home/' + profileName + '/.cataclysm-dda/save';
@@ -583,7 +586,7 @@ async function main() {
         }
       }
       return null;
-    }, profile);
+    }, persistentProfile);
     const checks = [
       { name: 'save-present-after-reload', passed: !!restored },
       { name: 'world-preserved', passed: restored?.world === expectedReloadSave.world },
@@ -593,13 +596,13 @@ async function main() {
       { name: 'location-preserved', passed: JSON.stringify(restored?.location) === JSON.stringify(expectedReloadSave.location) }
     ];
     reloadRestoreValidation = {
-      attempted: true, ok: checks.every(check => check.passed), profile,
+      attempted: true, ok: checks.every(check => check.passed), profile: persistentProfile,
       elapsedMs: Number((now() - restoreStarted).toFixed(2)),
       expected: expectedReloadSave, actual: restored, checks
     };
   } catch (error) {
     reloadRestoreValidation = {
-      attempted: true, ok: false, profile, expected: expectedReloadSave,
+      attempted: true, ok: false, profile: persistentProfile, expected: expectedReloadSave,
       error: String(error?.stack || error)
     };
   }
