@@ -33,15 +33,14 @@ style_keys = key_specs(style_entries)
 close_keys = key_specs(close_entries)
 chat_keys = key_specs(chat_entries)
 
-# Preserve both upstream martial-style alternatives while adding plain c.
+# Preserve upstream alternatives while adding plain c for the reported control.
 assert ("keyboard_char", "_", ()) in style_keys, style_keys
 assert ("keyboard_code", "-", ("shift",)) in style_keys, style_keys
 assert ("keyboard_code", "c", ()) in style_keys, (
     "plain c must select martial arts style in DEFAULTMODE"
 )
 
-# Reassign the conflicting close-door key rather than allowing the two
-# actions to compete for the same event. Keep Shift+C for NPC chat.
+# Avoid a conflicting binding: Alt+C closes doors; Shift+C remains NPC chat.
 assert ("keyboard_code", "c", ("alt",)) in close_keys, (
     "Alt+C must close doors after plain c is assigned to martial style"
 )
@@ -62,10 +61,12 @@ owners = [
 ]
 assert owners == ["pick_style"], f"unmodified c has conflicting DEFAULTMODE owners: {owners}"
 
-# The browser SDL bridge must still preserve Shift for other actions (such as chat).
+# The browser SDL bridge must preserve Alt and Shift when translating events.
 sdl = (root / "src/sdltiles.cpp").read_text(encoding="utf-8")
 assert "if( keysym.mod & KMOD_SHIFT )" in sdl
 assert "evt.modifiers.emplace( keymod_t::shift );" in sdl
+assert "if( keysym.mod & KMOD_ALT )" in sdl
+assert "evt.modifiers.emplace( keymod_t::alt );" in sdl
 assert "evt.sequence.emplace_back( keysym.sym );" in sdl
 
 print("PASS: c selects martial style; Alt+C closes doors; Shift+C remains for chat")
