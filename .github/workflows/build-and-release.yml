@@ -655,6 +655,44 @@ jobs:
           echo "公開物一覧:"
           ls -lh site/
 
+      - name: Write build provenance sidecar
+        env:
+          RUNTIME_BACKEND: ${{ env.CDDA_RUNTIME_BACKEND }}
+          EMSDK_VERSION: ${{ env.CDDA_EMSDK_VERSION }}
+          LINK_OPT: ${{ inputs.link_opt }}
+          WASM_SIMD: ${{ env.CDDA_WASM_SIMD }}
+          DEPLOY_PAGES: ${{ inputs.deploy_pages }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+import json, os
+from pathlib import Path
+metadata = {
+    "schemaVersion": 1,
+    "repository": os.environ["GITHUB_REPOSITORY"],
+    "runId": os.environ["GITHUB_RUN_ID"],
+    "runAttempt": int(os.environ.get("GITHUB_RUN_ATTEMPT", "1")),
+    "commitSha": os.environ["GITHUB_SHA"],
+    "ref": os.environ["GITHUB_REF"],
+    "runtimeBackend": os.environ["RUNTIME_BACKEND"],
+    "emsdkVersion": os.environ["EMSDK_VERSION"],
+    "linkOpt": os.environ["LINK_OPT"],
+    "wasmSimd": os.environ["WASM_SIMD"],
+    "deployPages": os.environ["DEPLOY_PAGES"].lower() == "true",
+    "artifactName": "cdda-0I-web-bundle",
+}
+Path("build-provenance.json").write_text(json.dumps(metadata, indent=2) + "\\n", encoding="utf-8")
+print(json.dumps(metadata, indent=2))
+PY
+
+      - name: Upload build provenance
+        uses: actions/upload-artifact@v4
+        with:
+          name: cdda-build-provenance
+          path: build-provenance.json
+          if-no-files-found: error
+          retention-days: 30
+
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
