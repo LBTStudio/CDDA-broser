@@ -47,7 +47,10 @@ struct string_input_popup_imgui {
 # Exercise the missing hop in the old test: bridge -> SDL backend -> widget.
 sdl = (source / 'src/sdltiles.cpp').read_text()
 bridge = sdl[sdl.index('static void cdda_pump_web_ime()'):]
-commit = bridge[bridge.index('        SDL_Event commit_event {};'):bridge.index('    // Composition preview:')]
+commit_start = bridge.index('        SDL_Event commit_event {};')
+preview_marker = '    // Composition preview'
+assert preview_marker in bridge, "IME composition-preview block missing"
+commit = bridge[commit_start:bridge.index(preview_marker, commit_start)]
 commit = commit[:commit.rindex('    }')]  # close the one-event commit guard
 preview = bridge[bridge.index('        size_t chunk = strlen( ime_buf );'):]
 preview = preview[:preview.index('\n    }')]
