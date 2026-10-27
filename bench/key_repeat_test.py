@@ -190,7 +190,6 @@ int main() {
     assert(consume(0) == 'a'); key('d');
     assert(consume(0) == 'b'); assert(consume(0) == 'c'); assert(consume(0) == 'd'); ++cases;
     // A non-consuming pump may receive a new key while older taps remain queued.
-    // Fresh input must append; only a FIFO item borrowed by the pump may go to front.
     reset_state(); key('a'); key('b'); key('c');
     assert(consume(0) == 'a');
     key('d'); pump();
