@@ -73,9 +73,24 @@ source = source.replace(old, new, 1)
 
 old_zone_cache = """    // refresh vehicle zones for moved vehicles
     zone_manager::get_manager().cache_vzones( this );"""
-new_zone_cache = """    // Vehicle movement marks loot-zone positions dirty. Do not clear and rebuild
-    // every vehicle-zone point set on turns where no zone position changed.
-    if( check_vehicle_zones( get_abs_sub().z() ) ) {
+new_zone_cache = """    // Vehicles can cross z-levels during one turn. A moved vehicle is removed from
+    // its old zone cache and inserted into its destination cache before this point,
+    // so checking only the player's z-level can miss the dirty vehicle entirely.
+    // Refresh dirty zone vehicles across loaded levels, then rebuild the active
+    // zone point set once. get_cache_lazy avoids creating unused level caches.
+    bool vehicle_zones_dirty = false;
+    for( int zlev = -OVERMAP_DEPTH; zlev <= OVERMAP_HEIGHT; ++zlev ) {
+        const level_cache *cache = get_cache_lazy( zlev );
+        if( cache == nullptr ) {
+            continue;
+        }
+        for( vehicle *veh : cache->zone_vehicles ) {
+            if( veh->refresh_zones() ) {
+                vehicle_zones_dirty = true;
+            }
+        }
+    }
+    if( vehicle_zones_dirty ) {
         zone_manager::get_manager().cache_vzones( this );
     }"""
 if source.count(old_zone_cache) != 1:
@@ -168,8 +183,16 @@ if source.count("for_each_unique_vehicle_turn_work_item( vehs,") != 1:
     raise SystemExit("ERROR: optimized worklist is not called exactly once")
 if "veh->process_effects();\n        veh->recalculate_enchantment_cache();\n        veh->idle( *this, /* on_map = */ on_map );" not in source:
     raise SystemExit("ERROR: vehicle post-movement processing order changed")
-if source.count("if( check_vehicle_zones( get_abs_sub().z() ) ) {") != 1:
-    raise SystemExit("ERROR: vehicle-zone refresh is not guarded by the upstream dirty flag")
+if source.count("bool vehicle_zones_dirty = false;") != 1:
+    raise SystemExit("ERROR: cross-level vehicle-zone dirty scan is missing")
+if "for( int zlev = -OVERMAP_DEPTH; zlev <= OVERMAP_HEIGHT; ++zlev ) {" not in source:
+    raise SystemExit("ERROR: vehicle-zone scan does not cover every valid z-level")
+if "const level_cache *cache = get_cache_lazy( zlev );" not in source:
+    raise SystemExit("ERROR: cross-level vehicle-zone scan must not allocate unloaded level caches")
+if "if( veh->refresh_zones() ) {" not in source:
+    raise SystemExit("ERROR: dirty vehicle-zone refresh is missing")
+if "if( vehicle_zones_dirty ) {" not in source:
+    raise SystemExit("ERROR: vehicle-zone cache rebuild is not conditional on actual refresh")
 if source.count("if( rebuild && refresh_cache ) {") != 1:
     raise SystemExit("ERROR: nested vehicle-zone cache rebuild is still unconditional")
 if "std::vector<zone_data *> map::get_vehicle_zones( const int zlev, bool refresh_cache )" not in source:
