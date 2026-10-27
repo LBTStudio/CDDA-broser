@@ -101,8 +101,8 @@ CDDA 0.I: bounded read-only melee outfit advisor. Apply after runtime-efficiency
 +            for( std::size_t b = 0; b < parts.size(); ++b ) {
 +                const auto &a = candidates[i].parts[b];
 +                const auto &other = candidates[j].parts[b];
-+                if( a.coverage > 0 && other.coverage > 0 &&
-+                    ( ( a.layers & other.layers ) || ( sources[i]->is_rigid() && sources[j]->is_rigid() ) ) ) {
++                // Same-layer clothing is legal; layering ENC is scored separately.
++                if( a.coverage > 0 && other.coverage > 0 && sources[i]->is_rigid() && sources[j]->is_rigid() ) {
 +                    conflict = true;
 +                }
 +            }
@@ -168,7 +168,7 @@ CDDA 0.I: bounded read-only melee outfit advisor. Apply after runtime-efficiency
 +        text += "近接被覆は重ねた値を単純加算せず最大値を使用。防御指数は被覆×素材抵抗の比較値です。\n"
 +                "部位の実際の被ダメージ、命中/回避、将来の体温を保証する値ではありません。\n"
 +                "温熱は現地気温と保温/通気からの目安です。運動・濡れ・風・特性・気候制御は予測しません。\n"
-+                "同じ部位/層の候補は保守的に交換扱い。複雑な着用制約は通常の着用操作で確認してください。\n\n";
++                "同じ層の重ね着は候補として許容し、制限ペナルティの目安に反映します。実際の着用順・適合制約は通常の着用操作で確認してください。\n\n";
 +        text += string_format( "比較指数（現在 → 案）\n防御: %.1f → %.1f / 制限目安: %.1f → %.1f\n"
 +                               "温熱不適合（低い方が良い）: %.1f → %.1f\n収納: %.1f → %.1f L / 装備本体重量: %.1f → %.1f kg\n"
 +                               "※重量は中身を除く装備本体のみ。外した装備も携行する場合、総荷重は減りません。\n\n",
@@ -285,13 +285,13 @@ CDDA 0.I: bounded read-only melee outfit advisor. Apply after runtime-efficiency
 +    "id": "GEAR_GUIDE",
 +    "category": "SORT_ARMOR",
 +    "name": "近接装備ナビ",
-+    "bindings": [ { "input_method": "keyboard_any", "key": "F2" } ]
++    "bindings": [ { "input_method": "keyboard_any", "key": "F2" }, { "input_method": "keyboard_char", "key": "g" } ]
    },
    {
      "type": "keybinding",
 --- /dev/null
 +++ b/src/cata_gear_guide.h
-@@ -0,0 +1,184 @@
+@@ -0,0 +1,183 @@
 +#pragma once
 +#ifndef CATA_SRC_CATA_GEAR_GUIDE_H
 +#define CATA_SRC_CATA_GEAR_GUIDE_H
@@ -334,7 +334,7 @@ CDDA 0.I: bounded read-only melee outfit advisor. Apply after runtime-efficiency
 +    bool preserve_storage = true;
 +};
 +struct assessment {
-+    std::vector<part> parts;
++    std::array<part, max_parts> parts = {};
 +    double protection = 0;
 +    double coverage = 0;
 +    double encumbrance = 0;
@@ -358,7 +358,6 @@ CDDA 0.I: bounded read-only melee outfit advisor. Apply after runtime-efficiency
 +                          const environment &env, int profile )
 +{
 +    assessment value;
-+    value.parts.resize( env.weights.size() );
 +    double sum_weights = 0;
 +    const double target = std::clamp( ( 18.0 - env.celsius ) * 2.0, 0.0, 100.0 );
 +    for( std::size_t b = 0; b < env.weights.size(); ++b ) {
@@ -372,7 +371,7 @@ CDDA 0.I: bounded read-only melee outfit advisor. Apply after runtime-efficiency
 +            // Conservative coverage: do not assume independent gaps combine.
 +            total.coverage = std::max( total.coverage, p.coverage );
 +            for( int d = 0; d < 3; ++d ) {
-+                total.resist[d] += p.resist[d] * p.coverage / 100.0;
++                total.resist[d] = std::max( total.resist[d], p.resist[d] * p.coverage / 100.0 );
 +            }
 +            total.encumbrance += p.encumbrance;
 +            if( ( layers & p.layers ) != 0 ) {
