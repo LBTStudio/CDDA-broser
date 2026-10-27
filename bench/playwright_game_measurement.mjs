@@ -28,7 +28,8 @@ try {
 } catch (error) {
   measurementSource = { kind: 'invalid-manifest', targetUrl: null, error: String(error) };
 }
-const out = path.join(outputRoot, scenario + '-' + renderer);
+const measurementKey = population === 0 ? scenario + '-' + renderer : scenario + '-' + renderer + '-z' + population;
+const out = path.join(outputRoot, measurementKey);
 fs.mkdirSync(out, { recursive: true });
 const captured = { screens: [], result: null, other: [] };
 const consoleLog = [], pageErrors = [], requestFailures = [];
