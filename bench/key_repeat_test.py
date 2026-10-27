@@ -146,6 +146,7 @@ EXPORT int queued() { return pending_input_queue.size(); }
 EXPORT int repeat_pending() { return pending_key_repeat.has_value(); }
 EXPORT void reset_state() {
     pending_input_queue.clear(); pending_key_repeat.reset();
+    last_input_from_pending_queue = false;
     web_repeat_focused = true; last_input = input_event();
     SDL_Event ev; while(SDL_PollEvent(&ev)) {}
     SDL_StopTextInput(); inputdelay = 0;
