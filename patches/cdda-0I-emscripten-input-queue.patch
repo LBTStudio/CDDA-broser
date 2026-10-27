@@ -406,7 +406,7 @@ yield をいくら速くしても症状は消えない。実際、押した 20 �
              endtime = SDL_GetTicks();
              if( last_input.type != input_event_t::error ) {
                  break;
-@@ -4213,7 +4434,8 @@
+@@ -4213,6 +4434,7 @@
          } while( !timedout );
      } else {
          CheckMessages();
