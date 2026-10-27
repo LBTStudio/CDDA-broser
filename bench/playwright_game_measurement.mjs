@@ -420,6 +420,66 @@ async function main() {
     note: 'Both screenshots display the same static canvas screenshot at 75% scale; only CSS interpolation differs.'
   };
   await comparisonPage.close();
+
+  // The historical 75% comparison above scales a static screenshot. Also
+  // capture the live game canvas at the reported low-resolution viewport so
+  // intrinsic canvas dimensions and CSS interpolation can be distinguished.
+  const originalViewport = page.viewportSize() || { width: 1365, height: 768 };
+  const canvasElement = page.locator('#canvas');
+  const originalImageRendering = await canvasElement.evaluate(el => ({
+    value: el.style.getPropertyValue('image-rendering'),
+    priority: el.style.getPropertyPriority('image-rendering')
+  }));
+  const readLiveCanvasProfile = () => page.evaluate(() => {
+    const canvas = document.querySelector('#canvas');
+    if (!canvas) return null;
+    const rect = canvas.getBoundingClientRect();
+    const style = getComputedStyle(canvas);
+    return {
+      viewport: { width: innerWidth, height: innerHeight, dpr: devicePixelRatio },
+      canvas: {
+        width: canvas.width, height: canvas.height,
+        rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+        scaleX: canvas.width ? rect.width / canvas.width : null,
+        scaleY: canvas.height ? rect.height / canvas.height : null,
+        imageRendering: style.imageRendering,
+        cssWidth: style.width, cssHeight: style.height
+      }
+    };
+  });
+  await page.setViewportSize({ width: 850, height: 645 });
+  await page.waitForTimeout(500);
+  const lowResolutionPixelatedProfile = await readLiveCanvasProfile();
+  await canvasElement.screenshot({
+    path: path.join(out, 'live-canvas-850x645-pixelated.png'),
+    animations: 'disabled', timeout: 30000
+  });
+  await canvasElement.evaluate(el => el.style.setProperty('image-rendering', 'auto', 'important'));
+  await page.waitForTimeout(100);
+  const lowResolutionAutoProfile = await readLiveCanvasProfile();
+  await canvasElement.screenshot({
+    path: path.join(out, 'live-canvas-850x645-auto.png'),
+    animations: 'disabled', timeout: 30000
+  });
+  if (originalImageRendering.value) {
+    await canvasElement.evaluate(({ value, priority }) =>
+      document.querySelector('#canvas').style.setProperty('image-rendering', value, priority),
+      originalImageRendering
+    );
+  } else {
+    await canvasElement.evaluate(el => el.style.removeProperty('image-rendering'));
+  }
+  await page.setViewportSize(originalViewport);
+  await page.waitForTimeout(500);
+  const liveViewportComparison = {
+    requestedViewport: { width: 850, height: 645 },
+    pixelated: lowResolutionPixelatedProfile,
+    auto: lowResolutionAutoProfile,
+    captured: ['live-canvas-850x645-pixelated.png', 'live-canvas-850x645-auto.png'],
+    restoredViewport: originalViewport,
+    note: 'These are live-game canvas captures after changing the actual browser viewport, unlike the separate static 75% interpolation comparison. No rendering default is changed.'
+  };
+
   const start = await page.evaluate(() => {
     const state = window.__cddaMeasure;
     const frameStartAt = state.startFrameMonitor();
@@ -535,7 +595,7 @@ async function main() {
       changedPositionFields: before.available && after.available ? Object.keys(after.position || {}).filter(key => JSON.stringify(before.position?.[key]) !== JSON.stringify(after.position?.[key])) : [],
       note: 'Movement delta is based on save snapshots. postReleaseTurnDelta compares saves immediately after keyup and after a 500ms quiet interval.' },
     runtime, browserHealth: browserHealth.snapshot(), activeMovementStallLimitMs: ACTIVE_MOVEMENT_STALL_LIMIT_MS,
-    visualScaleComparison, fixture: fixtureResult ? { mode: fixtureResult.mode, variant: fixtureResult.variant, renderer: fixtureResult.renderer,
+    visualScaleComparison, liveViewportComparison, fixture: fixtureResult ? { mode: fixtureResult.mode, variant: fixtureResult.variant, renderer: fixtureResult.renderer,
       heapBytes: fixtureResult.heap, error: fixtureResult.error || '', reading: fixtureResult.reading || null,
       savedFiles, savedGameState,
       beforeInterruptScreenshot: preInterruptScreenshot ? path.basename(preInterruptScreenshot) : null } : null,
@@ -570,6 +630,8 @@ async function main() {
     '- Browser crash history: ' + JSON.stringify(browserHealth.snapshot()),
     '- Active movement stall threshold ms: ' + ACTIVE_MOVEMENT_STALL_LIMIT_MS,
     '- Text scaling A/B: same static canvas image at 75% CSS size, pixelated vs auto interpolation',
+    '- Live 850x645 viewport canvas: ' + JSON.stringify(liveViewportComparison.pixelated?.canvas || null),
+    '- Live viewport A/B captures: ' + liveViewportComparison.captured.join(', '),
     '- Playwright fixture screenshots: ' + fixtureScreens.length,
     '', '## Interpretation limits', '', '- GitHub Actions values are not a physical 4GB Chromebook benchmark.',
     '- RAF monitor intervals are the independent monitor loop’s callback cadence, not confirmed physical display FPS; idle waits and activity modals can create long gaps.',
