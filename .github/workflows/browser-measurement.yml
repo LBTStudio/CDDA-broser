@@ -48,9 +48,7 @@ on:
     types: [completed]
     branches: [main]
   push:
-    branches:
-      - main
-      - perf/architecture-simd-validation
+    branches: [main]
     paths:
       - ".github/workflows/browser-measurement.yml"
       - "bench/playwright_game_measurement.mjs"
