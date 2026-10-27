@@ -310,7 +310,7 @@ Synthetic work counts are NOT proof of native-equivalent game performance.
          last_input = take_pending_input();
 +        last_input_from_pending_queue = true;
 +    }
-+    // Only input consumers may materialize a repeat. pump_events() never
++    // Only input consumers may materialize a repeat.
 +    // turns it into a durable tap when returning last_input to the FIFO.
 +    if( last_input.type == input_event_t::error && pending_key_repeat ) {
 +        if( !SDL_IsTextInputActive() && web_repeat_focused ) {
@@ -1026,7 +1026,7 @@ Synthetic work counts are NOT proof of native-equivalent game performance.
              if( mon.type->id == moncam.first && mon.friendly != 0 &&
 --- a/src/creature.cpp
 +++ b/src/creature.cpp
-@@ -1984,5 +1984,8 @@
+@@ -1984,4 +1984,7 @@
  bool Creature::has_effect( const efftype_id &eff_id ) const
  {
 -    return has_effect( eff_id, bodypart_str_id::NULL_ID() );
