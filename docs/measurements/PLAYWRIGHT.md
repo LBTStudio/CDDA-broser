@@ -6,6 +6,19 @@ CDDA Playwright browser measurements Workflowは、指定されたGitHub Pages�
 
 Actionsから手動実行できます。base_urlは測定対象の配信先、scenarioは read4 / sleep / read / all、rendererは game / software / opengles2 / compare です。allは読書レベル4→5と睡眠を個別に実行し、compareは同じシナリオをsoftwareとopengles2で比較します。populationは0 / 32 / 64 / 128 / 200体の対照条件で、0以外はsleepシナリオのみ許可します。これはデバッグ透明化を同一条件で付けた制御ストレス試験で、敵対行動を通常プレイそのままに再現する試験ではありません。読書の進行や中断条件を混ぜずに、個体数増加時のメモリ・長時間タスク・入力応答を比較する目的です。pushとpull_requestでも関連ファイルの変更時に配信版を計測します。また、Build CDDA 0.I WebAssembly Workflowがmainで成功終了すると、同じrunに保存された cdda-0I-web-bundle 成果物を直接ダウンロードして測定します。これによりPagesへの反映待ちやキャッシュと切り離して、フルビルド直後のソース成果物を測定できます。ビルド失敗時は計測を開始しません。
 
+## 画面サイズ・DPRの比較
+
+`browser-measurement.yml` の `display_profile` で、次の条件を選択できます。
+
+- `desktop`: 1365×768 CSS px、DPR 1（従来の基準条件）
+- `chromebook-compact`: 860×645 CSS px、DPR 1（Chromebookの狭い表示領域を模した条件）
+- `chromebook-dpr2`: 860×645 CSS px、DPR 2（同じCSS領域で高DPIを模した条件）
+- `compare`: 上記3条件を連続実行
+
+PR検証では計測時間を抑えるため、既定で `chromebook-compact` を実行します。手動実行では既定の `compare` で3条件を比較できます。各 `measurement.json` には、要求したビューポートとDPRに加え、実際の `devicePixelRatio`、Canvas内部寸法、CSS表示寸法、X/Y拡大率、`image-rendering`、フォント読込状態を記録します。結果は `<scenario>-<renderer>-<display_profile>/` ごとに分離し、画像の上書きを防ぎます。
+
+これらはPlaywright上のChromium条件比較であって、実機ChromeOSのGPU・合成処理・OS表示倍率を再現するものではありません。高DPI条件でも文字が潰れるならCDDA内部のタイル／フォント描画とCanvas寸法の整合を調べ、compactだけで悪化するならCSS表示倍率とレイアウトを優先して調べます。いずれの場合もスクリーンショットの目視確認なしに、補間方式を一律変更しません。
+
 ## 記録する内容
 
 - 配布ファイル7点のSHA-256、サイズ、測定URL。
