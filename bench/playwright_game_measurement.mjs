@@ -522,6 +522,86 @@ async function main() {
       }
     }
   }
+  // Close the first tab so its exclusive profile lock is released, then
+  // mount the same profile in a fresh page. This verifies IndexedDB/IDBFS
+  // restore rather than merely re-reading the first page's in-memory MEMFS.
+  let reloadRestoreValidation;
+  const expectedReloadSave = {
+    world: after.world, file: after.file, turn: after.turn, activity: after.activity,
+    location: after.position?.location ?? null
+  };
+  try {
+    await page.close();
+    const restorePage = await context.newPage();
+    page = restorePage;
+    restorePage.on('console', message => {
+      consoleLog.push({ type: message.type(), text: message.text(), atMs: Number(now().toFixed(2)), phase: 'reload-restore' });
+    });
+    restorePage.on('pageerror', error => pageErrors.push(String(error?.stack || error)));
+    restorePage.on('requestfailed', request => requestFailures.push({
+      url: request.url(), failure: request.failure()?.errorText || 'unknown', phase: 'reload-restore'
+    }));
+    restorePage.on('crash', () => {
+      const error = new Error('Chromium page crashed during save reload verification');
+      browserHealth.notePageCrash(now(), error.message);
+    });
+    const restoreStarted = now();
+    await restorePage.goto('http://127.0.0.1:' + port + '/index.html', {
+      waitUntil: 'domcontentloaded', timeout: 180000
+    });
+    await restorePage.locator('#profile-start').waitFor({ state: 'visible', timeout: 120000 });
+    await restorePage.locator('#profile-input').fill(profile);
+    await restorePage.locator('#profile-start').click();
+    await restorePage.waitForFunction(profileName => {
+      const fs = window.Module?.FS || window.FS;
+      if (!fs?.analyzePath) return false;
+      const base = '/home/' + profileName + '/.cataclysm-dda/save';
+      if (!fs.analyzePath(base).exists) return false;
+      try {
+        return fs.readdir(base).some(world => world !== '.' && world !== '..' &&
+          fs.readdir(base + '/' + world).some(name => name.endsWith('.sav')));
+      } catch (_) { return false; }
+    }, profile, { timeout: 120000, polling: 250 });
+    const restored = await restorePage.evaluate(profileName => {
+      const fs = window.Module?.FS || window.FS;
+      const base = '/home/' + profileName + '/.cataclysm-dda/save';
+      for (const world of fs.readdir(base).filter(name => name !== '.' && name !== '..')) {
+        for (const name of fs.readdir(base + '/' + world).filter(name => name.endsWith('.sav'))) {
+          const raw = fs.readFile(base + '/' + world + '/' + name, { encoding: 'utf8' });
+          const start = raw.indexOf('{');
+          if (start < 0) continue;
+          const save = JSON.parse(raw.slice(start));
+          return {
+            world, file: name, turn: save.turn ?? null,
+            activity: save.player?.activity?.type ?? null,
+            location: save.player?.location ?? null,
+            moves: save.player?.moves ?? null,
+            bytes: raw.length
+          };
+        }
+      }
+      return null;
+    }, profile);
+    const checks = [
+      { name: 'save-present-after-reload', passed: !!restored },
+      { name: 'world-preserved', passed: restored?.world === expectedReloadSave.world },
+      { name: 'character-save-preserved', passed: restored?.file === expectedReloadSave.file },
+      { name: 'turn-preserved', passed: restored?.turn === expectedReloadSave.turn },
+      { name: 'activity-preserved', passed: restored?.activity === expectedReloadSave.activity },
+      { name: 'location-preserved', passed: JSON.stringify(restored?.location) === JSON.stringify(expectedReloadSave.location) }
+    ];
+    reloadRestoreValidation = {
+      attempted: true, ok: checks.every(check => check.passed), profile,
+      elapsedMs: Number((now() - restoreStarted).toFixed(2)),
+      expected: expectedReloadSave, actual: restored, checks
+    };
+  } catch (error) {
+    reloadRestoreValidation = {
+      attempted: true, ok: false, profile, expected: expectedReloadSave,
+      error: String(error?.stack || error)
+    };
+  }
+
   let preInterruptScreenshot = null;
   if (typeof fixtureResult?.beforeInterrupt === 'string' && /^[a-z0-9_-]+\.png$/i.test(fixtureResult.beforeInterrupt)) {
     preInterruptScreenshot = fixtureResult.beforeInterrupt;
@@ -538,7 +618,7 @@ async function main() {
   });
   const result = { schemaVersion: 2, measuredAt: new Date().toISOString(),
     targetUrl: measurementSource.kind === 'published-pages' ? (measurementSource.targetUrl || baseUrl) : null,
-    source: measurementSource, fixtureValidation, requestFailureValidation, browserVersion: browser.version(),
+    source: measurementSource, fixtureValidation, requestFailureValidation, reloadRestoreValidation, browserVersion: browser.version(),
     nodeVersion: process.version, scenario, renderer, population, bundleFiles, bootToNewGameMs: bootMs, newGameMessage, display,
     persistenceInstrumentation,
     movement: { elapsedMs: keyHoldElapsedMs, keyUpAtMs: Number(keyUpAt.toFixed(2)), beforeSave: before, afterSave: after,
@@ -581,6 +661,7 @@ async function main() {
     '- Input-to-next-frame p50/p95/max ms: ' + [m.keydownToNextFrameMs.p50, m.keydownToNextFrameMs.p95, m.keydownToNextFrameMs.max].join(' / '),
     '- Whole-run Long Tasks: ' + runtime.longTaskCount + ', total ' + runtime.longTaskMs.total + ' ms, max ' + runtime.longTaskMs.max + ' ms',
     '- Fixture acceptance: ' + (fixtureValidation.ok ? 'PASS' : 'FAIL') + '; failures: ' + JSON.stringify(fixtureValidation.failures),
+    '- Save reload/restore: ' + (reloadRestoreValidation.ok ? 'PASS' : 'FAIL') + '; checks: ' + JSON.stringify(reloadRestoreValidation.checks || reloadRestoreValidation.error),
     '- Request failure triage: ' + (requestFailureValidation.ok ? 'PASS' : 'FAIL') + '; allowed: ' + requestFailureValidation.allowed.length + '; unexpected: ' + JSON.stringify(requestFailureValidation.unexpected),
     '- Canvas captures: ' + captured.screens.length + '; page errors: ' + pageErrors.length,
     '- Browser crash history: ' + JSON.stringify(browserHealth.snapshot()),
@@ -599,6 +680,7 @@ async function main() {
   if (!fixtureResult) throw new Error('No game fixture result payload');
   if (!fixtureValidation.ok) throw new Error('Real-game fixture acceptance failed: ' + JSON.stringify(fixtureValidation.failures));
   if (!requestFailureValidation.ok) throw new Error('Unexpected browser request failures: ' + JSON.stringify(requestFailureValidation.unexpected));
+  if (!reloadRestoreValidation.ok) throw new Error('Save reload/restore verification failed: ' + JSON.stringify(reloadRestoreValidation));
   if (pageErrors.length) throw new Error('Browser page errors: ' + pageErrors.length);
   browserHealth.assertNoBrowserFailure();
 }
