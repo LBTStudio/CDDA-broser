@@ -319,15 +319,14 @@ Synthetic work counts are NOT proof of native-equivalent game performance.
      }
  }
 
-@@ -2913,6 +2959,8 @@
-             }
-             SDL_Event commit_event {};
-             commit_event.type = SDL_TEXTINPUT;
-+            // ImGui rejects text events not addressed to its SDL window.
-+            commit_event.text.windowID = SDL_GetWindowID( window.get() );
-             memcpy( commit_event.text.text, ime_buf, static_cast<std::size_t>( ime_bytes ) );
-             commit_event.text.text[ime_bytes] = '\0';
-             SDL_PushEvent( &commit_event );
+@@ -2913,5 +2959,7 @@
+         SDL_Event commit_event {};
+         commit_event.type = SDL_TEXTINPUT;
++        // ImGui rejects text events not addressed to its SDL window.
++        commit_event.text.windowID = SDL_GetWindowID( window.get() );
+         memcpy( commit_event.text.text, ime_buf, static_cast<std::size_t>( ime_bytes ) );
+         commit_event.text.text[ime_bytes] = '\0';
+         SDL_PushEvent( &commit_event );
 @@ -2952,6 +3000,7 @@
          }
          SDL_Event edit_event {};
