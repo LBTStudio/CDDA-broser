@@ -343,6 +343,8 @@ bash "$SCRIPT_DIR/../bench/run_all_status_test.sh"
 python3 "$SCRIPT_DIR/../bench/link_cache_fingerprint_test.py"
 python3 "$SCRIPT_DIR/../bench/wasm_simd_build_test.py" "$PWD/Makefile" "$SCRIPT_DIR/tune-makefile.sh"
 python3 "$SCRIPT_DIR/../bench/workflow_safety_test.py"
+node --check "$SCRIPT_DIR/../bench/measurement_contract.mjs"
+node --check "$SCRIPT_DIR/../bench/playwright_game_measurement.mjs"
 node "$SCRIPT_DIR/../bench/browser_health_test.mjs"
 node "$SCRIPT_DIR/../bench/measurement_contract_test.mjs"
 
