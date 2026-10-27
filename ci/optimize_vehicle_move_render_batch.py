@@ -65,6 +65,9 @@ zone_cache = """    // Vehicles can cross z-levels during one turn. A moved vehi
             }
         }
     }
+    if( zone_manager::get_manager().vehicle_zone_cache_dirty( get_abs_sub().z() ) ) {
+        vehicle_zones_dirty = true;
+    }
     if( vehicle_zones_dirty ) {
         zone_manager::get_manager().cache_vzones( this );
     }"""

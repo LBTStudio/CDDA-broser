@@ -14,6 +14,8 @@ import tempfile
 
 root = Path(sys.argv[1]).resolve()
 map_source = (root / "src/map.cpp").read_text(encoding="utf-8")
+zone_header = (root / "src/clzones.h").read_text(encoding="utf-8")
+zone_source = (root / "src/clzones.cpp").read_text(encoding="utf-8")
 
 
 def function(source: str, signature: str, next_signature: str) -> str:
@@ -37,7 +39,7 @@ assert vehmove.count("bool vehicle_zones_dirty = false;") == 1, (
     "vehicle::vehmove must perform one cross-z vehicle-zone dirty scan"
 )
 scan_start = vehmove.index("bool vehicle_zones_dirty = false;")
-scan_end = vehmove.index("if( vehicle_zones_dirty )", scan_start)
+scan_end = vehmove.index("if( zone_manager::get_manager().vehicle_zone_cache_dirty( get_abs_sub().z() ) )", scan_start)
 scan = vehmove[scan_start:scan_end]
 assert "for( int zlev = -OVERMAP_DEPTH; zlev <= OVERMAP_HEIGHT; ++zlev )" in scan
 assert "const level_cache *cache = get_cache_lazy( zlev );" in scan, (
@@ -50,11 +52,29 @@ assert "vehicle_zones_dirty = true;" in scan
 assert "check_vehicle_zones( get_abs_sub().z() )" not in vehmove, (
     "checking only the active z-level can miss a vehicle that moved vertically"
 )
-rebuild_start = vehmove.index("if( vehicle_zones_dirty )", scan_start)
+rebuild_start = vehmove.index("if( vehicle_zones_dirty )", scan_end)
 rebuild_end = vehmove.index("}", rebuild_start)
 rebuild = vehmove[rebuild_start:rebuild_end]
 assert "zone_manager::get_manager().cache_vzones( this );" in rebuild
 assert scan_start < rebuild_start
+assert "vehicle_zones_dirty = true;" in vehmove[scan_end:rebuild_start]
+
+assert "bool vzone_cache_dirty_ = false;" in zone_header
+assert "int vzone_cache_z_ = 0;" in zone_header
+assert "bool vzone_cache_z_initialized_ = false;" in zone_header
+assert "bool vehicle_zone_cache_dirty( const int zlev ) const" in zone_header
+assert "vzone_cache_z_ != zlev" in zone_header
+edit_start = zone_source.index("void zone_manager::zone_edited( zone_data &zone )")
+edit_end = zone_source.index("void zone_manager::revert_vzones()", edit_start)
+edit_fn = zone_source[edit_start:edit_end]
+assert "if( zone.get_is_vehicle() ) {" in edit_fn
+assert "vzone_cache_dirty_ = true;" in edit_fn, "vehicle zone edits must invalidate the spatial cache"
+cache_start = zone_source.index("void zone_manager::cache_vzones( map *pmap )")
+cache_end = zone_source.index("std::unordered_set<tripoint_abs_ms> zone_manager::get_point_set(", cache_start)
+cache_fn = zone_source[cache_start:cache_end]
+assert "vzone_cache_dirty_ = false;" in cache_fn, "cache rebuild must clear the dirty flag"
+assert "vzone_cache_z_ = here.get_abs_sub().z();" in cache_fn, "cache rebuild must record the active z-level"
+assert "vzone_cache_z_initialized_ = true;" in cache_fn
 assert vehmove.index("if( cdda_web_outermost_vehicle_move && cdda_web_vehicle_move_redraw_pending )") > rebuild_start, (
     "the final browser redraw must remain after zone cache refresh"
 )
@@ -84,6 +104,29 @@ struct LevelCache {
 struct GlobalZoneCache {
     std::set<int> points;
     int rebuilds = 0;
+};
+
+struct VehicleZoneConfig {
+    bool enabled = true;
+    bool dirty = false;
+    bool initialized = false;
+    int cached_z = 0;
+    int rebuilds = 0;
+    void set_enabled(bool value) {
+        enabled = value;
+        dirty = true;
+    }
+    bool needs_rebuild(int active_z, bool vehicle_geometry_dirty) const {
+        return vehicle_geometry_dirty || dirty || !initialized || cached_z != active_z;
+    }
+    bool finish_turn(int active_z, bool vehicle_geometry_dirty) {
+        if (!needs_rebuild(active_z, vehicle_geometry_dirty)) return false;
+        dirty = false;
+        cached_z = active_z;
+        initialized = true;
+        ++rebuilds;
+        return true;
+    }
 };
 
 static bool finish_vehicle_turn(LevelCache *levels[3], const int active_z,
@@ -169,7 +212,29 @@ int main() {
     assert(!finish_vehicle_turn(levels, 0, global));
     assert(far_cart.zones_dirty && global.rebuilds == 3);
 
-    std::puts("PASS vehicle-zone regression: cross-z eviction, return, one rebuild per dirty turn, clean-turn no-op, unloaded-level guard");
+    // Edits to a zone do not dirty vehicle geometry. The independent manager
+    // dirty flag must still trigger cache reconstruction at turn end.
+    VehicleZoneConfig config;
+    // The first cache build records which z-level its points represent.
+    assert(config.finish_turn(0, false));
+    assert(config.initialized && config.cached_z == 0 && config.rebuilds == 1);
+    assert(!config.finish_turn(0, false) && config.rebuilds == 1);
+    config.set_enabled(false);
+    assert(config.dirty && !config.enabled);
+    assert(config.finish_turn(0, false));
+    assert(!config.dirty && config.rebuilds == 2);
+    assert(!config.finish_turn(0, false) && config.rebuilds == 2);
+    config.set_enabled(true);
+    assert(config.finish_turn(0, false));
+    assert(config.enabled && !config.dirty && config.rebuilds == 3);
+    // Moving between z-levels with no vehicle movement or zone edit still
+    // invalidates the global cache, which otherwise describes the old level.
+    assert(config.needs_rebuild(1, false));
+    assert(config.finish_turn(1, false));
+    assert(config.cached_z == 1 && !config.dirty && config.rebuilds == 4);
+    assert(!config.finish_turn(1, false) && config.rebuilds == 4);
+
+    std::puts("PASS vehicle-zone regression: cross-z vehicle movement, zone edits, active z-level changes without movement, clean-turn no-op, unloaded-level guard");
 }
 """
 
