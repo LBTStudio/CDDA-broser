@@ -263,7 +263,7 @@ index 020cf3d..a377ff9 100644
  #if defined(__ANDROID__)
      SDL_StopTextInput();
  #else
-@@ -2657,6 +2718,117 @@ void StopTextInput()
+@@ -2657,6 +2718,131 @@ void StopTextInput()
  #endif
  }
  
@@ -395,7 +395,7 @@ index 020cf3d..a377ff9 100644
  //Check for any window messages (keypress, paint, mousemove, etc)
  static void CheckMessages()
  {
-@@ -2974,6 +3146,12 @@ static void CheckMessages()
+@@ -2974,6 +3157,12 @@ static void CheckMessages()
  
      last_input = input_event();
  
@@ -408,7 +408,7 @@ index 020cf3d..a377ff9 100644
      std::optional<point> resize_dims;
      bool render_target_reset = false;
      using cata::options::mouse;
-@@ -3914,6 +4092,30 @@ void input_manager::pump_events()
+@@ -3914,6 +4103,30 @@ void input_manager::pump_events()
          return;
      }
  
