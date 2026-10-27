@@ -90,12 +90,41 @@ new_zone_cache = """    // Vehicles can cross z-levels during one turn. A moved 
             }
         }
     }
-    if( vehicle_zones_dirty ) {
+    if( vehicle_zones_dirty || zone_manager::get_manager().vehicle_zone_cache_dirty() ) {
         zone_manager::get_manager().cache_vzones( this );
     }"""
 if source.count(old_zone_cache) != 1:
     raise SystemExit("ERROR: expected unconditional vehicle-zone refresh did not match exactly once")
 source = source.replace(old_zone_cache, new_zone_cache, 1)
+
+old_clear = """void zone_manager::clear()
+{
+    zones.clear();
+    added_vzones.clear();
+    changed_vzones.clear();
+    removed_vzones.clear();
+    // Do not clear types since it is needed for the next games.
+    area_cache.clear();
+    vzone_cache.clear();
+}"""
+new_clear = old_clear.replace("    vzone_cache.clear();", "    vzone_cache.clear();\n    vzone_cache_dirty_ = false;")
+if zone_manager_source.count(old_clear) != 1:
+    raise SystemExit("ERROR: expected zone_manager::clear body did not match exactly once")
+zone_manager_source = zone_manager_source.replace(old_clear, new_clear, 1)
+
+old_edited = """void zone_manager::zone_edited( zone_data &zone )
+{
+    if( zone.get_is_vehicle() ) {
+        //Check if this zone has already been stored"""
+new_edited = """void zone_manager::zone_edited( zone_data &zone )
+{
+    if( zone.get_is_vehicle() ) {
+        // Geometry can be clean while an edit changes cache participation.
+        vzone_cache_dirty_ = true;
+        //Check if this zone has already been stored"""
+if zone_manager_source.count(old_edited) != 1:
+    raise SystemExit("ERROR: expected zone_edited body did not match exactly once")
+zone_manager_source = zone_manager_source.replace(old_edited, new_edited, 1)
 
 # Do not let map::get_vehicle_zones recursively rebuild the cache while
 # zone_manager::cache_vzones is already rebuilding it.
@@ -124,6 +153,21 @@ source = source.replace(old_recursive_refresh, new_recursive_refresh, 1)
 
 zone_manager_path = path.with_name("clzones.cpp")
 zone_manager_source = zone_manager_path.read_text(encoding="utf-8")
+zone_header_path = path.with_name("clzones.h")
+zone_header = zone_header_path.read_text(encoding="utf-8")
+old_zone_cache_field = """        std::unordered_map<std::string, std::unordered_set<tripoint_abs_ms>> vzone_cache;
+        std::unordered_set<tripoint_abs_ms> get_point_set( const zone_type_id &type,"""
+new_zone_cache_field = """        std::unordered_map<std::string, std::unordered_set<tripoint_abs_ms>> vzone_cache;
+        bool vzone_cache_dirty_ = false; // NOLINT(cata-serialize)
+        std::unordered_set<tripoint_abs_ms> get_point_set( const zone_type_id &type,"""
+if zone_header.count(old_zone_cache_field) != 1:
+    raise SystemExit("ERROR: expected vehicle-zone cache member did not match exactly once")
+zone_header = zone_header.replace(old_zone_cache_field, new_zone_cache_field, 1)
+old_zone_cache_getter = "        void cache_vzones( map *pmap = nullptr );"
+new_zone_cache_getter = old_zone_cache_getter + "\n        bool vehicle_zone_cache_dirty() const { return vzone_cache_dirty_; }"
+if zone_header.count(old_zone_cache_getter) != 1:
+    raise SystemExit("ERROR: expected cache_vzones declaration did not match exactly once")
+zone_header = zone_header.replace(old_zone_cache_getter, new_zone_cache_getter, 1)
 old_zone_call = "    auto vzones = here.get_vehicle_zones( here.get_abs_sub().z() );"
 new_zone_call = "    auto vzones = here.get_vehicle_zones( here.get_abs_sub().z(), /* refresh_cache = */ false );"
 zone_fn_signature = "void zone_manager::cache_vzones( map *pmap )"
@@ -136,6 +180,11 @@ zone_fn = zone_manager_source[zone_fn_start:zone_fn_end]
 if zone_fn.count(old_zone_call) != 1:
     raise SystemExit("ERROR: cache_vzones-local source anchor did not match exactly once")
 zone_fn = zone_fn.replace(old_zone_call, new_zone_call, 1)
+if "vzone_cache_dirty_ = false;" not in zone_fn:
+    pos = zone_fn.rfind("}")
+    if pos < 0:
+        raise SystemExit("ERROR: could not find cache_vzones final brace")
+    zone_fn = zone_fn[:pos] + "    vzone_cache_dirty_ = false;\\n" + zone_fn[pos:]
 zone_manager_source = (
     zone_manager_source[:zone_fn_start] + zone_fn + zone_manager_source[zone_fn_end:]
 )
@@ -191,8 +240,8 @@ if "const level_cache *cache = get_cache_lazy( zlev );" not in source:
     raise SystemExit("ERROR: cross-level vehicle-zone scan must not allocate unloaded level caches")
 if "if( veh->refresh_zones() ) {" not in source:
     raise SystemExit("ERROR: dirty vehicle-zone refresh is missing")
-if "if( vehicle_zones_dirty ) {" not in source:
-    raise SystemExit("ERROR: vehicle-zone cache rebuild is not conditional on actual refresh")
+if "if( vehicle_zones_dirty || zone_manager::get_manager().vehicle_zone_cache_dirty() ) {" not in source:
+    raise SystemExit("ERROR: vehicle-zone edits do not trigger conditional cache rebuild")
 if source.count("if( rebuild && refresh_cache ) {") != 1:
     raise SystemExit("ERROR: nested vehicle-zone cache rebuild is still unconditional")
 if "std::vector<zone_data *> map::get_vehicle_zones( const int zlev, bool refresh_cache )" not in source:
@@ -204,4 +253,5 @@ if "here.get_vehicle_zones( here.get_abs_sub().z(), /* refresh_cache = */ false 
 path.write_text(source, encoding="utf-8")
 header_path.write_text(header, encoding="utf-8")
 zone_manager_path.write_text(zone_manager_source, encoding="utf-8")
+zone_header_path.write_text(zone_header, encoding="utf-8")
 print("PASS: vehicle turn worklist now uses contiguous storage with std::map-compatible order and merge semantics")
