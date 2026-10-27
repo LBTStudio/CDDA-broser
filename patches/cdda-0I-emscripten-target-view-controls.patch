@@ -17,31 +17,31 @@ CDDA 0.I browser fix: restore aim view offset and expose keyboard panning.
 +    "category": "TARGET",
      "name": "Center on character",
      "bindings": [ { "input_method": "keyboard_any", "key": "0" }, { "input_method": "keyboard_code", "key": "KEYPAD_0" } ]
-@@ -2340,1 +2341,5 @@
+@@ -2340,1 +2341,4 @@
 -    "bindings": [ { "input_method": "gamepad", "key": "JOY_8" } ]
 +    "bindings": [
-+      { "input_method": "keyboard_code", "key": "0", "mod": [ "shift" ] },
++      { "input_method": "keyboard_code", "key": "HOME", "mod": [ "shift" ] },
 +      { "input_method": "gamepad", "key": "JOY_8" }
 +    ]
-@@ -2347,1 +2352,4 @@
+@@ -2347,1 +2351,4 @@
 -    "bindings": [ { "input_method": "gamepad", "key": "JOY_21" } ]
 +    "bindings": [
 +      { "input_method": "keyboard_code", "key": "UP", "mod": [ "shift" ] },
 +      { "input_method": "gamepad", "key": "JOY_21" }
 +    ]
-@@ -2354,1 +2362,4 @@
+@@ -2354,1 +2361,4 @@
 -    "bindings": [ { "input_method": "gamepad", "key": "JOY_22" } ]
 +    "bindings": [
 +      { "input_method": "keyboard_code", "key": "RIGHT", "mod": [ "shift" ] },
 +      { "input_method": "gamepad", "key": "JOY_22" }
 +    ]
-@@ -2361,1 +2372,4 @@
+@@ -2361,1 +2371,4 @@
 -    "bindings": [ { "input_method": "gamepad", "key": "JOY_23" } ]
 +    "bindings": [
 +      { "input_method": "keyboard_code", "key": "DOWN", "mod": [ "shift" ] },
 +      { "input_method": "gamepad", "key": "JOY_23" }
 +    ]
-@@ -2368,1 +2382,4 @@
+@@ -2368,1 +2381,4 @@
 -    "bindings": [ { "input_method": "gamepad", "key": "JOY_24" } ]
 +    "bindings": [
 +      { "input_method": "keyboard_code", "key": "LEFT", "mod": [ "shift" ] },
