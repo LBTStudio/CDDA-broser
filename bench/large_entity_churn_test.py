@@ -355,6 +355,13 @@ static void benchmark_vehicle_groups( const std::size_t count, const bool many_z
     if( count <= 32 ) {
         assert( new_allocs == 0 );
         if( count > 0 ) { assert( old_allocs > 0 ); }
+    } else if( many_z_levels && count <= 256 ) {
+        // Exactly filling the bounded table must still stay allocation-free.
+        // This also exercises collision probing at the maximum supported load.
+        assert( new_allocs == 0 );
+        assert( new_bytes == 0 );
+        assert( old_allocs > 0 );
+        assert( old_bytes > 0 );
     } else if( many_z_levels ) {
         // More than the bounded unique slots falls back to one reserved vector.
         assert( new_allocs == repetitions );
@@ -435,7 +442,9 @@ int main() {
     for( std::size_t count : { 0U, 1U, 4U, 16U, 32U, 33U, 128U, 1024U } ) {
         benchmark_vehicle_groups( count );
     }
-    benchmark_vehicle_groups( 300, true );
+    benchmark_vehicle_groups( 256, true ); // exact unique-table capacity, including collision probes
+    benchmark_vehicle_groups( 257, true ); // first unique coordinate beyond bounded capacity
+    benchmark_vehicle_groups( 300, true ); // larger overflow fallback
     std::puts( "PASS large entity movement and dynamic vehicle-submap grouping differential checks" );
 }
 '''
