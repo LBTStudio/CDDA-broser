@@ -291,7 +291,7 @@ CDDA 0.I: bounded read-only melee outfit advisor. Apply after runtime-efficiency
      "type": "keybinding",
 --- /dev/null
 +++ b/src/cata_gear_guide.h
-@@ -0,0 +1,184 @@
+@@ -0,0 +1,183 @@
 +#pragma once
 +#ifndef CATA_SRC_CATA_GEAR_GUIDE_H
 +#define CATA_SRC_CATA_GEAR_GUIDE_H
@@ -334,7 +334,7 @@ CDDA 0.I: bounded read-only melee outfit advisor. Apply after runtime-efficiency
 +    bool preserve_storage = true;
 +};
 +struct assessment {
-+    std::vector<part> parts;
++    std::array<part, max_parts> parts = {};
 +    double protection = 0;
 +    double coverage = 0;
 +    double encumbrance = 0;
@@ -358,7 +358,6 @@ CDDA 0.I: bounded read-only melee outfit advisor. Apply after runtime-efficiency
 +                          const environment &env, int profile )
 +{
 +    assessment value;
-+    value.parts.resize( env.weights.size() );
 +    double sum_weights = 0;
 +    const double target = std::clamp( ( 18.0 - env.celsius ) * 2.0, 0.0, 100.0 );
 +    for( std::size_t b = 0; b < env.weights.size(); ++b ) {
