@@ -36,7 +36,10 @@ old = subprocess.check_output(['git', '-C', str(source), 'show', 'HEAD:src/armor
 assert rest == old
 bindings = json.loads((source / 'data/raw/keybindings.json').read_text())
 entries = [b for b in bindings if b.get('category') == 'SORT_ARMOR' and b.get('id') == 'GEAR_GUIDE']
-assert len(entries) == 1 and entries[0]['bindings'] == [{'input_method': 'keyboard_any', 'key': 'F2'}]
+assert len(entries) == 1 and entries[0]['bindings'] == [
+    {'input_method': 'keyboard_any', 'key': 'F2'},
+    {'input_method': 'keyboard_char', 'key': 'g'}
+]
 assert ui.count('show_gear_guide( guy, worn );') == 1
 
 program = r'''
