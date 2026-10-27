@@ -19,7 +19,7 @@ const displayProfiles = {
   'chromebook-dpr2': { width: 860, height: 645, deviceScaleFactor: 2 },
 };
 if (!Object.hasOwn(displayProfiles, displayProfile)) throw new Error('Unsupported display profile: ' + displayProfile);
-const profile = scenario + '_z' + population + '_' + displayProfile;
+const profile = scenario + '_z' + population;
 if (!fs.existsSync(path.join(bundle, 'index.html'))) throw new Error('Missing bundle index.html');
 if (!['read4', 'read', 'sleep'].includes(scenario)) throw new Error('Unsupported scenario: ' + scenario);
 if (!['game', 'software', 'opengles2'].includes(renderer)) throw new Error('Unsupported renderer: ' + renderer);
