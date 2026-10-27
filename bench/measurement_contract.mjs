@@ -10,6 +10,33 @@ function hasPerfMessage(messages, expression) {
   return messages.some(entry => expression.test(String(entry?.message ?? '')));
 }
 
+export function validateActiveRenderer({ renderer, consoleMessages }) {
+  const active = [];
+  for (const entry of consoleMessages ?? []) {
+    if (entry?.phase === 'reload-restore') continue;
+    const message = String(entry?.text ?? entry?.message ?? '');
+    const match = message.match(/Active renderer:\\s*\\d+\\/([A-Za-z0-9_-]+)/i);
+    if (match) active.push(match[1].toLowerCase());
+  }
+  const checks = [];
+  const failures = [];
+  const expect = (condition, name, detail) => {
+    checks.push({ name, passed: Boolean(condition), detail });
+    if (!condition) failures.push({ name, detail });
+  };
+  const expected = renderer === 'software' || renderer === 'opengles2' ? renderer : null;
+  expect(active.length > 0, 'active-renderer-observed',
+    active.length ? active.join(', ') : 'No initial-page Active renderer log was observed.');
+  if (expected) {
+    expect(active.length > 0 && active.every(value => value === expected), 'active-renderer-matches-request',
+      `expected=${expected}; actual=${active.join(', ') || 'missing'}`);
+  } else {
+    expect(active.length > 0 && active.every(value => ['software', 'opengles2'].includes(value)),
+      'default-renderer-valid', `actual=${active.join(', ') || 'missing'}`);
+  }
+  return { ok: failures.length === 0, requested: renderer, actual: active, checks, failures };
+}
+
 export function validateFixtureOutcome({ scenario, population, renderer, fixtureResult, savedGameState }) {
   const failures = [];
   const checks = [];
@@ -29,6 +56,14 @@ export function validateFixtureOutcome({ scenario, population, renderer, fixture
   expect(fixtureResult.renderer === renderer, 'fixture-renderer', `expected=${renderer}; actual=${fixtureResult.renderer}`);
   expect(Number(fixtureResult.population) === Number(population), 'fixture-population',
     `expected=${population}; actual=${fixtureResult.population}`);
+  let savedZombieCount = 0;
+  for (const [name, values] of Object.entries(fixtureResult.saves ?? {})) {
+    if (!name.endsWith('.sav') || !Array.isArray(values)) continue;
+    const raw = new TextDecoder().decode(Uint8Array.from(values));
+    savedZombieCount += (raw.match(/"typeid"\\s*:\\s*"mon_zombie"/g) ?? []).length;
+  }
+  expect(savedZombieCount === Number(population), 'population-monster-count',
+    `requested=${population}; serialized mon_zombie entries=${savedZombieCount}`);
   expect(Number.isFinite(fixtureResult.heap) && fixtureResult.heap > 0, 'wasm-heap-present',
     `heap=${fixtureResult.heap}`);
   expect(!String(fixtureResult.error ?? '').trim(), 'game-error-overlay-empty',

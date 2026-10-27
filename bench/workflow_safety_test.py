@@ -112,6 +112,9 @@ assert "if:" not in verify_step, "binary verification must run for unpublished e
 runner = (root / "bench/playwright_game_measurement.mjs").read_text(encoding="utf-8")
 contract = (root / "bench/measurement_contract.mjs").read_text(encoding="utf-8")
 assert "validateFixtureOutcome" in runner and "classifyRequestFailures" in runner
+assert "validateActiveRenderer" in runner
+assert "activeRendererValidation.ok" in runner
+assert "population-monster-count" in (root / "bench/measurement_contract.mjs").read_text(encoding="utf-8")
 assert "fixtureValidation.ok" in runner and "requestFailureValidation.ok" in runner
 assert "reloadRestoreValidation" in runner
 assert "persistentProfile = 'perf_' + profile" in runner

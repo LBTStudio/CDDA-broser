@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { classifyRequestFailures, validateFixtureOutcome } from './measurement_contract.mjs';
+import { classifyRequestFailures, validateActiveRenderer, validateFixtureOutcome } from './measurement_contract.mjs';
 
 function base({ scenario = 'read4', renderer = 'game', population = 0 } = {}) {
   const sleep = scenario === 'sleep';
@@ -20,7 +20,11 @@ function base({ scenario = 'read4', renderer = 'game', population = 0 } = {}) {
     population,
     heap: 668205056,
     error: '',
-    saves: { 'world/player.sav': [1, 2, 3] },
+    saves: { 'world/player.sav': population > 0
+      ? Array.from(new TextEncoder().encode(JSON.stringify({
+          monsters: Array.from({ length: population }, () => ({ typeid: 'mon_zombie' }))
+        })))
+      : [1, 2, 3] },
     reading: sleep ? null : {
       initialLevel: 4,
       initialTurn: 5212947,
@@ -77,6 +81,41 @@ for (const scenario of ['read4', 'sleep']) {
 }
 
 {
+  const state = base({ scenario: 'sleep', renderer: 'game', population: 128 });
+  const good = validateFixtureOutcome(state);
+  assert.equal(good.ok, true, JSON.stringify(good.failures));
+  assert.ok(good.checks.some(check => check.name === 'population-monster-count' && check.passed));
+  state.fixtureResult.saves['world/player.sav'] = Array.from(new TextEncoder().encode(JSON.stringify({
+    monsters: Array.from({ length: 127 }, () => ({ typeid: 'mon_zombie' }))
+  })));
+  const bad = validateFixtureOutcome(state);
+  assert.equal(bad.ok, false);
+  assert.ok(bad.failures.some(item => item.name === 'population-monster-count'));
+}
+
+{
+  const goodSoftware = validateActiveRenderer({
+    renderer: 'software',
+    consoleMessages: [
+      { text: 'INFO : Active renderer: 1/software' },
+      { text: 'INFO : Active renderer: 0/opengles2', phase: 'reload-restore' }
+    ]
+  });
+  assert.equal(goodSoftware.ok, true, JSON.stringify(goodSoftware.failures));
+
+  const wrongRenderer = validateActiveRenderer({
+    renderer: 'software',
+    consoleMessages: [{ text: 'INFO : Active renderer: 0/opengles2' }]
+  });
+  assert.equal(wrongRenderer.ok, false);
+  assert.ok(wrongRenderer.failures.some(item => item.name === 'active-renderer-matches-request'));
+
+  const missingRenderer = validateActiveRenderer({ renderer: 'opengles2', consoleMessages: [] });
+  assert.equal(missingRenderer.ok, false);
+  assert.ok(missingRenderer.failures.some(item => item.name === 'active-renderer-observed'));
+}
+
+{
   const result = classifyRequestFailures([
     { url: 'http://127.0.0.1:1234/cataclysm-tiles.data', failure: 'net::ERR_ABORTED' },
     { url: 'http://127.0.0.1:1234/missing.wasm', failure: 'net::ERR_CONNECTION_RESET' }
@@ -92,4 +131,4 @@ for (const scenario of ['read4', 'sleep']) {
   assert.equal(result.ok, true);
   assert.equal(result.allowed.length, 1);
 }
-console.log('PASS measurement contracts: real-game state acceptance, negative controls, and request-failure triage');
+console.log('PASS measurement contracts: real-game state, saved monster count, active renderer, and request-failure triage');
