@@ -54,6 +54,7 @@ browser-runtime
 mapbuffer-fixed-arrays
 visible-creature-position-cache
 large-entity-churn
+input-accessibility
 "
 
 for name in $PATCHES; do
@@ -125,7 +126,12 @@ grep -Fq "get_vehicle_zones( int zlev, bool refresh_cache = true )" src/map.h
 grep -Fq "if( rebuild && refresh_cache )" src/map.cpp
 grep -Fq "get_vehicle_zones( here.get_abs_sub().z(), /* refresh_cache = */ false )" src/clzones.cpp
 grep -q "web_data_cache_root"                      src/json_loader.cpp
-grep -q "assume_immutable_root"                    src/flexbuffer_cache.cpp
+grep -q "assume_immutable_root"                      src/flexbuffer_cache.cpp
+# Regression guards for the reported keyboard and medical-selection issues.
+grep -Fq '"id": "pick_style"' data/raw/keybindings.json
+grep -Fq '"input_method": "keyboard_code", "key": "c"' data/raw/keybindings.json
+grep -Fq 'ImGuiCol_Header, ImVec4( 0.42f, 0.29f, 0.06f, 0.92f )' src/uilist.cpp
+grep -Fq 'ImGui::PopStyleColor( 3 )' src/uilist.cpp
 
 # activity-and-ime パッチの目印。
 # 新規ファイル 2 対が存在し、3 つの主要修正が入っていること。
