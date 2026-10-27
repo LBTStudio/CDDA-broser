@@ -6,6 +6,7 @@ import http from 'node:http';
 import path from 'node:path';
 import { chromium } from 'playwright';
 import { ACTIVE_MOVEMENT_STALL_LIMIT_MS, assertMovementResponsive, createBrowserHealth } from './browser_health.mjs';
+import { classifyRequestFailures, validateFixtureOutcome } from './measurement_contract.mjs';
 
 const bundle = path.resolve(process.argv[2] || '.');
 const scenario = process.argv[3] || 'read4';
@@ -20,6 +21,13 @@ if (!Number.isInteger(population) || population < 0 || population > 200) throw n
 if (population !== 0 && scenario !== 'sleep') throw new Error('Monster population stress is only valid for the sleep scenario');
 
 const outputRoot = path.resolve('bench/out/browser-measurement');
+const sourceManifestPath = path.join(outputRoot, 'measurement-source.json');
+let measurementSource = { kind: 'untracked', targetUrl: baseUrl, note: 'No measurement-source.json was written by the workflow.' };
+try {
+  if (fs.existsSync(sourceManifestPath)) measurementSource = JSON.parse(fs.readFileSync(sourceManifestPath, 'utf8'));
+} catch (error) {
+  measurementSource = { kind: 'invalid-manifest', targetUrl: null, error: String(error) };
+}
 const out = path.join(outputRoot, scenario + '-' + renderer);
 fs.mkdirSync(out, { recursive: true });
 const captured = { screens: [], result: null, other: [] };
@@ -521,12 +529,16 @@ async function main() {
     preInterruptScreenshot = 'before-interruption.png';
     fs.writeFileSync(path.join(out, preInterruptScreenshot), Buffer.from(fixtureResult.beforeInterrupt.slice(22), 'base64'));
   }
+  const fixtureValidation = validateFixtureOutcome({ scenario, population, renderer, fixtureResult, savedGameState });
+  const requestFailureValidation = classifyRequestFailures(requestFailures);
   const assets = ['index.html', 'cataclysm-tiles.js', 'cataclysm-tiles.wasm', 'cataclysm-tiles.data', 'cataclysm-tiles.data.js', 'Terminus.ttf', 'favicon.ico'];
   const bundleFiles = assets.map(name => {
     const file = path.join(bundle, name);
     return fs.existsSync(file) ? { name, bytes: fs.statSync(file).size } : { name, missing: true };
   });
-  const result = { schemaVersion: 1, measuredAt: new Date().toISOString(), targetUrl: baseUrl, browserVersion: browser.version(),
+  const result = { schemaVersion: 2, measuredAt: new Date().toISOString(),
+    targetUrl: measurementSource.kind === 'published-pages' ? (measurementSource.targetUrl || baseUrl) : null,
+    source: measurementSource, fixtureValidation, requestFailureValidation, browserVersion: browser.version(),
     nodeVersion: process.version, scenario, renderer, population, bundleFiles, bootToNewGameMs: bootMs, newGameMessage, display,
     persistenceInstrumentation,
     movement: { elapsedMs: keyHoldElapsedMs, keyUpAtMs: Number(keyUpAt.toFixed(2)), beforeSave: before, afterSave: after,
@@ -546,7 +558,9 @@ async function main() {
   const reading = result.fixture?.reading ? 'turns ' + result.fixture.reading.gameSecondsBetweenSaves + '; observation ' +
     Math.round(result.fixture.reading.observationMs) + ' ms; reached level 5: ' + result.fixture.reading.reachedLevel5 : 'not applicable';
   const m = runtime.movement, f = m.frameMonitorIntervalMs;
-  const summary = ['# CDDA Playwright browser measurement', '', '- Target: ' + baseUrl, '- Captured: ' + result.measuredAt,
+  const summary = ['# CDDA Playwright browser measurement', '',
+    '- Source provenance: ' + JSON.stringify(measurementSource),
+    '- Target URL: ' + (result.targetUrl || 'not applicable; executing an exact local build artifact'), '- Captured: ' + result.measuredAt,
     '- Scenario/renderer: ' + scenario + ' / ' + renderer, '- Browser version: ' + result.browserVersion,
     '- Boot to new-game log: ' + bootMs + ' ms', '- Canvas: ' + JSON.stringify(display.canvas),
     '- HTML Terminus font check: ' + display.fonts.terminusCheck, '- Movement: ' + movementText,
@@ -566,6 +580,8 @@ async function main() {
     '- Movement RAF monitor intervals >50/>100/>250 ms: ' + [f.over50, f.over100, f.over250].join(' / '),
     '- Input-to-next-frame p50/p95/max ms: ' + [m.keydownToNextFrameMs.p50, m.keydownToNextFrameMs.p95, m.keydownToNextFrameMs.max].join(' / '),
     '- Whole-run Long Tasks: ' + runtime.longTaskCount + ', total ' + runtime.longTaskMs.total + ' ms, max ' + runtime.longTaskMs.max + ' ms',
+    '- Fixture acceptance: ' + (fixtureValidation.ok ? 'PASS' : 'FAIL') + '; failures: ' + JSON.stringify(fixtureValidation.failures),
+    '- Request failure triage: ' + (requestFailureValidation.ok ? 'PASS' : 'FAIL') + '; allowed: ' + requestFailureValidation.allowed.length + '; unexpected: ' + JSON.stringify(requestFailureValidation.unexpected),
     '- Canvas captures: ' + captured.screens.length + '; page errors: ' + pageErrors.length,
     '- Browser crash history: ' + JSON.stringify(browserHealth.snapshot()),
     '- Active movement stall threshold ms: ' + ACTIVE_MOVEMENT_STALL_LIMIT_MS,
@@ -581,6 +597,8 @@ async function main() {
   console.log(summary);
   if (bundleFiles.some(file => file.missing)) throw new Error('Missing one or more deployed bundle assets');
   if (!fixtureResult) throw new Error('No game fixture result payload');
+  if (!fixtureValidation.ok) throw new Error('Real-game fixture acceptance failed: ' + JSON.stringify(fixtureValidation.failures));
+  if (!requestFailureValidation.ok) throw new Error('Unexpected browser request failures: ' + JSON.stringify(requestFailureValidation.unexpected));
   if (pageErrors.length) throw new Error('Browser page errors: ' + pageErrors.length);
   browserHealth.assertNoBrowserFailure();
 }
