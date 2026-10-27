@@ -13,8 +13,11 @@ manual = manual_path.read_text(encoding="utf-8")
 assert workflow == manual, "manual/build-and-release.yml is stale; sync it with the live workflow"
 
 expected_early_guard = "if: ${{ inputs.runtime_backend == 'jspi' && inputs.deploy_pages != false }}"
+expected_simd_early_guard = "if: ${{ inputs.wasm_simd == 'on' && inputs.deploy_pages != false }}"
 expected_deploy_gate = "if: ${{ inputs.deploy_pages != false && inputs.runtime_backend != 'jspi' }}"
 assert "Reject experimental JSPI deployment" in workflow
+assert "Reject experimental SIMD deployment" in workflow
+assert expected_simd_early_guard in workflow
 assert expected_early_guard in workflow
 assert "JSPI is experimental and must not be deployed to GitHub Pages" in workflow
 assert expected_deploy_gate in workflow
@@ -49,6 +52,7 @@ assert "## 各工程の実行ログ" in workflow
 
 # Architecture and measurement notes must describe the implementation that is
 # actually applied by CI, not the retracted first version of the activity patch.
+measure_workflow = (root / ".github/workflows/browser-measurement.yml").read_text(encoding="utf-8")
 architecture = (root / "docs/ARCHITECTURE.md").read_text(encoding="utf-8")
 facts = (root / "docs/measurements/FACTS.md").read_text(encoding="utf-8")
 assert "cdda-assets-bundle-v3-*" in architecture
@@ -57,4 +61,78 @@ assert "CI rejects" in architecture and "mon_info_update_throttled" in architect
 assert "exclusive Web Lock" in architecture
 assert "F-20 [旧案・撤回済み]" in facts
 assert "this throttling proposal was retracted" in facts
-print("PASS docs consistency: immutable cache, current danger-check cadence, profile tab locks, retired optimization clearly labelled")
+
+# Architecture A/B experiments default to current scalar behavior and can measure
+# an exact build artifact without publishing experimental binaries.
+assert "wasm_simd:" in workflow and 'default: "off"' in workflow
+assert "CDDA_WASM_SIMD" in workflow
+assert 'echo "| WebAssembly SIMD | $CDDA_WASM_SIMD |"' in workflow
+assert "CDDA_WASM_SIMD" in (root / "ci/tune-makefile.sh").read_text(encoding="utf-8")
+assert "artifact_run_id:" in measure_workflow
+assert "github.event_name == 'pull_request' && 'compare'" in measure_workflow
+assert 'GITHUB_EVENT_NAME" == "pull_request' in measure_workflow
+assert "for population in 32 64 128 200; do" in measure_workflow
+assert "Download exact bundle from the selected full build" in measure_workflow
+assert "github.event.inputs.artifact_run_id" in measure_workflow
+assert "measurement-source.json" in measure_workflow
+assert "SOURCE_COMMIT_SHA" in measure_workflow
+assert "cdda-build-provenance" in workflow
+assert "build-provenance.json" in workflow
+assert "cdda-build-provenance" in measure_workflow
+assert "measurementRunAttempt" in measure_workflow
+assert measure_workflow.count('"measurementRunAttempt": int(os.environ.get("GITHUB_RUN_ATTEMPT", "1"))') == 1, (
+    "published bundle manifest must record the attempt number exactly once"
+)
+assert "name: cdda-playwright-measurement-${{ github.run_id }}-attempt-${{ github.run_attempt }}" in measure_workflow
+assert "export SOURCE_COMMIT_SHA SOURCE_RUN_ATTEMPT" in measure_workflow
+
+# Python heredocs embedded in YAML run blocks must remain inside the block
+# scalar; a column-0 "import" silently turns the workflow into an invalid file.
+for workflow_path in [workflow_path, root / ".github/workflows/browser-measurement.yml"]:
+    lines = workflow_path.read_text(encoding="utf-8").splitlines()
+    for index, line in enumerate(lines):
+        if line.strip() != "python3 - <<'PY'":
+            continue
+        command_indent = len(line) - len(line.lstrip())
+        for body_index in range(index + 1, len(lines)):
+            body_line = lines[body_index]
+            if not body_line.strip():
+                continue
+            body_indent = len(body_line) - len(body_line.lstrip())
+            assert body_indent >= command_indent, (
+                f"{workflow_path}:{body_index + 1}: heredoc line escaped YAML run block"
+            )
+            if body_line.strip() == "PY":
+                break
+        else:
+            raise AssertionError(f"{workflow_path}:{index + 1}: unterminated Python heredoc")
+
+# The generated binary is checked regardless of deployment mode. Experimental
+# artifacts use deploy_pages=false, but must not bypass the V8 function-size guard.
+verify_step = workflow.split("      - name: Verify linked binary", 1)[1].split("      - name: Upload linked binary", 1)[0]
+assert "if:" not in verify_step, "binary verification must run for unpublished experimental builds"
+
+runner = (root / "bench/playwright_game_measurement.mjs").read_text(encoding="utf-8")
+contract = (root / "bench/measurement_contract.mjs").read_text(encoding="utf-8")
+assert "validateFixtureOutcome" in runner and "classifyRequestFailures" in runner
+assert "validateActiveRenderer" in runner
+assert "activeRendererValidation.ok" in runner
+assert "extractWasmHeapSamples" in runner and "wasmHeapSampleValidation.ok" in runner
+assert "webglFallback" in runner
+assert "population-monster-count" in (root / "bench/measurement_contract.mjs").read_text(encoding="utf-8")
+assert "fixtureValidation.ok" in runner and "requestFailureValidation.ok" in runner
+assert "reloadRestoreValidation" in runner
+assert "persistentProfile = 'perf_' + profile" in runner
+assert "fill(persistentProfile)" in runner
+assert "moves-preserved" in runner
+assert "population === 0 ? scenario + '-' + renderer : scenario + '-' + renderer + '-z' + population" in runner
+assert "Save reload/restore verification failed" in runner
+assert "reading-reached-level-five" in contract
+assert "sleep-wake-message" in contract
+assert "known Emscripten data-package request abort" in contract
+assert "measurement_contract_test.mjs" in (root / "ci/apply-patches.sh").read_text(encoding="utf-8")
+fixture_source = (root / "bench/real_activity_fixture.py").read_text(encoding="utf-8")
+assert "sampleCount = population > 0 ? 30 : 15" in fixture_source
+assert "bytes.length < 2000000" in fixture_source
+assert "extractWasmHeapSamples" in contract
+print("PASS docs consistency: synchronized workflows, build provenance, artifact identity, binary safety, and strict game-measurement acceptance")
