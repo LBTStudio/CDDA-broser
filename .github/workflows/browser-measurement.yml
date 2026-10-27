@@ -313,7 +313,7 @@ jobs:
                 overall=1
                 continue
               fi
-              node bench/playwright_game_measurement.mjs "$BUNDLE" "$scenario" "$renderer" "$CDDA_BASE_URL" "$CDDA_POPULATION" &
+              timeout --signal=TERM --kill-after=10s 360s node bench/playwright_game_measurement.mjs "$BUNDLE" "$scenario" "$renderer" "$CDDA_BASE_URL" "$CDDA_POPULATION" &
               runner_pid=$!
               bash bench/sample_chromium_memory.sh "$OUT/chromium-memory-$scenario-$renderer$population_suffix.tsv" "$runner_pid" &
               memory_pid=$!
@@ -343,7 +343,7 @@ jobs:
                 overall=1
                 continue
               fi
-              node bench/playwright_game_measurement.mjs "$BUNDLE" "$scenario" "$renderer" "$CDDA_BASE_URL" "$population" &
+              timeout --signal=TERM --kill-after=10s 360s node bench/playwright_game_measurement.mjs "$BUNDLE" "$scenario" "$renderer" "$CDDA_BASE_URL" "$population" &
               runner_pid=$!
               bash bench/sample_chromium_memory.sh "$OUT/chromium-memory-$scenario-$renderer-z$population.tsv" "$runner_pid" &
               memory_pid=$!
