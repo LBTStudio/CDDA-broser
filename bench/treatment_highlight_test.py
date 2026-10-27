@@ -16,13 +16,17 @@ end = source.index("    bmenu.hilight_disabled = true;", start)
 menu_setup = source[start:end]
 
 assert "bmenu.desc_enabled = true;" in menu_setup
-assert "bmenu.hilight_color = c_white;" in menu_setup, (
-    "Treatment body-part selection must use a neutral highlight, not the "
-    "default blue that can be confused with limb-state colors."
+assert "bmenu.neutral_selection_background = true;" in menu_setup, (
+    "Treatment body-part selection must opt into its dedicated neutral "
+    "background to avoid confusion with limb-state colors."
 )
 assert "bmenu.text = menu_header;" in menu_setup
-assert source.count("bmenu.hilight_color = c_white;") == 1, (
-    "Keep the neutral highlight scoped to the treatment menu only."
+assert source.count("bmenu.neutral_selection_background = true;") == 1, (
+    "Keep the neutral background scoped to the treatment menu only."
 )
 
-print("PASS: treatment menu uses a neutral white selection highlight")
+ui_source = (root / "src/uilist.cpp").read_text(encoding="utf-8")
+assert "ImGuiCol_HeaderHovered" in ui_source
+assert "ImGuiCol_HeaderActive" in ui_source
+assert "ImGui::PopStyleColor( 3 );" in ui_source
+print("PASS: treatment menu uses a scoped neutral selection background")
