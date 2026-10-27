@@ -97,35 +97,6 @@ if source.count(old_zone_cache) != 1:
     raise SystemExit("ERROR: expected unconditional vehicle-zone refresh did not match exactly once")
 source = source.replace(old_zone_cache, new_zone_cache, 1)
 
-old_clear = """void zone_manager::clear()
-{
-    zones.clear();
-    added_vzones.clear();
-    changed_vzones.clear();
-    removed_vzones.clear();
-    // Do not clear types since it is needed for the next games.
-    area_cache.clear();
-    vzone_cache.clear();
-}"""
-new_clear = old_clear.replace("    vzone_cache.clear();", "    vzone_cache.clear();\n    vzone_cache_dirty_ = false;")
-if zone_manager_source.count(old_clear) != 1:
-    raise SystemExit("ERROR: expected zone_manager::clear body did not match exactly once")
-zone_manager_source = zone_manager_source.replace(old_clear, new_clear, 1)
-
-old_edited = """void zone_manager::zone_edited( zone_data &zone )
-{
-    if( zone.get_is_vehicle() ) {
-        //Check if this zone has already been stored"""
-new_edited = """void zone_manager::zone_edited( zone_data &zone )
-{
-    if( zone.get_is_vehicle() ) {
-        // Geometry can be clean while an edit changes cache participation.
-        vzone_cache_dirty_ = true;
-        //Check if this zone has already been stored"""
-if zone_manager_source.count(old_edited) != 1:
-    raise SystemExit("ERROR: expected zone_edited body did not match exactly once")
-zone_manager_source = zone_manager_source.replace(old_edited, new_edited, 1)
-
 # Do not let map::get_vehicle_zones recursively rebuild the cache while
 # zone_manager::cache_vzones is already rebuilding it.
 header_path = path.with_name("map.h")
@@ -168,6 +139,36 @@ new_zone_cache_getter = old_zone_cache_getter + "\n        bool vehicle_zone_cac
 if zone_header.count(old_zone_cache_getter) != 1:
     raise SystemExit("ERROR: expected cache_vzones declaration did not match exactly once")
 zone_header = zone_header.replace(old_zone_cache_getter, new_zone_cache_getter, 1)
+
+old_clear = """void zone_manager::clear()
+{
+    zones.clear();
+    added_vzones.clear();
+    changed_vzones.clear();
+    removed_vzones.clear();
+    // Do not clear types since it is needed for the next games.
+    area_cache.clear();
+    vzone_cache.clear();
+}"""
+new_clear = old_clear.replace("    vzone_cache.clear();", "    vzone_cache.clear();\\n    vzone_cache_dirty_ = false;")
+if zone_manager_source.count(old_clear) != 1:
+    raise SystemExit("ERROR: expected zone_manager::clear body did not match exactly once")
+zone_manager_source = zone_manager_source.replace(old_clear, new_clear, 1)
+
+old_edited = """void zone_manager::zone_edited( zone_data &zone )
+{
+    if( zone.get_is_vehicle() ) {
+        //Check if this zone has already been stored"""
+new_edited = """void zone_manager::zone_edited( zone_data &zone )
+{
+    if( zone.get_is_vehicle() ) {
+        // Geometry can be clean while an edit changes cache participation.
+        vzone_cache_dirty_ = true;
+        //Check if this zone has already been stored"""
+if zone_manager_source.count(old_edited) != 1:
+    raise SystemExit("ERROR: expected zone_edited body did not match exactly once")
+zone_manager_source = zone_manager_source.replace(old_edited, new_edited, 1)
+
 old_zone_call = "    auto vzones = here.get_vehicle_zones( here.get_abs_sub().z() );"
 new_zone_call = "    auto vzones = here.get_vehicle_zones( here.get_abs_sub().z(), /* refresh_cache = */ false );"
 zone_fn_signature = "void zone_manager::cache_vzones( map *pmap )"
