@@ -7,7 +7,7 @@ Synthetic work counts are NOT proof of native-equivalent game performance.
 
 --- a/src/player_activity.cpp
 +++ b/src/player_activity.cpp
-@@ -141,10 +141,10 @@
+@@ -141,8 +141,8 @@
      return std::string( index < str_values.size() ? str_values[index] : def );
  }
 
@@ -38,7 +38,7 @@ Synthetic work counts are NOT proof of native-equivalent game performance.
 
 --- a/src/player_activity.h
 +++ b/src/player_activity.h
-@@ -130,6 +130,8 @@
+@@ -130,6 +139,8 @@
           * Helper that returns an activity specific progress message.
           */
          std::optional<std::string> get_progress_message( const avatar &u ) const;
@@ -49,7 +49,7 @@ Synthetic work counts are NOT proof of native-equivalent game performance.
           * If this returns true, the action can be continued without
 --- a/src/input_popup.cpp
 +++ b/src/input_popup.cpp
-@@ -176,7 +176,14 @@
+@@ -176,8 +187,15 @@
      if( data->EventFlag == ImGuiInputTextFlags_CallbackEdit ) {
          int max = popup->get_max_input_length();
          if( max > 0 && data->BufTextLen > max ) {
@@ -67,7 +67,7 @@ Synthetic work counts are NOT proof of native-equivalent game performance.
              data->CursorPos = data->BufTextLen;
 --- a/src/game.cpp
 +++ b/src/game.cpp
-@@ -3654,6 +3654,14 @@
+@@ -3654,5 +3672,13 @@
 
  bool game::save()
  {
@@ -82,7 +82,7 @@ Synthetic work counts are NOT proof of native-equivalent game performance.
      std::chrono::seconds time_since_load =
          std::chrono::duration_cast<std::chrono::seconds>(
              std::chrono::steady_clock::now() - time_of_last_load );
-@@ -8308,11 +8316,13 @@
+@@ -8308,9 +8342,11 @@
  {
      const std::string name = it->tname();
 
@@ -99,7 +99,7 @@ Synthetic work counts are NOT proof of native-equivalent game performance.
      }
 
      for( const item *content : it->all_known_contents() ) {
-@@ -8348,7 +8358,7 @@
+@@ -8348,5 +8386,5 @@
 
      ret.reserve( item_order.size() );
      for( auto &elem : item_order ) {
@@ -108,7 +108,7 @@ Synthetic work counts are NOT proof of native-equivalent game performance.
      }
 
      return ret;
-@@ -13491,13 +13501,13 @@
+@@ -13491,12 +13529,12 @@
      ui_manager::redraw();
      refresh_display();
 
@@ -131,7 +131,7 @@ Synthetic work counts are NOT proof of native-equivalent game performance.
  void game::quickload()
 --- a/src/cata_web_yield.h
 +++ b/src/cata_web_yield.h
-@@ -55,6 +55,10 @@
+@@ -55,6 +83,10 @@
   */
  void yield_now();
 
@@ -144,7 +144,7 @@ Synthetic work counts are NOT proof of native-equivalent game performance.
   *
 --- a/src/cata_web_yield.cpp
 +++ b/src/cata_web_yield.cpp
-@@ -41,12 +41,52 @@
+@@ -41,10 +73,50 @@
      } );
  } );
 
@@ -199,7 +199,7 @@ Synthetic work counts are NOT proof of native-equivalent game performance.
      } );
  } );
 
-@@ -54,6 +94,9 @@
+@@ -54,4 +166,7 @@
  // 例えば pump_events() の中から redraw が走り、その先でまた
  // yield 判定に到達する経路が存在する。
  bool yield_in_progress = false;
@@ -209,7 +209,7 @@ Synthetic work counts are NOT proof of native-equivalent game performance.
 
  } // namespace
 
-@@ -72,6 +115,18 @@
+@@ -72,5 +190,17 @@
      }
      yield_in_progress = true;
      cata_web_yield_impl();
@@ -228,7 +228,7 @@ Synthetic work counts are NOT proof of native-equivalent game performance.
      yield_in_progress = false;
  }
 
-@@ -82,6 +137,7 @@
+@@ -82,5 +224,6 @@
      }
      yield_in_progress = true;
      cata_web_yield_paint_impl();
@@ -236,7 +236,7 @@ Synthetic work counts are NOT proof of native-equivalent game performance.
      yield_in_progress = false;
  }
 
-@@ -91,7 +147,7 @@
+@@ -91,8 +235,8 @@
          return false;
      }
      const double now = emscripten_get_now();
@@ -247,7 +247,7 @@ Synthetic work counts are NOT proof of native-equivalent game performance.
      yield_now();
 --- a/src/sdltiles.cpp
 +++ b/src/sdltiles.cpp
-@@ -203,13 +203,51 @@
+@@ -203,12 +291,50 @@
  //   ゲームプレイの意味を変えるものではない。
  //   押した回数だけ移動する、という本来の CDDA の挙動になる。
  //
@@ -304,7 +304,7 @@ Synthetic work counts are NOT proof of native-equivalent game performance.
 
  // last_input を上書きする直前に呼び、失われる入力を退避する。
  // error 型（=入力なし）は退避しない。
-@@ -250,6 +288,14 @@
+@@ -250,5 +414,14 @@
  {
      if( last_input.type == input_event_t::error && !pending_input_queue.empty() ) {
          last_input = take_pending_input();
@@ -320,7 +320,7 @@ Synthetic work counts are NOT proof of native-equivalent game performance.
      }
  }
 
-@@ -2913,6 +2959,8 @@
+@@ -2913,6 +3094,8 @@
              }
              SDL_Event commit_event {};
              commit_event.type = SDL_TEXTINPUT;
@@ -329,7 +329,7 @@ Synthetic work counts are NOT proof of native-equivalent game performance.
              memcpy( commit_event.text.text, p, chunk );
              commit_event.text.text[chunk] = '\0';
              SDL_PushEvent( &commit_event );
-@@ -2952,6 +3000,7 @@
+@@ -2952,6 +3137,7 @@
          }
          SDL_Event edit_event {};
          edit_event.type = SDL_TEXTEDITING;
@@ -337,7 +337,7 @@ Synthetic work counts are NOT proof of native-equivalent game performance.
          memcpy( edit_event.edit.text, ime_buf, chunk );
          edit_event.edit.text[chunk] = '\0';
          edit_event.edit.start = 0;
-@@ -3310,6 +3359,11 @@
+@@ -3310,6 +3497,11 @@
          last_input = input_event();
  #endif
          imclient->process_input( &ev );
@@ -349,7 +349,7 @@ Synthetic work counts are NOT proof of native-equivalent game performance.
          switch( ev.type ) {
              case SDL_WINDOWEVENT:
                  switch( ev.window.event ) {
-@@ -3885,6 +3939,14 @@
+@@ -3885,6 +4082,14 @@
              break;
          }
      }
@@ -364,7 +364,7 @@ Synthetic work counts are NOT proof of native-equivalent game performance.
      bool resized = false;
      if( resize_dims.has_value() ) {
          restore_on_out_of_scope prev_last_input( last_input );
-@@ -4318,33 +4380,9 @@
+@@ -4318,31 +4531,7 @@
      previously_pressed_key = 0;
 
  #if defined(EMSCRIPTEN)
@@ -401,7 +401,7 @@ Synthetic work counts are NOT proof of native-equivalent game performance.
  #endif
 
      // standards note: getch is sometimes required to call refresh
-@@ -4358,7 +4396,16 @@
+@@ -4358,6 +4523,15 @@
      if( needupdate ) {
          refresh_display();
      } else if( ui_adaptor::has_imgui() ) {
@@ -418,7 +418,7 @@ Synthetic work counts are NOT proof of native-equivalent game performance.
      }
 
      // [CDDA-BROSER] 入力待ちループの SDL_Delay( 1 ) について。
-@@ -4378,7 +4425,9 @@
+@@ -4378,8 +4561,10 @@
      // MessageChannel でも同じ効果が得られ、しかも実測 0.075ms で済む。
      const auto wait_for_input_events = []() {
  #if defined(EMSCRIPTEN)
@@ -431,7 +431,7 @@ Synthetic work counts are NOT proof of native-equivalent game performance.
  #endif
 --- a/src/do_turn.cpp
 +++ b/src/do_turn.cpp
-@@ -310,111 +310,6 @@
+@@ -310,110 +448,5 @@
  namespace
  {
 
@@ -543,7 +543,7 @@ Synthetic work counts are NOT proof of native-equivalent game performance.
  void monmove()
  {
      g->cleanup_dead();
-@@ -422,6 +317,8 @@
+@@ -422,5 +350,7 @@
      avatar &u = get_avatar();
 
      for( monster &critter : g->all_monsters() ) {
@@ -552,7 +552,7 @@ Synthetic work counts are NOT proof of native-equivalent game performance.
          if( !m.inbounds( critter.pos_abs() ) ) {
              continue;
          }
-@@ -465,6 +362,7 @@
+@@ -465,6 +397,7 @@
              critter.try_reproduce();
          }
          while( critter.get_moves() > 0 && !critter.is_dead() && !critter.has_effect( effect_ridden ) ) {
@@ -560,7 +560,7 @@ Synthetic work counts are NOT proof of native-equivalent game performance.
              critter.made_footstep = false;
              // Controlled critters don't make their own plans
              if( !critter.has_effect( effect_controlled ) ) {
-@@ -507,6 +405,7 @@
+@@ -507,5 +441,6 @@
 
      // Now, do active NPCs.
      for( npc &guy : g->all_npcs() ) {
@@ -568,7 +568,7 @@ Synthetic work counts are NOT proof of native-equivalent game performance.
          int turns = 0;
          int real_count = 0;
          const int count_limit = std::max( 10, guy.get_moves() / 64 );
-@@ -519,6 +418,7 @@
+@@ -519,6 +455,7 @@
          }
          while( !guy.is_dead() && ( !guy.in_sleep_state() || guy.activity.id() == ACT_OPERATION ) &&
                 guy.get_moves() > 0 && turns < 10 ) {
@@ -576,7 +576,7 @@ Synthetic work counts are NOT proof of native-equivalent game performance.
              const int moves = guy.get_moves();
              const bool has_destination = guy.has_destination_activity();
              guy.move();
-@@ -842,10 +742,7 @@
+@@ -842,10 +780,7 @@
              while( u.get_moves() > 0 || g->uquit == QUIT_WATCH ) {
                  m.process_falling();
                  g->cleanup_dead();
@@ -588,7 +588,7 @@ Synthetic work counts are NOT proof of native-equivalent game performance.
                  // Process any new sounds the player caused during their turn.
                  for( npc &guy : g->all_npcs() ) {
                      if( rl_dist( guy.pos_bub(), u.pos_bub() ) < MAX_VIEW_DISTANCE ) {
-@@ -925,14 +822,17 @@
+@@ -925,13 +857,16 @@
                                   std::chrono::steady_clock::now() );
              if( ( now - start ).count() > activity_poll_interval_ms ) {
                  handle_key_blocking_activity();
@@ -613,7 +613,7 @@ Synthetic work counts are NOT proof of native-equivalent game performance.
 
              // If player is performing a task, a monster is dangerously close,
              // and monster can reach to the player or it has some sort of a ranged attack,
-@@ -998,9 +898,7 @@
+@@ -998,9 +936,7 @@
              }
          }
      }
@@ -624,7 +624,7 @@ Synthetic work counts are NOT proof of native-equivalent game performance.
      u.process_turn();
      if( u.get_moves() < 0 && get_option<bool>( "FORCE_REDRAW" ) ) {
          ui_manager::redraw();
-@@ -1012,71 +910,121 @@
+@@ -1012,69 +946,119 @@
      }
 
      const bool player_is_sleeping = u.has_effect( effect_sleep );
@@ -802,7 +802,7 @@ Synthetic work counts are NOT proof of native-equivalent game performance.
 
 --- a/src/activity_actor.cpp
 +++ b/src/activity_actor.cpp
-@@ -8775,69 +8775,25 @@
+@@ -8775,68 +8861,24 @@
      }
  }
 
@@ -891,7 +891,7 @@ Synthetic work counts are NOT proof of native-equivalent game performance.
  bool pulp_activity_actor::can_pulp( item &corpse, Character &you )
 --- a/src/player_hardcoded_effects.cpp
 +++ b/src/player_hardcoded_effects.cpp
-@@ -14,6 +14,7 @@
+@@ -14,6 +56,7 @@
  #include "avatar.h"
  #include "bodypart.h"
  #include "calendar.h"
@@ -899,7 +899,7 @@ Synthetic work counts are NOT proof of native-equivalent game performance.
  #include "character.h"
  #include "coordinates.h"
  #include "creature.h"
-@@ -1050,7 +1051,18 @@
+@@ -1050,6 +1094,17 @@
 
      u.set_moves( 0 );
      if( u.is_avatar() ) {
@@ -920,7 +920,7 @@ Synthetic work counts are NOT proof of native-equivalent game performance.
      if( intense < 1 ) {
 --- a/src/main.cpp
 +++ b/src/main.cpp
-@@ -586,6 +586,7 @@
+@@ -586,5 +640,6 @@
      let fsPersistenceReady = false;
      let fsRetryDelayMs = 0;
      let fsSyncError = false;
@@ -928,7 +928,7 @@ Synthetic work counts are NOT proof of native-equivalent game performance.
      const fsSyncDebounceMs = 250;
 
      function reportSyncError( failed, detail )
-@@ -605,7 +606,8 @@
+@@ -605,6 +661,7 @@
 
      function scheduleFsSync()
      {
@@ -938,7 +938,7 @@ Synthetic work counts are NOT proof of native-equivalent game performance.
              return;
          }
          fsSyncTimer = setTimeout( function() {
-@@ -617,7 +619,7 @@
+@@ -617,6 +675,6 @@
 
      function syncFs()
      {
@@ -947,7 +947,7 @@ Synthetic work counts are NOT proof of native-equivalent game performance.
              return;
          }
          fsNeedsSync = false;
-@@ -656,6 +658,24 @@
+@@ -656,6 +714,24 @@
          scheduleFsSync();
      };
 
@@ -974,7 +974,7 @@ Synthetic work counts are NOT proof of native-equivalent game performance.
      function flushFsSync()
 --- a/src/filesystem.cpp
 +++ b/src/filesystem.cpp
-@@ -78,7 +78,6 @@
+@@ -78,6 +152,5 @@
 
  bool assure_dir_exist( const std::filesystem::path &path )
  {
@@ -982,7 +982,7 @@ Synthetic work counts are NOT proof of native-equivalent game performance.
      std::error_code ec;
      bool exists{false};
      bool created{false};
-@@ -91,6 +90,10 @@
+@@ -91,7 +163,11 @@
                  return false;
              }
              created = std::filesystem::create_directories( p, ec );
@@ -995,7 +995,7 @@ Synthetic work counts are NOT proof of native-equivalent game performance.
                  // VS2019 std::filesystem doesn't handle trailing slashes well in this
 --- a/src/monmove.cpp
 +++ b/src/monmove.cpp
-@@ -432,6 +432,14 @@
+@@ -432,7 +509,15 @@
  {
      if( mon_plan.angers_cub_threatened < 0 ) {
          // return early, not angered by cubs being threatened
@@ -1012,7 +1012,7 @@ Synthetic work counts are NOT proof of native-equivalent game performance.
  
 --- a/src/character.cpp
 +++ b/src/character.cpp
-@@ -9992,6 +9992,11 @@
+@@ -9992,7 +10077,12 @@
  Character::moncam_cache_t Character::get_active_moncams() const
  {
      moncam_cache_t ret;
@@ -1026,7 +1026,7 @@ Synthetic work counts are NOT proof of native-equivalent game performance.
              if( mon.type->id == moncam.first && mon.friendly != 0 &&
 --- a/src/creature.cpp
 +++ b/src/creature.cpp
-@@ -1984,4 +1984,7 @@
+@@ -1984,4 +2074,7 @@
  bool Creature::has_effect( const efftype_id &eff_id ) const
  {
 -    return has_effect( eff_id, bodypart_str_id::NULL_ID() );
