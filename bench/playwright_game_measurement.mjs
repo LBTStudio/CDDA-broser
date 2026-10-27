@@ -6,6 +6,7 @@ import http from 'node:http';
 import path from 'node:path';
 import { chromium } from 'playwright';
 import { ACTIVE_MOVEMENT_STALL_LIMIT_MS, assertMovementResponsive, createBrowserHealth } from './browser_health.mjs';
+import { classifyRequestFailures, extractWasmHeapSamples, validateActiveRenderer, validateFixtureOutcome } from './measurement_contract.mjs';
 
 const bundle = path.resolve(process.argv[2] || '.');
 const scenario = process.argv[3] || 'read4';
@@ -20,7 +21,15 @@ if (!Number.isInteger(population) || population < 0 || population > 200) throw n
 if (population !== 0 && scenario !== 'sleep') throw new Error('Monster population stress is only valid for the sleep scenario');
 
 const outputRoot = path.resolve('bench/out/browser-measurement');
-const out = path.join(outputRoot, scenario + '-' + renderer);
+const sourceManifestPath = path.join(outputRoot, 'measurement-source.json');
+let measurementSource = { kind: 'untracked', targetUrl: baseUrl, note: 'No measurement-source.json was written by the workflow.' };
+try {
+  if (fs.existsSync(sourceManifestPath)) measurementSource = JSON.parse(fs.readFileSync(sourceManifestPath, 'utf8'));
+} catch (error) {
+  measurementSource = { kind: 'invalid-manifest', targetUrl: null, error: String(error) };
+}
+const measurementKey = population === 0 ? scenario + '-' + renderer : scenario + '-' + renderer + '-z' + population;
+const out = path.join(outputRoot, measurementKey);
 fs.mkdirSync(out, { recursive: true });
 const captured = { screens: [], result: null, other: [] };
 const consoleLog = [], pageErrors = [], requestFailures = [];
@@ -420,6 +429,63 @@ async function main() {
     note: 'Both screenshots display the same static canvas screenshot at 75% scale; only CSS interpolation differs.'
   };
   await comparisonPage.close();
+
+  const originalViewport = page.viewportSize() || { width: 1365, height: 768 };
+  const canvasElement = page.locator('#canvas');
+  const originalImageRendering = await canvasElement.evaluate(el => ({
+    value: el.style.getPropertyValue('image-rendering'),
+    priority: el.style.getPropertyPriority('image-rendering')
+  }));
+  const readLiveCanvasProfile = () => page.evaluate(() => {
+    const canvas = document.querySelector('#canvas');
+    if (!canvas) return null;
+    const rect = canvas.getBoundingClientRect();
+    const style = getComputedStyle(canvas);
+    return {
+      viewport: { width: innerWidth, height: innerHeight, dpr: devicePixelRatio },
+      canvas: {
+        width: canvas.width, height: canvas.height,
+        rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+        scaleX: canvas.width ? rect.width / canvas.width : null,
+        scaleY: canvas.height ? rect.height / canvas.height : null,
+        imageRendering: style.imageRendering,
+        cssWidth: style.width, cssHeight: style.height
+      }
+    };
+  });
+  await page.setViewportSize({ width: 850, height: 645 });
+  await page.waitForTimeout(500);
+  const lowResolutionPixelatedProfile = await readLiveCanvasProfile();
+  await canvasElement.screenshot({
+    path: path.join(out, 'live-canvas-850x645-pixelated.png'),
+    animations: 'disabled', timeout: 30000
+  });
+  await canvasElement.evaluate(el => el.style.setProperty('image-rendering', 'auto', 'important'));
+  await page.waitForTimeout(100);
+  const lowResolutionAutoProfile = await readLiveCanvasProfile();
+  await canvasElement.screenshot({
+    path: path.join(out, 'live-canvas-850x645-auto.png'),
+    animations: 'disabled', timeout: 30000
+  });
+  if (originalImageRendering.value) {
+    await canvasElement.evaluate(({ value, priority }) =>
+      document.querySelector('#canvas').style.setProperty('image-rendering', value, priority),
+      originalImageRendering
+    );
+  } else {
+    await canvasElement.evaluate(el => el.style.removeProperty('image-rendering'));
+  }
+  await page.setViewportSize(originalViewport);
+  await page.waitForTimeout(500);
+  const liveViewportComparison = {
+    requestedViewport: { width: 850, height: 645 },
+    pixelated: lowResolutionPixelatedProfile,
+    auto: lowResolutionAutoProfile,
+    captured: ['live-canvas-850x645-pixelated.png', 'live-canvas-850x645-auto.png'],
+    restoredViewport: originalViewport,
+    note: 'These are live-game canvas captures after changing the actual browser viewport, unlike the separate static 75% interpolation comparison. No rendering default is changed.'
+  };
+
   const start = await page.evaluate(() => {
     const state = window.__cddaMeasure;
     const frameStartAt = state.startFrameMonitor();
@@ -514,6 +580,93 @@ async function main() {
       }
     }
   }
+  // Close the first tab so its exclusive profile lock is released, then
+  // mount the same profile in a fresh page. This verifies IndexedDB/IDBFS
+  // restore rather than merely re-reading the first page's in-memory MEMFS.
+  let reloadRestoreValidation;
+  // The fixture intentionally prefixes its isolated profile with "perf_".
+  // Re-open that exact profile, not a separate empty profile without the prefix.
+  const persistentProfile = 'perf_' + profile;
+  const latestSavedSnapshot = afterSettle?.available ? afterSettle : after;
+  const expectedReloadSave = {
+    world: latestSavedSnapshot.world, file: latestSavedSnapshot.file,
+    turn: latestSavedSnapshot.turn, activity: latestSavedSnapshot.activity,
+    location: latestSavedSnapshot.position?.location ?? null,
+    moves: latestSavedSnapshot.position?.moves ?? null
+  };
+  try {
+    await page.close();
+    const restorePage = await context.newPage();
+    page = restorePage;
+    restorePage.on('console', message => {
+      consoleLog.push({ type: message.type(), text: message.text(), atMs: Number(now().toFixed(2)), phase: 'reload-restore' });
+    });
+    restorePage.on('pageerror', error => pageErrors.push(String(error?.stack || error)));
+    restorePage.on('requestfailed', request => requestFailures.push({
+      url: request.url(), failure: request.failure()?.errorText || 'unknown', phase: 'reload-restore'
+    }));
+    restorePage.on('crash', () => {
+      const error = new Error('Chromium page crashed during save reload verification');
+      browserHealth.notePageCrash(now(), error.message);
+    });
+    const restoreStarted = now();
+    await restorePage.goto('http://127.0.0.1:' + port + '/index.html', {
+      waitUntil: 'domcontentloaded', timeout: 180000
+    });
+    await restorePage.locator('#profile-start').waitFor({ state: 'visible', timeout: 120000 });
+    await restorePage.locator('#profile-input').fill(persistentProfile);
+    await restorePage.locator('#profile-start').click();
+    await restorePage.waitForFunction(profileName => {
+      const fs = window.Module?.FS || window.FS;
+      if (!fs?.analyzePath) return false;
+      const base = '/home/' + profileName + '/.cataclysm-dda/save';
+      if (!fs.analyzePath(base).exists) return false;
+      try {
+        return fs.readdir(base).some(world => world !== '.' && world !== '..' &&
+          fs.readdir(base + '/' + world).some(name => name.endsWith('.sav')));
+      } catch (_) { return false; }
+    }, persistentProfile, { timeout: 120000, polling: 250 });
+    const restored = await restorePage.evaluate(profileName => {
+      const fs = window.Module?.FS || window.FS;
+      const base = '/home/' + profileName + '/.cataclysm-dda/save';
+      for (const world of fs.readdir(base).filter(name => name !== '.' && name !== '..')) {
+        for (const name of fs.readdir(base + '/' + world).filter(name => name.endsWith('.sav'))) {
+          const raw = fs.readFile(base + '/' + world + '/' + name, { encoding: 'utf8' });
+          const start = raw.indexOf('{');
+          if (start < 0) continue;
+          const save = JSON.parse(raw.slice(start));
+          return {
+            world, file: name, turn: save.turn ?? null,
+            activity: save.player?.activity?.type ?? null,
+            location: save.player?.location ?? null,
+            moves: save.player?.moves ?? null,
+            bytes: raw.length
+          };
+        }
+      }
+      return null;
+    }, persistentProfile);
+    const checks = [
+      { name: 'save-present-after-reload', passed: !!restored },
+      { name: 'world-preserved', passed: restored?.world === expectedReloadSave.world },
+      { name: 'character-save-preserved', passed: restored?.file === expectedReloadSave.file },
+      { name: 'turn-preserved', passed: restored?.turn === expectedReloadSave.turn },
+      { name: 'activity-preserved', passed: restored?.activity === expectedReloadSave.activity },
+      { name: 'location-preserved', passed: JSON.stringify(restored?.location) === JSON.stringify(expectedReloadSave.location) },
+      { name: 'moves-preserved', passed: restored?.moves === expectedReloadSave.moves }
+    ];
+    reloadRestoreValidation = {
+      attempted: true, ok: checks.every(check => check.passed), profile: persistentProfile,
+      elapsedMs: Number((now() - restoreStarted).toFixed(2)),
+      expected: expectedReloadSave, actual: restored, checks
+    };
+  } catch (error) {
+    reloadRestoreValidation = {
+      attempted: true, ok: false, profile: persistentProfile, expected: expectedReloadSave,
+      error: String(error?.stack || error)
+    };
+  }
+
   let preInterruptScreenshot = null;
   if (typeof fixtureResult?.beforeInterrupt === 'string' && /^[a-z0-9_-]+\.png$/i.test(fixtureResult.beforeInterrupt)) {
     preInterruptScreenshot = fixtureResult.beforeInterrupt;
@@ -521,12 +674,30 @@ async function main() {
     preInterruptScreenshot = 'before-interruption.png';
     fs.writeFileSync(path.join(out, preInterruptScreenshot), Buffer.from(fixtureResult.beforeInterrupt.slice(22), 'base64'));
   }
+  const fixtureValidation = validateFixtureOutcome({ scenario, population, renderer, fixtureResult, savedGameState });
+  const requestFailureValidation = classifyRequestFailures(requestFailures);
+  const activeRendererValidation = validateActiveRenderer({ renderer, consoleMessages: consoleLog });
+  const wasmHeapProfile = extractWasmHeapSamples(consoleLog);
+  const expectedHeapSampleCount = population > 0 ? 30 : 15;
+  const wasmHeapSampleValidation = {
+    ok: wasmHeapProfile.sampleCount >= expectedHeapSampleCount,
+    expectedMinimum: expectedHeapSampleCount, actual: wasmHeapProfile.sampleCount
+  };
+  const webglFallbackWarnings = consoleLog.filter(entry => /Automatic fallback to software WebGL/i.test(String(entry.text || '')));
+  const webglFallback = {
+    measuredPageWarnings: webglFallbackWarnings.filter(entry => entry.phase !== 'reload-restore').length,
+    restorePageWarnings: webglFallbackWarnings.filter(entry => entry.phase === 'reload-restore').length,
+    detectedOnMeasuredPage: webglFallbackWarnings.some(entry => entry.phase !== 'reload-restore')
+  };
   const assets = ['index.html', 'cataclysm-tiles.js', 'cataclysm-tiles.wasm', 'cataclysm-tiles.data', 'cataclysm-tiles.data.js', 'Terminus.ttf', 'favicon.ico'];
   const bundleFiles = assets.map(name => {
     const file = path.join(bundle, name);
     return fs.existsSync(file) ? { name, bytes: fs.statSync(file).size } : { name, missing: true };
   });
-  const result = { schemaVersion: 1, measuredAt: new Date().toISOString(), targetUrl: baseUrl, browserVersion: browser.version(),
+  const result = { schemaVersion: 3, measuredAt: new Date().toISOString(),
+    targetUrl: measurementSource.kind === 'published-pages' ? (measurementSource.targetUrl || baseUrl) : null,
+    source: measurementSource, fixtureValidation, requestFailureValidation, activeRendererValidation,
+    wasmHeapProfile, wasmHeapSampleValidation, webglFallback, reloadRestoreValidation, browserVersion: browser.version(),
     nodeVersion: process.version, scenario, renderer, population, bundleFiles, bootToNewGameMs: bootMs, newGameMessage, display,
     persistenceInstrumentation,
     movement: { elapsedMs: keyHoldElapsedMs, keyUpAtMs: Number(keyUpAt.toFixed(2)), beforeSave: before, afterSave: after,
@@ -535,7 +706,7 @@ async function main() {
       changedPositionFields: before.available && after.available ? Object.keys(after.position || {}).filter(key => JSON.stringify(before.position?.[key]) !== JSON.stringify(after.position?.[key])) : [],
       note: 'Movement delta is based on save snapshots. postReleaseTurnDelta compares saves immediately after keyup and after a 500ms quiet interval.' },
     runtime, browserHealth: browserHealth.snapshot(), activeMovementStallLimitMs: ACTIVE_MOVEMENT_STALL_LIMIT_MS,
-    visualScaleComparison, fixture: fixtureResult ? { mode: fixtureResult.mode, variant: fixtureResult.variant, renderer: fixtureResult.renderer,
+    visualScaleComparison, liveViewportComparison, fixture: fixtureResult ? { mode: fixtureResult.mode, variant: fixtureResult.variant, renderer: fixtureResult.renderer,
       heapBytes: fixtureResult.heap, error: fixtureResult.error || '', reading: fixtureResult.reading || null,
       savedFiles, savedGameState,
       beforeInterruptScreenshot: preInterruptScreenshot ? path.basename(preInterruptScreenshot) : null } : null,
@@ -546,7 +717,9 @@ async function main() {
   const reading = result.fixture?.reading ? 'turns ' + result.fixture.reading.gameSecondsBetweenSaves + '; observation ' +
     Math.round(result.fixture.reading.observationMs) + ' ms; reached level 5: ' + result.fixture.reading.reachedLevel5 : 'not applicable';
   const m = runtime.movement, f = m.frameMonitorIntervalMs;
-  const summary = ['# CDDA Playwright browser measurement', '', '- Target: ' + baseUrl, '- Captured: ' + result.measuredAt,
+  const summary = ['# CDDA Playwright browser measurement', '',
+    '- Source provenance: ' + JSON.stringify(measurementSource),
+    '- Target URL: ' + (result.targetUrl || 'not applicable; executing an exact local build artifact'), '- Captured: ' + result.measuredAt,
     '- Scenario/renderer: ' + scenario + ' / ' + renderer, '- Browser version: ' + result.browserVersion,
     '- Boot to new-game log: ' + bootMs + ' ms', '- Canvas: ' + JSON.stringify(display.canvas),
     '- HTML Terminus font check: ' + display.fonts.terminusCheck, '- Movement: ' + movementText,
@@ -566,10 +739,22 @@ async function main() {
     '- Movement RAF monitor intervals >50/>100/>250 ms: ' + [f.over50, f.over100, f.over250].join(' / '),
     '- Input-to-next-frame p50/p95/max ms: ' + [m.keydownToNextFrameMs.p50, m.keydownToNextFrameMs.p95, m.keydownToNextFrameMs.max].join(' / '),
     '- Whole-run Long Tasks: ' + runtime.longTaskCount + ', total ' + runtime.longTaskMs.total + ' ms, max ' + runtime.longTaskMs.max + ' ms',
+    '- Fixture acceptance: ' + (fixtureValidation.ok ? 'PASS' : 'FAIL') + '; failures: ' + JSON.stringify(fixtureValidation.failures),
+    '- Active SDL renderer: ' + (activeRendererValidation.ok ? 'PASS' : 'FAIL') +
+      '; requested=' + activeRendererValidation.requested + '; actual=' + JSON.stringify(activeRendererValidation.actual),
+    '- Wasm HEAPU8 length samples: ' + wasmHeapProfile.sampleCount + '; initial/peak/final bytes=' +
+      [wasmHeapProfile.initialBytes, wasmHeapProfile.peakBytes, wasmHeapProfile.finalBytes].join('/') +
+      '; growth transitions=' + JSON.stringify(wasmHeapProfile.growthTransitions),
+    '- WebGL software fallback warning: measured page=' + webglFallback.measuredPageWarnings +
+      '; restore page=' + webglFallback.restorePageWarnings,
+    '- Save reload/restore: ' + (reloadRestoreValidation.ok ? 'PASS' : 'FAIL') + '; checks: ' + JSON.stringify(reloadRestoreValidation.checks || reloadRestoreValidation.error),
+    '- Request failure triage: ' + (requestFailureValidation.ok ? 'PASS' : 'FAIL') + '; allowed: ' + requestFailureValidation.allowed.length + '; unexpected: ' + JSON.stringify(requestFailureValidation.unexpected),
     '- Canvas captures: ' + captured.screens.length + '; page errors: ' + pageErrors.length,
     '- Browser crash history: ' + JSON.stringify(browserHealth.snapshot()),
     '- Active movement stall threshold ms: ' + ACTIVE_MOVEMENT_STALL_LIMIT_MS,
     '- Text scaling A/B: same static canvas image at 75% CSS size, pixelated vs auto interpolation',
+    '- Live 850x645 viewport canvas: ' + JSON.stringify(liveViewportComparison.pixelated?.canvas || null),
+    '- Live viewport A/B captures: ' + liveViewportComparison.captured.join(', '),
     '- Playwright fixture screenshots: ' + fixtureScreens.length,
     '', '## Interpretation limits', '', '- GitHub Actions values are not a physical 4GB Chromebook benchmark.',
     '- RAF monitor intervals are the independent monitor loop’s callback cadence, not confirmed physical display FPS; idle waits and activity modals can create long gaps.',
@@ -581,6 +766,11 @@ async function main() {
   console.log(summary);
   if (bundleFiles.some(file => file.missing)) throw new Error('Missing one or more deployed bundle assets');
   if (!fixtureResult) throw new Error('No game fixture result payload');
+  if (!fixtureValidation.ok) throw new Error('Real-game fixture acceptance failed: ' + JSON.stringify(fixtureValidation.failures));
+  if (!activeRendererValidation.ok) throw new Error('Active SDL renderer mismatch: ' + JSON.stringify(activeRendererValidation.failures));
+  if (!wasmHeapSampleValidation.ok) throw new Error('Wasm heap sampling incomplete: ' + JSON.stringify(wasmHeapSampleValidation));
+  if (!requestFailureValidation.ok) throw new Error('Unexpected browser request failures: ' + JSON.stringify(requestFailureValidation.unexpected));
+  if (!reloadRestoreValidation.ok) throw new Error('Save reload/restore verification failed: ' + JSON.stringify(reloadRestoreValidation));
   if (pageErrors.length) throw new Error('Browser page errors: ' + pageErrors.length);
   browserHealth.assertNoBrowserFailure();
 }
