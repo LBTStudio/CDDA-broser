@@ -108,6 +108,8 @@ contract = (root / "bench/measurement_contract.mjs").read_text(encoding="utf-8")
 assert "validateFixtureOutcome" in runner and "classifyRequestFailures" in runner
 assert "fixtureValidation.ok" in runner and "requestFailureValidation.ok" in runner
 assert "reloadRestoreValidation" in runner
+assert "persistentProfile = 'perf_' + profile" in runner
+assert "fill(persistentProfile)" in runner
 assert "Save reload/restore verification failed" in runner
 assert "reading-reached-level-five" in contract
 assert "sleep-wake-message" in contract
