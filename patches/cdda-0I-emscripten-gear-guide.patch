@@ -101,8 +101,10 @@ CDDA 0.I: bounded read-only melee outfit advisor. Apply after runtime-efficiency
 +            for( std::size_t b = 0; b < parts.size(); ++b ) {
 +                const auto &a = candidates[i].parts[b];
 +                const auto &other = candidates[j].parts[b];
++                // Same-layer clothing is legal; the game applies a layering ENC penalty.
++                // Only reject a pair here when both pieces are rigid and overlap.
 +                if( a.coverage > 0 && other.coverage > 0 &&
-+                    ( ( a.layers & other.layers ) || ( sources[i]->is_rigid() && sources[j]->is_rigid() ) ) ) {
++                    sources[i]->is_rigid() && sources[j]->is_rigid() ) {
 +                    conflict = true;
 +                }
 +            }
@@ -285,7 +287,10 @@ CDDA 0.I: bounded read-only melee outfit advisor. Apply after runtime-efficiency
 +    "id": "GEAR_GUIDE",
 +    "category": "SORT_ARMOR",
 +    "name": "近接装備ナビ",
-+    "bindings": [ { "input_method": "keyboard_any", "key": "F2" } ]
++    "bindings": [
++      { "input_method": "keyboard_any", "key": "F2" },
++      { "input_method": "keyboard_char", "key": "g" }
++    ]
    },
    {
      "type": "keybinding",
@@ -372,7 +377,10 @@ CDDA 0.I: bounded read-only melee outfit advisor. Apply after runtime-efficiency
 +            // Conservative coverage: do not assume independent gaps combine.
 +            total.coverage = std::max( total.coverage, p.coverage );
 +            for( int d = 0; d < 3; ++d ) {
-+                total.resist[d] += p.resist[d] * p.coverage / 100.0;
++                // Conservative: do not add every overlapping layer as if each
++                // independently guaranteed its coverage. Use the strongest weighted layer.
++                total.resist[d] = std::max( total.resist[d],
++                                            p.resist[d] * p.coverage / 100.0 );
 +            }
 +            total.encumbrance += p.encumbrance;
 +            if( ( layers & p.layers ) != 0 ) {
