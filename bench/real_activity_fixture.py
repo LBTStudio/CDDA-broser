@@ -173,7 +173,8 @@ script = r'''
     }
     // Populated reading takes longer than the original quiet baseline. This is
     // a bounded observation window, not a completion assertion; verify saves.
-    for (let i = 0; i < 15; ++i) {
+    const sampleCount = population > 0 ? 30 : 15;
+    for (let i = 0; i < sampleCount; ++i) {
         // Keep both reading and sleep observation windows free from screenshot
         // capture overhead. Screens are taken before and after the timed window.
         await pause(4000);
@@ -211,7 +212,7 @@ script = r'''
             for (const name of fs.readdir(dir)) {
                 if (name.endsWith('.sav') || name === 'worldoptions.json') {
                     const bytes = fs.readFile(dir + '/' + name);
-                    if (bytes.length < 500000) saves[world + '/' + name] = Array.from(bytes);
+                    if (bytes.length < 2000000) saves[world + '/' + name] = Array.from(bytes);
                 }
             }
         }
