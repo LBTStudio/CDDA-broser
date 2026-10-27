@@ -81,7 +81,7 @@ jobs:
     env:
       CDDA_BASE_URL: ${{ github.event.inputs.base_url || 'https://lbtstudio.github.io/CDDA-broser/' }}
       CDDA_SCENARIO: ${{ github.event.inputs.scenario || 'all' }}
-      CDDA_RENDERER: ${{ github.event.inputs.renderer || 'game' }}
+      CDDA_RENDERER: ${{ github.event_name == 'pull_request' && 'compare' || github.event.inputs.renderer || 'game' }}
       CDDA_POPULATION: ${{ github.event.inputs.population || '0' }}
     steps:
       - name: Checkout measurement harness
@@ -292,17 +292,22 @@ jobs:
             exit 2
           fi
           echo "- Scenario: $CDDA_SCENARIO; renderer: $CDDA_RENDERER; cloaked monster population: $CDDA_POPULATION" >> "$GITHUB_STEP_SUMMARY"
+          if [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
+            echo "- PR coverage: renderer comparison for read4/sleep plus a separate 128-monster sleep stress case." >> "$GITHUB_STEP_SUMMARY"
+          fi
           overall=0
           for scenario in "${scenarios[@]}"; do
             for renderer in "${renderers[@]}"; do
-              echo "[fixture] scenario=$scenario renderer=$renderer"
+              population_suffix=""
+              if [[ "$CDDA_POPULATION" != "0" ]]; then population_suffix="-z$CDDA_POPULATION"; fi
+              echo "[fixture] scenario=$scenario renderer=$renderer population=$CDDA_POPULATION"
               if ! python3 bench/real_activity_fixture.py "$BUNDLE" "$scenario" "$CDDA_POPULATION" "$renderer"; then
                 overall=1
                 continue
               fi
               node bench/playwright_game_measurement.mjs "$BUNDLE" "$scenario" "$renderer" "$CDDA_BASE_URL" "$CDDA_POPULATION" &
               runner_pid=$!
-              bash bench/sample_chromium_memory.sh "$OUT/chromium-memory-$scenario-$renderer.tsv" "$runner_pid" &
+              bash bench/sample_chromium_memory.sh "$OUT/chromium-memory-$scenario-$renderer$population_suffix.tsv" "$runner_pid" &
               memory_pid=$!
               if wait "$runner_pid"; then
                 scenario_status=0
@@ -312,12 +317,40 @@ jobs:
               fi
               wait "$memory_pid" || true
               echo "[fixture] scenario=$scenario renderer=$renderer exit=$scenario_status"
-              if [[ -f "$OUT/$scenario-$renderer/summary.md" ]]; then
-                cat "$OUT/$scenario-$renderer/summary.md" >> "$GITHUB_STEP_SUMMARY"
+              if [[ -f "$OUT/$scenario-$renderer$population_suffix/summary.md" ]]; then
+                cat "$OUT/$scenario-$renderer$population_suffix/summary.md" >> "$GITHUB_STEP_SUMMARY"
                 echo "" >> "$GITHUB_STEP_SUMMARY"
               fi
             done
           done
+
+          # Controlled population stress is isolated from the zero-population renderer A/B.
+          if [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
+            scenario=sleep
+            renderer=game
+            population=128
+            echo "[fixture] PR stress scenario=$scenario renderer=$renderer population=$population"
+            if ! python3 bench/real_activity_fixture.py "$BUNDLE" "$scenario" "$population" "$renderer"; then
+              overall=1
+            else
+              node bench/playwright_game_measurement.mjs "$BUNDLE" "$scenario" "$renderer" "$CDDA_BASE_URL" "$population" &
+              runner_pid=$!
+              bash bench/sample_chromium_memory.sh "$OUT/chromium-memory-$scenario-$renderer-z$population.tsv" "$runner_pid" &
+              memory_pid=$!
+              if wait "$runner_pid"; then
+                scenario_status=0
+              else
+                scenario_status=$?
+                overall=1
+              fi
+              wait "$memory_pid" || true
+              echo "[fixture] stress scenario=$scenario renderer=$renderer population=$population exit=$scenario_status"
+              if [[ -f "$OUT/$scenario-$renderer-z$population/summary.md" ]]; then
+                cat "$OUT/$scenario-$renderer-z$population/summary.md" >> "$GITHUB_STEP_SUMMARY"
+                echo "" >> "$GITHUB_STEP_SUMMARY"
+              fi
+            fi
+          fi
           exit "$overall"
 
       - name: Upload measurements, browser traces and screenshots
