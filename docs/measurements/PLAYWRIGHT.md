@@ -21,7 +21,9 @@ Actionsから手動実行できます。base_urlは測定対象の配信先、sc
 - Chromium関連プロセスのRSS/PSSを1秒間隔で採取した記録。
 - Playwright trace、コンソールログ、構造化されたmeasurement.json。
 
-成果物はActionsのartifact cdda-playwright-measurement-<run id>に30日間保存します。measurement.jsonが構造化データ、summary.mdが短い要約です。Canvas画像とPlaywright traceを併用して表示と停止箇所をレビューできます。`text-scale-pixelated.png` と `text-scale-auto.png` は同じ静止Canvas画像をCSSで75%に縮小した比較画像です。CanvasのWebGL描画状態によって `canvas.toDataURL()` が真っ黒になることがあるため、画面キャプチャはPlaywrightのコンポジタ経由で採取します。
+成果物はActionsのartifact cdda-playwright-measurement-<run id>に30日間保存します。measurement.jsonが構造化データ、summary.mdが短い要約です。Canvas画像とPlaywright traceを併用して表示と停止箇所をレビューできます。`measurement-source.json` には、公開URL計測か特定ビルド成果物か、ビルド実行ID、コミットSHA、計測ハーネスのSHA、7配布ファイルのハッシュを記録します。新しいビルドは別の `cdda-build-provenance` artifactに Emscripten版、Asyncify/JSPI、リンク最適化、SIMD設定を記録します。過去ビルドに構成情報がない場合は、出所のSHAは確認できても設定同定は未確認として残します。
+
+計測終了時には、起動・セーブ・描画・入力の記録だけでなく、fixtureの期待状態も検査します。`read4` は保存されたスキルレベル5到達と読書終了、`sleep` は14,400ターン経過と覚醒メッセージ、両者ともキャラクター保存とゲーム活動の終了を要求します。予期しないリクエスト失敗もCI失敗とし、実測で確認された `cataclysm-tiles.data` の `net::ERR_ABORTED` だけを限定的に許容して記録します。これらは回帰検出を強化するもので、保存のページ再読み込み後の復元確認は別途必要です。`text-scale-pixelated.png` と `text-scale-auto.png` は同じ静止Canvas画像をCSSで75%に縮小した比較画像です。CanvasのWebGL描画状態によって `canvas.toDataURL()` が真っ黒になることがあるため、画面キャプチャはPlaywrightのコンポジタ経由で採取します。
 
 ## 解釈上の制約
 
@@ -31,7 +33,7 @@ Actionsから手動実行できます。base_urlは測定対象の配信先、sc
 4. Chromium RSS合計は共有ページを重複計上し得ます。PSSも読み取れたChromium関連プロセスだけの合計で、OS全体のピークRAMではありません。
 5. キー押下から次フレームまでの時間は入力応答の代理指標です。保存前後の差分が取れない場合、入力イベント数だけを根拠に「移動した」と判断しません。
 6. 自動OCRや文字列の正誤判定は行いません。日本語の崩れはスクリーンショットを目視し、文字列破損・欠字・字幅・輪郭に分類します。HTMLのTerminusフォント確認はゲーム内タイルの字形保証ではありません。
-7. read4は60秒の観測であり、レベル5到達を強制しません。敵発見などの確認画面が出た場合、停止画面とログを証拠として扱い、待たされた時間をターン処理時間へ読み替えません。
+7. read4は60秒の観測です。計測の成功条件として、保存データでレベル5到達と読書終了を要求します。敵発見などの確認画面で進行が阻まれて条件を満たせなかった場合、その実行は成功扱いにせず、スクリーンショットとログを失敗原因の証拠として扱います。perfログの時間にはモーダル待ちが混入し得るため、純粋なターン処理時間として扱いません。
 8. 計測値だけで最適化をマージしません。ゲーム状態、乱数、AI／危険検知の頻度、保存と再ロードの回帰を別途確認します。
 
 ## 各症状のレビュー手順
