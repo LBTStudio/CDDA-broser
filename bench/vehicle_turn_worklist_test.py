@@ -107,6 +107,9 @@ new_zone_cache = """    // Vehicles can cross z-levels during one turn. A moved 
             }
         }
     }
+    if( zone_manager::get_manager().vehicle_zone_cache_dirty() ) {
+        vehicle_zones_dirty = true;
+    }
     if( vehicle_zones_dirty ) {
         zone_manager::get_manager().cache_vzones( this );
     }"""
