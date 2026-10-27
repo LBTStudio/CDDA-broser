@@ -163,10 +163,11 @@ int main() {
     assert(global.points == std::set<int>({99, 100}));
 
     // A missing/unloaded level is skipped rather than created or dereferenced.
+    // An object whose cache is genuinely unloaded is not in the runtime scan.
     levels[0] = nullptr;
     far_cart.zones_dirty = true;
-    assert(finish_vehicle_turn(levels, 0, global));
-    assert(!far_cart.zones_dirty && global.rebuilds == 4);
+    assert(!finish_vehicle_turn(levels, 0, global));
+    assert(far_cart.zones_dirty && global.rebuilds == 3);
 
     std::puts("PASS vehicle-zone regression: cross-z eviction, return, one rebuild per dirty turn, clean-turn no-op, unloaded-level guard");
 }
