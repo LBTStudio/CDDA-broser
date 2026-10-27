@@ -203,7 +203,7 @@ PY
             echo "::error::Selected build run must be completed successfully (status=$SOURCE_STATUS, conclusion=$SOURCE_CONCLUSION)." >&2
             exit 1
           fi
-          if [[ "$SOURCE_WORKFLOW_PATH" != ".github/workflows/build-and-release.yml" ]]; then
+          if [[ "$SOURCE_WORKFLOW_PATH" != .github/workflows/build-and-release.yml* ]]; then
             echo "::error::Selected run is not the CDDA build workflow: $SOURCE_WORKFLOW_PATH" >&2
             exit 1
           fi
@@ -214,7 +214,7 @@ PY
           for asset in index.html cataclysm-tiles.js cataclysm-tiles.wasm cataclysm-tiles.data cataclysm-tiles.data.js Terminus.ttf favicon.ico; do
             test -s "$BUNDLE/$asset" || { echo "::error::Missing full-build artifact asset: $asset"; exit 1; }
           done
-          (cd "$BUNDLE" && sha256sum *) | tee "$OUT/bundle-sha256.txt"
+          (cd "$BUNDLE" && find . -type f -print0 | sort -z | xargs -0 sha256sum) | tee "$OUT/bundle-sha256.txt"
 
           python3 - <<'PY'
 import json, os
