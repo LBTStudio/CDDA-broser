@@ -188,7 +188,7 @@ old_get_call = "here.get_vehicle_zones( here.get_abs_sub().z() )"
 new_get_call = "here.get_vehicle_zones( here.get_abs_sub().z(), /* refresh_cache = */ false )"
 assert old_get_call in old_cache_fn and new_get_call in new_cache_fn
 normalized_cache_fn = new_cache_fn.replace(new_get_call, old_get_call, 1)
-normalized_cache_fn = normalized_cache_fn.replace("    vzone_cache_dirty_ = false;\\n", "", 1)
+normalized_cache_fn = normalized_cache_fn.replace("    vzone_cache_dirty_ = false;\n", "", 1)
 assert normalized_cache_fn == old_cache_fn, (
     "zone_manager::cache_vzones changed beyond recursion guard and dirty-flag reset")
 
