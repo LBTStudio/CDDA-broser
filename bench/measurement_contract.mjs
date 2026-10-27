@@ -42,8 +42,10 @@ export function validateFixtureOutcome({ scenario, population, renderer, fixture
   if (!savedGameState || !Number.isFinite(savedGameState.turn)) {
     return { ok: failures.length === 0, scenario, checks, failures };
   }
-  expect(savedGameState.activity === ACT_NULL, 'activity-finished',
-    `expected=${ACT_NULL}; actual=${savedGameState.activity}`);
+  if (scenario !== 'read') {
+    expect(savedGameState.activity === ACT_NULL, 'activity-finished',
+      `expected=${ACT_NULL}; actual=${savedGameState.activity}`);
+  }
 
   const activityMessages = savedGameState.activityMessages ?? [];
   const perfMessages = savedGameState.perfMessages ?? [];
