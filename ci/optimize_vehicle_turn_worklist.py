@@ -150,7 +150,7 @@ old_clear = """void zone_manager::clear()
     area_cache.clear();
     vzone_cache.clear();
 }"""
-new_clear = old_clear.replace("    vzone_cache.clear();", "    vzone_cache.clear();\\n    vzone_cache_dirty_ = false;")
+new_clear = old_clear.replace("    vzone_cache.clear();", "    vzone_cache.clear();\n    vzone_cache_dirty_ = false;")
 if zone_manager_source.count(old_clear) != 1:
     raise SystemExit("ERROR: expected zone_manager::clear body did not match exactly once")
 zone_manager_source = zone_manager_source.replace(old_clear, new_clear, 1)
