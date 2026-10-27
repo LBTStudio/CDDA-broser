@@ -154,7 +154,6 @@ jobs:
               "harnessCommitSha": os.environ["GITHUB_SHA"],
               "measurementRunId": os.environ["GITHUB_RUN_ID"],
               "measurementRunAttempt": int(os.environ.get("GITHUB_RUN_ATTEMPT", "1")),
-              "measurementRunAttempt": int(os.environ.get("GITHUB_RUN_ATTEMPT", "1")),
               "assetHashesFile": "bundle-sha256.txt",
           }
           (out / "measurement-source.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
