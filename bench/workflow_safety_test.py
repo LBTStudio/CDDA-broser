@@ -13,8 +13,11 @@ manual = manual_path.read_text(encoding="utf-8")
 assert workflow == manual, "manual/build-and-release.yml is stale; sync it with the live workflow"
 
 expected_early_guard = "if: ${{ inputs.runtime_backend == 'jspi' && inputs.deploy_pages != false }}"
+expected_simd_early_guard = "if: ${{ inputs.wasm_simd == 'on' && inputs.deploy_pages != false }}"
 expected_deploy_gate = "if: ${{ inputs.deploy_pages != false && inputs.runtime_backend != 'jspi' }}"
 assert "Reject experimental JSPI deployment" in workflow
+assert "Reject experimental SIMD deployment" in workflow
+assert expected_simd_early_guard in workflow
 assert expected_early_guard in workflow
 assert "JSPI is experimental and must not be deployed to GitHub Pages" in workflow
 assert expected_deploy_gate in workflow

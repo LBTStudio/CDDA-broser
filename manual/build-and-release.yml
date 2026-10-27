@@ -108,6 +108,12 @@ jobs:
       cache_key: ${{ steps.plan.outputs.cache_key }}
 
     steps:
+      - name: Reject experimental SIMD deployment
+        if: ${{ inputs.wasm_simd == 'on' && inputs.deploy_pages != false }}
+        run: |
+          echo "::error::WebAssembly SIMD is experimental and must be tested with deploy_pages=false." >&2
+          exit 1
+
       - name: Reject experimental JSPI deployment
         if: ${{ inputs.runtime_backend == 'jspi' && inputs.deploy_pages != false }}
         run: |
