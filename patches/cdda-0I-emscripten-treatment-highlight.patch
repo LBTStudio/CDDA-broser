@@ -15,7 +15,7 @@
      bmenu.hilight_disabled = true;
 --- a/src/uilist.h
 +++ b/src/uilist.h
-@@ -424,6 +424,7 @@
+@@ -424,7 +424,8 @@
          nc_color border_color;
          nc_color text_color;
          nc_color title_color;
