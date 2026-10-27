@@ -79,7 +79,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
-      CDDA_BASE_URL: ${{ github.event_name == 'workflow_run' && format('https://github.com/LBTStudio/CDDA-broser/actions/runs/{0}', github.event.workflow_run.id) || (github.event.inputs.artifact_run_id != '' && format('https://github.com/LBTStudio/CDDA-broser/actions/runs/{0}', github.event.inputs.artifact_run_id)) || github.event.inputs.base_url || 'https://lbtstudio.github.io/CDDA-broser/' }}
+      CDDA_BASE_URL: ${{ github.event.inputs.base_url || 'https://lbtstudio.github.io/CDDA-broser/' }}
       CDDA_SCENARIO: ${{ github.event.inputs.scenario || 'all' }}
       CDDA_RENDERER: ${{ github.event.inputs.renderer || 'game' }}
       CDDA_POPULATION: ${{ github.event.inputs.population || '0' }}
