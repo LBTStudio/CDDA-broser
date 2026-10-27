@@ -104,6 +104,9 @@ python3 "$SCRIPT_DIR/optimize_gas_spread_buffers.py" "$PWD/src/map_field.cpp"
 echo "[PATCH] reuse-wind-blocker-neighbors (source-anchored)"
 python3 "$SCRIPT_DIR/optimize_wind_blocker_neighbor_reuse.py" "$PWD/src/map_field.cpp"
 
+echo "[PATCH] vehicle-item-submap-grouping (source-anchored)"
+python3 "$SCRIPT_DIR/optimize_vehicle_item_submap_grouping.py" "$PWD/src/map.cpp"
+
 echo "[PATCH] mon-info-hotloop (source-anchored)"
 python3 "$SCRIPT_DIR/optimize_mon_info_hotloop.py" "$PWD/src/game.cpp"
 
@@ -323,6 +326,7 @@ python3 "$SCRIPT_DIR/../bench/mapbuffer_fixed_array_test.py" "$PWD"
 python3 "$SCRIPT_DIR/../bench/visible_creature_position_test.py" "$PWD"
 python3 "$SCRIPT_DIR/../bench/mon_info_hotloop_test.py" "$PWD"
 python3 "$SCRIPT_DIR/../bench/large_entity_churn_test.py" "$PWD"
+python3 "$SCRIPT_DIR/../bench/vehicle_item_submap_grouping_test.py" "$PWD"
 python3 "$SCRIPT_DIR/../bench/vehicle_turn_worklist_test.py" "$PWD"
 python3 "$SCRIPT_DIR/../bench/vehicle_zone_cache_test.py" "$PWD"
 python3 "$SCRIPT_DIR/../bench/vehicle_zone_cache_test.py" "$PWD"
