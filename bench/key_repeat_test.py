@@ -46,6 +46,9 @@ assert get_input.index('CATA_WEB_YIELD();') < get_input.index('CheckMessages();'
 assert get_input.count('CheckMessages();') == get_input.count('drain_pending_input_if_idle();') == 3
 assert 'drain_pending_input_if_idle' not in pump
 assert pump.index('CheckMessages();') < pump.index('return_pending_input( last_input );')
+assert 'last_input_from_pending_queue = true;' in helpers
+assert check.count('last_input_from_pending_queue = true;') == 1, 'final normalizer must mark dequeued input'
+assert 'if( last_input_from_pending_queue )' in helpers
 # Native source must still follow the original keyup/keydown switches.
 assert 'last_input = sdl_keysym_to_keycode_evt( ev.key.keysym );' in check
 
@@ -144,6 +147,7 @@ EXPORT int queued() { return pending_input_queue.size(); }
 EXPORT int repeat_pending() { return pending_key_repeat.has_value(); }
 EXPORT void reset_state() {
     pending_input_queue.clear(); pending_key_repeat.reset();
+    last_input_from_pending_queue = false;
     web_repeat_focused = true; last_input = input_event();
     SDL_Event ev; while(SDL_PollEvent(&ev)) {}
     SDL_StopTextInput(); inputdelay = 0;
@@ -185,6 +189,11 @@ int main() {
     // The newest SDL keydown must not overtake older queued taps.
     reset_state(); key('a'); key('b'); key('c');
     assert(consume(0) == 'a'); key('d');
+    assert(consume(0) == 'b'); assert(consume(0) == 'c'); assert(consume(0) == 'd'); ++cases;
+    // A non-consuming pump may receive a new key while older taps remain queued.
+    reset_state(); key('a'); key('b'); key('c');
+    assert(consume(0) == 'a');
+    key('d'); pump();
     assert(consume(0) == 'b'); assert(consume(0) == 'c'); assert(consume(0) == 'd'); ++cases;
     // New direction wins; two held directions still have only one repeat intent.
     reset_state(); key('h'); key('h', true); key('l'); key('l', true);
