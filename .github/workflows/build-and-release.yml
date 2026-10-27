@@ -71,10 +71,19 @@ on:
         options:
           - "asyncify"
           - "jspi"
+      wasm_simd:
+        description: "WebAssembly SIMD A/B experiment; off keeps the current baseline"
+        required: false
+        default: "off"
+        type: choice
+        options:
+          - "off"
+          - "on"
 
 env:
   CDDA_RUNTIME_BACKEND: ${{ inputs.runtime_backend || 'asyncify' }}
   CDDA_EMSDK_VERSION: ${{ inputs.runtime_backend == 'jspi' && '4.0.15' || '3.1.51' }}
+  CDDA_WASM_SIMD: ${{ inputs.wasm_simd || 'off' }}
 
 permissions:
   contents: read
@@ -99,6 +108,12 @@ jobs:
       cache_key: ${{ steps.plan.outputs.cache_key }}
 
     steps:
+      - name: Reject experimental SIMD deployment
+        if: ${{ inputs.wasm_simd == 'on' && inputs.deploy_pages != false }}
+        run: |
+          echo "::error::WebAssembly SIMD is experimental and must be tested with deploy_pages=false." >&2
+          exit 1
+
       - name: Reject experimental JSPI deployment
         if: ${{ inputs.runtime_backend == 'jspi' && inputs.deploy_pages != false }}
         run: |
@@ -157,7 +172,7 @@ jobs:
           echo "matrix=$( cat ../shard-plan/matrix.json )" >> "$GITHUB_OUTPUT"
 
           # ccache のキャッシュキーに使うハッシュ
-          cache_key="$( { printf '%s\n' "$CDDA_RUNTIME_BACKEND" "$CDDA_EMSDK_VERSION"; cat ../patches/*.patch ../ci/*.sh ../ci/*.py; } | sha256sum | cut -c1-16 )"
+          cache_key="$( { printf '%s\n' "$CDDA_RUNTIME_BACKEND" "$CDDA_EMSDK_VERSION" "$CDDA_WASM_SIMD"; cat ../patches/*.patch ../ci/*.sh ../ci/*.py; } | sha256sum | cut -c1-16 )"
           echo "cache_key=${cache_key}" >> "$GITHUB_OUTPUT"
           echo "キャッシュキー: ${cache_key}"
 
@@ -186,6 +201,7 @@ jobs:
             echo "|---|---|"
             echo "| レベル | ${{ inputs.link_opt }} |"
             echo "| Runtime | $CDDA_RUNTIME_BACKEND |"
+            echo "| WebAssembly SIMD | $CDDA_WASM_SIMD |"
             echo "| Emscripten | $CDDA_EMSDK_VERSION |"
             echo "| 注意 | JSPIは検証用成果物のみ。実ゲームの高速化率は未測定 |"
             echo "| 効果 | ${{ inputs.link_opt == 'O1' && '約 53 分（-78%）' || '約 3h14m（-20%）' }} |"
@@ -638,6 +654,44 @@ jobs:
 
           echo "公開物一覧:"
           ls -lh site/
+
+      - name: Write build provenance sidecar
+        env:
+          RUNTIME_BACKEND: ${{ env.CDDA_RUNTIME_BACKEND }}
+          EMSDK_VERSION: ${{ env.CDDA_EMSDK_VERSION }}
+          LINK_OPT: ${{ inputs.link_opt }}
+          WASM_SIMD: ${{ env.CDDA_WASM_SIMD }}
+          DEPLOY_PAGES: ${{ inputs.deploy_pages }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          metadata = {
+              "schemaVersion": 1,
+              "repository": os.environ["GITHUB_REPOSITORY"],
+              "runId": os.environ["GITHUB_RUN_ID"],
+              "runAttempt": int(os.environ.get("GITHUB_RUN_ATTEMPT", "1")),
+              "commitSha": os.environ["GITHUB_SHA"],
+              "ref": os.environ["GITHUB_REF"],
+              "runtimeBackend": os.environ["RUNTIME_BACKEND"],
+              "emsdkVersion": os.environ["EMSDK_VERSION"],
+              "linkOpt": os.environ["LINK_OPT"],
+              "wasmSimd": os.environ["WASM_SIMD"],
+              "deployPages": os.environ["DEPLOY_PAGES"].lower() == "true",
+              "artifactName": "cdda-0I-web-bundle",
+          }
+          Path("build-provenance.json").write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
+          print(json.dumps(metadata, indent=2))
+          PY
+
+      - name: Upload build provenance
+        uses: actions/upload-artifact@v4
+        with:
+          name: cdda-build-provenance
+          path: build-provenance.json
+          if-no-files-found: error
+          retention-days: 30
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
