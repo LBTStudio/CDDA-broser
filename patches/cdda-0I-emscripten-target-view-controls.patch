@@ -1,7 +1,8 @@
-CDDA 0.I browser fix: restore aim view offset and make view controls configurable.
+CDDA 0.I browser fix: restore aim view offset and expose keyboard panning.
 --- a/src/ranged.cpp
 +++ b/src/ranged.cpp
-@@
+@@ -489,6 +489,7 @@
+     gun_mode gun = ui.relevant->gun_current_mode();
      ui.range = gun.target->gun_range( &you );
      ui.ammo = gun->ammo_data();
  
@@ -11,55 +12,38 @@ CDDA 0.I browser fix: restore aim view offset and make view controls configurabl
  
 --- a/data/raw/keybindings.json
 +++ b/data/raw/keybindings.json
-@@
-   {
-     "type": "keybinding",
+@@ -1548,3 +1548,4 @@
      "id": "CENTER",
 +    "category": "TARGET",
      "name": "Center on character",
      "bindings": [ { "input_method": "keyboard_any", "key": "0" }, { "input_method": "keyboard_code", "key": "KEYPAD_0" } ]
-@@
-   {
-     "type": "keybinding",
-     "name": "Move view north",
-     "category": "DEFAULTMODE",
-     "id": "shift_n",
+@@ -2340,1 +2341,5 @@
+-    "bindings": [ { "input_method": "gamepad", "key": "JOY_8" } ]
++    "bindings": [
++      { "input_method": "keyboard_code", "key": "0", "mod": [ "shift" ] },
++      { "input_method": "gamepad", "key": "JOY_8" }
++    ]
+@@ -2347,1 +2352,4 @@
 -    "bindings": [ { "input_method": "gamepad", "key": "JOY_21" } ]
 +    "bindings": [
 +      { "input_method": "keyboard_code", "key": "UP", "mod": [ "shift" ] },
 +      { "input_method": "gamepad", "key": "JOY_21" }
 +    ]
-   },
-   {
-     "type": "keybinding",
-     "name": "Move view east",
-     "category": "DEFAULTMODE",
-     "id": "shift_e",
+@@ -2354,1 +2362,4 @@
 -    "bindings": [ { "input_method": "gamepad", "key": "JOY_22" } ]
 +    "bindings": [
 +      { "input_method": "keyboard_code", "key": "RIGHT", "mod": [ "shift" ] },
 +      { "input_method": "gamepad", "key": "JOY_22" }
 +    ]
-   },
-   {
-     "type": "keybinding",
-     "name": "Move view south",
-     "category": "DEFAULTMODE",
-     "id": "shift_s",
+@@ -2361,1 +2372,4 @@
 -    "bindings": [ { "input_method": "gamepad", "key": "JOY_23" } ]
 +    "bindings": [
 +      { "input_method": "keyboard_code", "key": "DOWN", "mod": [ "shift" ] },
 +      { "input_method": "gamepad", "key": "JOY_23" }
 +    ]
-   },
-   {
-     "type": "keybinding",
-     "name": "Move view west",
-     "category": "DEFAULTMODE",
-     "id": "shift_w",
+@@ -2368,1 +2382,4 @@
 -    "bindings": [ { "input_method": "gamepad", "key": "JOY_24" } ]
 +    "bindings": [
 +      { "input_method": "keyboard_code", "key": "LEFT", "mod": [ "shift" ] },
 +      { "input_method": "gamepad", "key": "JOY_24" }
 +    ]
-   },
