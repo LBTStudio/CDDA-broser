@@ -341,5 +341,6 @@ node "$SCRIPT_DIR/../bench/save_export_test.js"
 bash "$SCRIPT_DIR/../bench/run_all_status_test.sh"
 python3 "$SCRIPT_DIR/../bench/link_cache_fingerprint_test.py"
 python3 "$SCRIPT_DIR/../bench/workflow_safety_test.py"
+node "$SCRIPT_DIR/../bench/browser_health_test.mjs"
 
 echo "[VERIFY] OK: パッチ適用・車両ターンworklist・ランタイム・IME・保存・MOD ZIP資源制限・活動ペーシング・オフライン依存・ベンチ終了状態・リンクキャッシュ・ワークフロー同期/公開ガードの回帰テストが合格"

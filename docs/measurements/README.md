@@ -22,7 +22,12 @@
 - Emscripten: 3.1.51（本番 CI と同一）
 - 比較用のリンク設定は本番と同じ `-sASYNCIFY` 有効
 
-RAM 4GB Chromebook の実機ではないため **絶対値は実機と異なります**。
-ただし本件で問題になっているのは「ブラウザのイベントループ仕様に起因する
-固定遅延」であり、これは CPU 速度に依存しない仕様値なので、
-**相対比（何倍速いか）はそのまま実機に転用できます**。
+RAM 4GB Chromebook の実機ではないため、**絶対時間や高速化率をそのまま実機へ転用できません**。
+ブラウザAPI由来の待機時間を比較する参考にはなりますが、ゲーム内処理、描画、
+メモリ圧力、CPU制限、ブラウザ・OSの違いによって相対比も変わり得ます。
+実機に適用する判断には、同じシナリオの変更前後を同じ端末で測定する必要があります。
+実バンドル測定の限界は [REVIEW-2026-10-27.md](REVIEW-2026-10-27.md) を参照してください。
+
+### Browser crash and severe-stall guard (2026-10-27)
+
+The real-bundle Playwright harness persists Chromium page-crash events and fails even when a crash occurs after the startup promise has completed. During the controlled active-movement window, a missing RAF sample or a maximum RAF interval of 5,000 ms or longer also fails the run. These are severe-failure guards, not a Chromebook stability guarantee. See [the guard review](BROWSER-HEALTH-GUARDS-2026-10-27.md) and `node bench/browser_health_test.mjs`.

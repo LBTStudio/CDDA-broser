@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
 import { chromium } from 'playwright';
+import { ACTIVE_MOVEMENT_STALL_LIMIT_MS, assertMovementResponsive, createBrowserHealth } from './browser_health.mjs';
 
 const bundle = path.resolve(process.argv[2] || '.');
 const scenario = process.argv[3] || 'read4';
@@ -23,10 +24,12 @@ const out = path.join(outputRoot, scenario + '-' + renderer);
 fs.mkdirSync(out, { recursive: true });
 const captured = { screens: [], result: null, other: [] };
 const consoleLog = [], pageErrors = [], requestFailures = [];
+const browserHealth = createBrowserHealth();
+let lastRuntimeStats = null;
 const mime = { '.html':'text/html; charset=utf-8', '.js':'text/javascript; charset=utf-8', '.wasm':'application/wasm', '.data':'application/octet-stream', '.json':'application/json; charset=utf-8', '.ttf':'font/ttf', '.ico':'image/x-icon', '.png':'image/png' };
 const now = () => Number(process.hrtime.bigint()) / 1e6;
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
-let browser, context, page, tracing = false, newGameResolve, newGameReject, newGameTimer;
+let browser, context, page, tracing = false, browserClosing = false, newGameResolve, newGameReject, newGameTimer;
 const newGameSeen = new Promise((resolve, reject) => { newGameResolve = resolve; newGameReject = reject; });
 
 const server = http.createServer((req, res) => {
@@ -293,6 +296,12 @@ function frameStats(values) {
 async function main() {
   await new Promise((resolve, reject) => server.listen(0, '127.0.0.1', error => error ? reject(error) : resolve()));
   browser = await chromium.launch({ headless: true, args: ['--no-sandbox', '--disable-dev-shm-usage', '--enable-webgl', '--use-gl=angle', '--use-angle=swiftshader'] });
+  browser.on('disconnected', () => {
+    if (browserClosing) return;
+    const error = new Error('Chromium browser disconnected unexpectedly');
+    browserHealth.noteBrowserDisconnect(now(), error.message);
+    newGameReject(error);
+  });
   context = await browser.newContext({ viewport: { width: 1365, height: 768 }, deviceScaleFactor: 1 });
   await context.tracing.start({ screenshots: true, snapshots: true, sources: false }); tracing = true;
   page = await context.newPage();
@@ -314,19 +323,25 @@ async function main() {
     return true;
   });
   await page.addInitScript(() => {
-    const state = window.__cddaMeasure = { frameTimes: [], tasks: [], keys: [], persistenceSyncs: [], persistenceSyncPending: 0 };
+    const state = window.__cddaMeasure = { frameTimes: [], frameMonitorTickCount: 0, frameMonitorStartAt: null, tasks: [], keys: [], persistenceSyncs: [], persistenceSyncPending: 0 };
     const nativeRaf = window.requestAnimationFrame.bind(window);
     let frameMonitorActive = false;
     state.startFrameMonitor = () => {
-      if (frameMonitorActive) return;
+      if (frameMonitorActive) return state.frameMonitorStartAt;
       state.frameTimes.length = 0;
+      state.frameMonitorTickCount = 0;
       frameMonitorActive = true;
+      // Anchor the first interval so a stall immediately after start is visible.
+      state.frameMonitorStartAt = performance.now();
+      state.frameTimes.push(state.frameMonitorStartAt);
       const tick = time => {
         if (!frameMonitorActive) return;
+        state.frameMonitorTickCount += 1;
         if (state.frameTimes.length < 30000) state.frameTimes.push(time);
         nativeRaf(tick);
       };
       nativeRaf(tick);
+      return state.frameMonitorStartAt;
     };
     state.stopFrameMonitor = () => { frameMonitorActive = false; };
     // Preserve browser/game RAF behavior; the independent monitor records once
@@ -350,7 +365,13 @@ async function main() {
   });
   page.on('pageerror', error => pageErrors.push(String(error?.stack || error)));
   page.on('requestfailed', request => requestFailures.push({ url: request.url(), failure: request.failure()?.errorText || 'unknown' }));
-  page.on('crash', () => newGameReject(new Error('Chromium page crashed')));
+  page.on('crash', () => {
+    const error = new Error('Chromium page crashed');
+    browserHealth.notePageCrash(now(), error.message);
+    // Reject the startup wait if initialization has not completed. The persistent
+    // health guard below also catches crashes after that promise has settled.
+    newGameReject(error);
+  });
   newGameTimer = setTimeout(() => newGameReject(new Error('No fixture:newgame marker in 180 seconds')), 180000);
 
   const port = server.address().port, fixture = 'fixture-' + profile + '.html', bootStarted = now();
@@ -401,8 +422,8 @@ async function main() {
   await comparisonPage.close();
   const start = await page.evaluate(() => {
     const state = window.__cddaMeasure;
-    state.startFrameMonitor();
-    return { at: performance.now(), task: state.tasks.length, key: state.keys.length };
+    const frameStartAt = state.startFrameMonitor();
+    return { at: performance.now(), frameStartAt, task: state.tasks.length, key: state.keys.length };
   });
   const movementStarted = now();
   await page.keyboard.down('l');
@@ -415,8 +436,12 @@ async function main() {
   await pause(100);
   const end = await page.evaluate(() => {
     const state = window.__cddaMeasure;
+    const at = performance.now();
     state.stopFrameMonitor();
-    return { at: performance.now(), task: state.tasks.length, key: state.keys.length, frameTimes: state.frameTimes.slice() };
+    // Close the measurement interval so a stall immediately before this sample
+    // is counted even if the next RAF callback never ran.
+    return { at, task: state.tasks.length, key: state.keys.length,
+      frameMonitorTickCount: state.frameMonitorTickCount, frameTimes: [...state.frameTimes, at] };
   });
   const after = await quickSave('after-keyup', before);
   await pause(500);
@@ -434,15 +459,15 @@ async function main() {
     const movementFrames = [];
     for (let i = 1; i < movementTimes.length; i++) {
       const from = movementTimes[i - 1], to = movementTimes[i];
-      if (from >= marks.start.at && to <= marks.end.at) movementFrames.push(to - from);
+      if (from >= (marks.start.frameStartAt ?? marks.start.at) && to <= marks.end.at) movementFrames.push(to - from);
     }
     const movementTasks = tasks.filter(task => task.start >= marks.start.at && task.start <= marks.end.at);
     const movementKeys = keys.filter(item => item.at >= marks.start.at && item.at <= marks.end.at && (item.key === 'l' || item.key === 'L'));
     const latency = movementKeys.filter(item => Number.isFinite(item.frameMs)).map(item => item.frameMs);
-    return { movementFrameMonitorIntervals: movementFrames.length, movementFrameMonitorIntervalMs: frameStatsInPage(movementFrames),
+    return { movementFrameMonitorIntervals: movementFrames.length, movementFrameMonitorIntervalMs: { ...frameStatsInPage(movementFrames), tickCount: marks.end.frameMonitorTickCount },
       longTaskCount: tasks.length, longTaskMs: { total: Number(tasks.reduce((a, b) => a + b.duration, 0).toFixed(2)),
         max: tasks.length ? Number(Math.max(...tasks.map(t => t.duration)).toFixed(2)) : null, over100: tasks.filter(t => t.duration > 100).length },
-      movement: { frameMonitorIntervals: movementFrames.length, frameMonitorIntervalMs: frameStatsInPage(movementFrames), longTaskCount: movementTasks.length,
+      movement: { frameMonitorIntervals: movementFrames.length, frameMonitorIntervalMs: { ...frameStatsInPage(movementFrames), tickCount: marks.end.frameMonitorTickCount }, longTaskCount: movementTasks.length,
         longTaskTotalMs: Number(movementTasks.reduce((a, b) => a + b.duration, 0).toFixed(2)),
         keyEvents: movementKeys.length, keydowns: movementKeys.filter(item => item.type !== 'keyup').length,
         keydownToNextFrameMs: { p50: percentileInPage(latency, .50), p95: percentileInPage(latency, .95), max: latency.length ? Number(Math.max(...latency).toFixed(2)) : null } },
@@ -451,6 +476,9 @@ async function main() {
     function frameStatsInPage(values) { return { count: values.length, p50: percentileInPage(values, .50), p95: percentileInPage(values, .95), p99: percentileInPage(values, .99),
       max: values.length ? Number(Math.max(...values).toFixed(2)) : null, over50: values.filter(v => v > 50).length, over100: values.filter(v => v > 100).length, over250: values.filter(v => v > 250).length }; }
   }, { start, end });
+  lastRuntimeStats = runtime;
+  assertMovementResponsive(runtime.movement.frameMonitorIntervalMs);
+  browserHealth.assertNoBrowserFailure();
 
   const fixtureResult = captured.result;
   let savedFiles = [];
@@ -506,7 +534,8 @@ async function main() {
       turnDelta: before.available && after.available && Number.isFinite(before.turn) && Number.isFinite(after.turn) ? after.turn - before.turn : null,
       changedPositionFields: before.available && after.available ? Object.keys(after.position || {}).filter(key => JSON.stringify(before.position?.[key]) !== JSON.stringify(after.position?.[key])) : [],
       note: 'Movement delta is based on save snapshots. postReleaseTurnDelta compares saves immediately after keyup and after a 500ms quiet interval.' },
-    runtime, visualScaleComparison, fixture: fixtureResult ? { mode: fixtureResult.mode, variant: fixtureResult.variant, renderer: fixtureResult.renderer,
+    runtime, browserHealth: browserHealth.snapshot(), activeMovementStallLimitMs: ACTIVE_MOVEMENT_STALL_LIMIT_MS,
+    visualScaleComparison, fixture: fixtureResult ? { mode: fixtureResult.mode, variant: fixtureResult.variant, renderer: fixtureResult.renderer,
       heapBytes: fixtureResult.heap, error: fixtureResult.error || '', reading: fixtureResult.reading || null,
       savedFiles, savedGameState,
       beforeInterruptScreenshot: preInterruptScreenshot ? path.basename(preInterruptScreenshot) : null } : null,
@@ -538,6 +567,8 @@ async function main() {
     '- Input-to-next-frame p50/p95/max ms: ' + [m.keydownToNextFrameMs.p50, m.keydownToNextFrameMs.p95, m.keydownToNextFrameMs.max].join(' / '),
     '- Whole-run Long Tasks: ' + runtime.longTaskCount + ', total ' + runtime.longTaskMs.total + ' ms, max ' + runtime.longTaskMs.max + ' ms',
     '- Canvas captures: ' + captured.screens.length + '; page errors: ' + pageErrors.length,
+    '- Browser crash history: ' + JSON.stringify(browserHealth.snapshot()),
+    '- Active movement stall threshold ms: ' + ACTIVE_MOVEMENT_STALL_LIMIT_MS,
     '- Text scaling A/B: same static canvas image at 75% CSS size, pixelated vs auto interpolation',
     '- Playwright fixture screenshots: ' + fixtureScreens.length,
     '', '## Interpretation limits', '', '- GitHub Actions values are not a physical 4GB Chromebook benchmark.',
@@ -551,6 +582,7 @@ async function main() {
   if (bundleFiles.some(file => file.missing)) throw new Error('Missing one or more deployed bundle assets');
   if (!fixtureResult) throw new Error('No game fixture result payload');
   if (pageErrors.length) throw new Error('Browser page errors: ' + pageErrors.length);
+  browserHealth.assertNoBrowserFailure();
 }
 
 try { await main(); }
@@ -587,7 +619,8 @@ catch (error) {
     await page.content().then(html => fs.writeFileSync(path.join(out, 'failure-page.html'), html)).catch(() => {});
   }
   const payload = { at: new Date().toISOString(), scenario, renderer, baseUrl,
-    error: String(error?.stack || error), browserDiagnostics, console: consoleLog, pageErrors, requestFailures,
+    error: String(error?.stack || error), browserDiagnostics, browserHealth: browserHealth.snapshot(),
+    lastRuntimeStats, console: consoleLog, pageErrors, requestFailures,
     capturedScreens: captured.screens, captureResultReceived: !!captured.result };
   fs.writeFileSync(path.join(out, 'failure.json'), JSON.stringify(payload, null, 2));
   console.error('BROWSER FAILURE DIAGNOSTICS ' + JSON.stringify(payload, null, 2));
@@ -595,6 +628,9 @@ catch (error) {
 } finally {
   if (newGameTimer) clearTimeout(newGameTimer);
   if (context && tracing) await context.tracing.stop({ path: path.join(out, 'playwright-trace.zip') }).catch(() => {});
-  if (browser) await browser.close().catch(() => {});
+  if (browser) {
+    browserClosing = true;
+    await browser.close().catch(() => {});
+  }
   await new Promise(resolve => server.close(() => resolve())).catch(() => {});
 }
