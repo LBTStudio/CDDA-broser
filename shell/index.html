@@ -1725,7 +1725,7 @@
          (and preventDefault keeps them out of the proxy's value).  During
          IME composition the browser suppresses those raw key events itself,
          so nothing is double-entered. */
-      window.cddaImeState = { commits: [], preview: null };
+      window.cddaImeState = { commits: [], commitOffset: 0, preview: null };
       const imeProxy = document.getElementById("ime-proxy");
       let imeWanted = false;   // game-side text input state
       let imeComposing = false;
@@ -1751,6 +1751,7 @@
           // appear in the next filter. Blur may itself emit compositionend;
           // the handlers below check imeWanted before accepting that event.
           window.cddaImeState.commits.length = 0;
+          window.cddaImeState.commitOffset = 0;
           window.cddaImeState.preview = null;
           if (document.activeElement === imeProxy) imeProxy.blur();
         }
