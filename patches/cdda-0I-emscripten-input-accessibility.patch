@@ -1,4 +1,4 @@
-CDDA 0.I browser fixes: bind C for martial arts selection and de-blue selected rows
+CDDA 0.I browser fixes: bind C for martial arts selection and distinguish selected rows
 
 --- a/data/raw/keybindings.json
 +++ b/data/raw/keybindings.json
@@ -25,11 +25,9 @@ CDDA 0.I browser fixes: bind C for martial arts selection and de-blue selected r
                          ImGuiSelectableFlags flags = ImGuiSelectableFlags_SpanAllColumns |
                                                       ImGuiSelectableFlags_AllowItemOverlap;
                          if( !entry.enabled ) {
-@@ -159,6 +165,7 @@
-                             parent.fselected = i;
-                             parent.selected = parent.previewing = parent.fentries[ parent.fselected ];
+@@ -164,6 +170,7 @@
+                             parent.need_to_scroll = true;
+                             is_selected = parent.clicked = true;
                          }
 +                        ImGui::PopStyleColor( 3 );
-                         // the next time around.
-                         parent.need_to_scroll = true;
-                         is_selected = parent.clicked = true;
+                         bool is_hovered = ImGui::IsItemHovered( ImGuiHoveredFlags_NoNavOverride );
