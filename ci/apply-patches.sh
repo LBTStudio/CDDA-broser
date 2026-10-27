@@ -72,6 +72,11 @@ for name in $PATCHES; do
     fi
 done
 
+echo "[PATCH] treatment-highlight"
+git apply --check "$PATCH_DIR/cdda-0I-emscripten-treatment-highlight.patch"
+git apply "$PATCH_DIR/cdda-0I-emscripten-treatment-highlight.patch"
+grep -q 'bmenu.neutral_selection_background = true;' src/character_body.cpp
+
 echo "[PATCH] stable-dead-monster-compaction (source-anchored)"
 python3 "$SCRIPT_DIR/compact_dead_monsters.py" "$PWD/src/creature_tracker.cpp"
 
@@ -330,6 +335,8 @@ python3 "$SCRIPT_DIR/../bench/sleep_save_test.py" "$PWD"
 python3 "$SCRIPT_DIR/../bench/input_utf8_test.py" "$PWD"
 python3 "$SCRIPT_DIR/../bench/key_repeat_test.py" "$PWD"
 python3 "$SCRIPT_DIR/../bench/gear_guide_test.py" "$PWD"
+python3 "$SCRIPT_DIR/../bench/treatment_highlight_test.py" "$PWD"
+python3 "$SCRIPT_DIR/../bench/martial_arts_keybinding_test.py" "$PWD"
 python3 "$SCRIPT_DIR/../bench/target_view_controls_test.py" "$PWD"
 node "$SCRIPT_DIR/../bench/asset_loader_test.js"
 node "$SCRIPT_DIR/../bench/ime_bridge_test.js"
