@@ -325,8 +325,8 @@ Synthetic work counts are NOT proof of native-equivalent game performance.
              commit_event.type = SDL_TEXTINPUT;
 +            // ImGui rejects text events not addressed to its SDL window.
 +            commit_event.text.windowID = SDL_GetWindowID( window.get() );
-             memcpy( commit_event.text.text, p, chunk );
-             commit_event.text.text[chunk] = '\0';
+             memcpy( commit_event.text.text, ime_buf, static_cast<std::size_t>( ime_bytes ) );
+             commit_event.text.text[ime_bytes] = '\0';
              SDL_PushEvent( &commit_event );
 @@ -2952,6 +3000,7 @@
          }
