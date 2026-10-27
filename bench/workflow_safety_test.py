@@ -72,6 +72,9 @@ assert "artifact_run_id:" in measure_workflow
 assert "github.event_name == 'pull_request' && 'compare'" in measure_workflow
 assert 'GITHUB_EVENT_NAME" == "pull_request' in measure_workflow
 assert "for population in 32 64 128 200; do" in measure_workflow
+assert "timeout-minutes: 60" in measure_workflow, (
+    "the PR renderer and population matrix needs enough time to upload every completed measurement"
+)
 assert "Download exact bundle from the selected full build" in measure_workflow
 assert "github.event.inputs.artifact_run_id" in measure_workflow
 assert "measurement-source.json" in measure_workflow
