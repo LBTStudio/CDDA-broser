@@ -90,7 +90,10 @@ new_zone_cache = """    // Vehicles can cross z-levels during one turn. A moved 
             }
         }
     }
-    if( vehicle_zones_dirty || zone_manager::get_manager().vehicle_zone_cache_dirty() ) {
+    if( zone_manager::get_manager().vehicle_zone_cache_dirty() ) {
+        vehicle_zones_dirty = true;
+    }
+    if( vehicle_zones_dirty ) {
         zone_manager::get_manager().cache_vzones( this );
     }"""
 if source.count(old_zone_cache) != 1:
@@ -241,8 +244,10 @@ if "const level_cache *cache = get_cache_lazy( zlev );" not in source:
     raise SystemExit("ERROR: cross-level vehicle-zone scan must not allocate unloaded level caches")
 if "if( veh->refresh_zones() ) {" not in source:
     raise SystemExit("ERROR: dirty vehicle-zone refresh is missing")
-if "if( vehicle_zones_dirty || zone_manager::get_manager().vehicle_zone_cache_dirty() ) {" not in source:
-    raise SystemExit("ERROR: vehicle-zone edits do not trigger conditional cache rebuild")
+if "if( zone_manager::get_manager().vehicle_zone_cache_dirty() ) {" not in source:
+    raise SystemExit("ERROR: vehicle-zone edit dirty flag check is missing")
+if "if( vehicle_zones_dirty ) {" not in source:
+    raise SystemExit("ERROR: vehicle-zone cache rebuild is not conditional on actual refresh")
 if source.count("if( rebuild && refresh_cache ) {") != 1:
     raise SystemExit("ERROR: nested vehicle-zone cache rebuild is still unconditional")
 if "std::vector<zone_data *> map::get_vehicle_zones( const int zlev, bool refresh_cache )" not in source:
