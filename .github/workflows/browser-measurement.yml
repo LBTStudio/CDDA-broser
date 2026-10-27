@@ -144,19 +144,19 @@ jobs:
           (cd "$BUNDLE" && sha256sum *) | tee "$GITHUB_WORKSPACE/bench/out/browser-measurement/bundle-sha256.txt"
           OUT="$GITHUB_WORKSPACE/bench/out/browser-measurement"
           python3 - <<'PY'
-import json, os
-from pathlib import Path
-out = Path("bench/out/browser-measurement")
-manifest = {
-    "schemaVersion": 1,
-    "kind": "published-pages",
-    "targetUrl": os.environ["BASE_URL"],
-    "harnessCommitSha": os.environ["GITHUB_SHA"],
-    "measurementRunId": os.environ["GITHUB_RUN_ID"],
-    "assetHashesFile": "bundle-sha256.txt",
-}
-(out / "measurement-source.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
-PY
+          import json, os
+          from pathlib import Path
+          out = Path("bench/out/browser-measurement")
+          manifest = {
+              "schemaVersion": 1,
+              "kind": "published-pages",
+              "targetUrl": os.environ["BASE_URL"],
+              "harnessCommitSha": os.environ["GITHUB_SHA"],
+              "measurementRunId": os.environ["GITHUB_RUN_ID"],
+              "assetHashesFile": "bundle-sha256.txt",
+          }
+          (out / "measurement-source.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+          PY
           {
             echo "## Downloaded published bundle"
             echo ""
@@ -217,37 +217,37 @@ PY
           (cd "$BUNDLE" && find . -type f -print0 | sort -z | xargs -0 sha256sum) | tee "$OUT/bundle-sha256.txt"
 
           python3 - <<'PY'
-import json, os
-from pathlib import Path
-out = Path("bench/out/browser-measurement")
-source_run_id = os.environ["SOURCE_RUN_ID"]
-source_commit = os.environ["SOURCE_COMMIT_SHA"]
-build_path = out / "build-provenance" / "build-provenance.json"
-build = json.loads(build_path.read_text(encoding="utf-8")) if build_path.is_file() else None
-if build is not None:
-    if str(build.get("runId")) != source_run_id:
-        raise SystemExit("Build provenance run ID does not match the selected artifact run.")
-    if build.get("commitSha") != source_commit:
-        raise SystemExit("Build provenance source SHA does not match the selected artifact run.")
-hashes = {}
-for line in (out / "bundle-sha256.txt").read_text(encoding="utf-8").splitlines():
-    digest, name = line.split(None, 1)
-    hashes[name.strip()] = digest
-manifest = {
-    "schemaVersion": 1,
-    "kind": "build-artifact",
-    "targetUrl": None,
-    "sourceRunId": source_run_id,
-    "sourceRunUrl": os.environ["GITHUB_SERVER_URL"] + "/" + os.environ["GITHUB_REPOSITORY"] + "/actions/runs/" + source_run_id,
-    "sourceCommitSha": source_commit,
-    "harnessCommitSha": os.environ["GITHUB_SHA"],
-    "measurementRunId": os.environ["GITHUB_RUN_ID"],
-    "buildConfigurationVerified": build is not None,
-    "build": build,
-    "assetHashes": hashes,
-}
-(out / "measurement-source.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
-PY
+          import json, os
+          from pathlib import Path
+          out = Path("bench/out/browser-measurement")
+          source_run_id = os.environ["SOURCE_RUN_ID"]
+          source_commit = os.environ["SOURCE_COMMIT_SHA"]
+          build_path = out / "build-provenance" / "build-provenance.json"
+          build = json.loads(build_path.read_text(encoding="utf-8")) if build_path.is_file() else None
+          if build is not None:
+              if str(build.get("runId")) != source_run_id:
+                  raise SystemExit("Build provenance run ID does not match the selected artifact run.")
+              if build.get("commitSha") != source_commit:
+                  raise SystemExit("Build provenance source SHA does not match the selected artifact run.")
+          hashes = {}
+          for line in (out / "bundle-sha256.txt").read_text(encoding="utf-8").splitlines():
+              digest, name = line.split(None, 1)
+              hashes[name.strip()] = digest
+          manifest = {
+              "schemaVersion": 1,
+              "kind": "build-artifact",
+              "targetUrl": None,
+              "sourceRunId": source_run_id,
+              "sourceRunUrl": os.environ["GITHUB_SERVER_URL"] + "/" + os.environ["GITHUB_REPOSITORY"] + "/actions/runs/" + source_run_id,
+              "sourceCommitSha": source_commit,
+              "harnessCommitSha": os.environ["GITHUB_SHA"],
+              "measurementRunId": os.environ["GITHUB_RUN_ID"],
+              "buildConfigurationVerified": build is not None,
+              "build": build,
+              "assetHashes": hashes,
+          }
+          (out / "measurement-source.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+          PY
           {
             echo "## Exact WebAssembly build artifact"
             echo ""
