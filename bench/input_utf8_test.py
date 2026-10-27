@@ -47,8 +47,8 @@ struct string_input_popup_imgui {
 # Exercise the missing hop in the old test: bridge -> SDL backend -> widget.
 sdl = (source / 'src/sdltiles.cpp').read_text()
 bridge = sdl[sdl.index('static void cdda_pump_web_ime()'):]
-commit = bridge[bridge.index('        const char *p = ime_buf;'):bridge.index('    // Composition preview:')]
-commit = commit[:commit.rindex('    }')]  # outer EM_ASM polling loop
+commit = bridge[bridge.index('        SDL_Event commit_event {};'):bridge.index('    // Composition preview:')]
+commit = commit[:commit.rindex('    }')]  # close the one-event commit guard
 preview = bridge[bridge.index('        size_t chunk = strlen( ime_buf );'):]
 preview = preview[:preview.index('\n    }')]
 backend = (imgui / 'imgui_impl_sdl2.cpp').read_text()
@@ -74,11 +74,29 @@ int SDL_PushEvent(const SDL_Event *event) { events.push_back(*event); return 1; 
 program += viewport + '\nbool route_text(const SDL_Event *event) {\n'
 program += '    ImGuiIO &io = ImGui::GetIO();\n    switch(event->type) {\n' + text_case
 program += '    default: return false;\n    }\n}\n'
-program += 'void pump_commit(const char *ime_buf) {\n' + commit + '\n}\n'
+program += 'void pump_commit(const char *ime_buf, int ime_bytes) {\n'
+program += '    if (ime_bytes <= 0 || ime_bytes >= SDL_TEXTINPUTEVENT_TEXT_SIZE) return;\n'
+program += commit + '\n}\n'
 program += 'void pump_preview(const char *ime_buf) {\n' + preview + '\n}\n'
 program += r'''
 static void deliver(const std::string &input) {
-    events.clear(); pump_commit(input.c_str());
+    events.clear();
+    std::size_t offset = 0;
+    while (offset < input.size()) {
+        std::size_t chunk = input.size() - offset;
+        if (chunk > static_cast<std::size_t>( SDL_TEXTINPUTEVENT_TEXT_SIZE - 1 )) {
+            chunk = static_cast<std::size_t>( SDL_TEXTINPUTEVENT_TEXT_SIZE - 1 );
+            while (chunk > 0 && offset + chunk < input.size() &&
+                   (static_cast<unsigned char>(input[offset + chunk]) & 0xC0) == 0x80) {
+                --chunk;
+            }
+        }
+        assert(chunk > 0);
+        char ime_buf[SDL_TEXTINPUTEVENT_TEXT_SIZE] = {};
+        std::memcpy(ime_buf, input.data() + offset, chunk);
+        pump_commit(ime_buf, static_cast<int>(chunk));
+        offset += chunk;
+    }
     std::string delivered;
     for (const auto &event : events) {
         assert(event.type == SDL_TEXTINPUT && event.text.windowID == 17);
