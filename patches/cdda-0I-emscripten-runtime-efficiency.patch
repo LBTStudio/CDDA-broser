@@ -350,7 +350,7 @@ Synthetic work counts are NOT proof of native-equivalent game performance.
          switch( ev.type ) {
              case SDL_WINDOWEVENT:
                  switch( ev.window.event ) {
-@@ -3885,6 +3941,14 @@
+@@ -3885,6 +3941,15 @@
              break;
          }
      }
@@ -360,12 +360,13 @@ Synthetic work counts are NOT proof of native-equivalent game performance.
 +    if( !pending_input_queue.empty() ) {
 +        stash_pending_input( last_input );
 +        last_input = take_pending_input();
++        last_input_from_pending_queue = true;
 +    }
 +#endif
      bool resized = false;
      if( resize_dims.has_value() ) {
          restore_on_out_of_scope prev_last_input( last_input );
-@@ -4318,33 +4382,9 @@
+@@ -4318,33 +4383,9 @@
      previously_pressed_key = 0;
 
  #if defined(EMSCRIPTEN)
@@ -402,7 +403,7 @@ Synthetic work counts are NOT proof of native-equivalent game performance.
  #endif
 
      // standards note: getch is sometimes required to call refresh
-@@ -4358,7 +4398,16 @@
+@@ -4358,7 +4399,16 @@
      if( needupdate ) {
          refresh_display();
      } else if( ui_adaptor::has_imgui() ) {
@@ -419,7 +420,7 @@ Synthetic work counts are NOT proof of native-equivalent game performance.
      }
 
      // [CDDA-BROSER] 入力待ちループの SDL_Delay( 1 ) について。
-@@ -4378,7 +4427,9 @@
+@@ -4378,7 +4428,9 @@
      // MessageChannel でも同じ効果が得られ、しかも実測 0.075ms で済む。
      const auto wait_for_input_events = []() {
  #if defined(EMSCRIPTEN)
