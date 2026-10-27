@@ -36,9 +36,11 @@ assert "cdda_web_vehicle_move_batch_active = true;" in vehmove
 assert "cdda_web_vehicle_move_redraw_pending = false;" in vehmove
 assert "if( cdda_web_outermost_vehicle_move && cdda_web_vehicle_move_redraw_pending ) {" in vehmove
 assert "ui_manager::redraw_invalidated();\n        refresh_display();" in vehmove
-assert vehmove.index("check_vehicle_zones( get_abs_sub().z() )") < vehmove.index(
+assert vehmove.index("bool vehicle_zones_dirty = false;") < vehmove.index(
     "ui_manager::redraw_invalidated();\n        refresh_display();"
-), "final display must follow vehicle-zone cache refresh"
+), "final display must follow cross-level vehicle-zone refresh"
+assert "const level_cache *cache = get_cache_lazy( zlev );" in vehmove
+assert "if( veh->refresh_zones() ) {" in vehmove
 
 move_vehicle = between(
     map_source,

@@ -48,9 +48,24 @@ if map_source.count(old_start) != 1:
     raise SystemExit("ERROR: map::vehmove entry point changed")
 map_source = map_source.replace(old_start, new_start, 1)
 
-zone_cache = """    // Vehicle movement marks loot-zone positions dirty. Do not clear and rebuild
-    // every vehicle-zone point set on turns where no zone position changed.
-    if( check_vehicle_zones( get_abs_sub().z() ) ) {
+zone_cache = """    // Vehicles can cross z-levels during one turn. A moved vehicle is removed from
+    // its old zone cache and inserted into its destination cache before this point,
+    // so checking only the player's z-level can miss the dirty vehicle entirely.
+    // Refresh dirty zone vehicles across loaded levels, then rebuild the active
+    // zone point set once. get_cache_lazy avoids creating unused level caches.
+    bool vehicle_zones_dirty = false;
+    for( int zlev = -OVERMAP_DEPTH; zlev <= OVERMAP_HEIGHT; ++zlev ) {
+        const level_cache *cache = get_cache_lazy( zlev );
+        if( cache == nullptr ) {
+            continue;
+        }
+        for( vehicle *veh : cache->zone_vehicles ) {
+            if( veh->refresh_zones() ) {
+                vehicle_zones_dirty = true;
+            }
+        }
+    }
+    if( vehicle_zones_dirty ) {
         zone_manager::get_manager().cache_vzones( this );
     }"""
 zone_cache_with_flush = zone_cache + """
