@@ -76,12 +76,6 @@ git apply --check "$PATCH_DIR/cdda-0I-emscripten-treatment-highlight.patch"
 git apply "$PATCH_DIR/cdda-0I-emscripten-treatment-highlight.patch"
 grep -q 'bmenu.neutral_selection_background = true;' src/character_body.cpp
 
-echo "[PATCH] martial-style-key"
-git apply --check "$PATCH_DIR/cdda-0I-emscripten-martial-style-key.patch"
-git apply "$PATCH_DIR/cdda-0I-emscripten-martial-style-key.patch"
-grep -q '"id": "pick_style"' data/raw/keybindings.json
-grep -q '"input_method": "keyboard_code", "key": "c"' data/raw/keybindings.json
-
 echo "[PATCH] stable-dead-monster-compaction (source-anchored)"
 python3 "$SCRIPT_DIR/compact_dead_monsters.py" "$PWD/src/creature_tracker.cpp"
 
