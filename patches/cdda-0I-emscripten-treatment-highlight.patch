@@ -1,0 +1,17 @@
+# CDDA 0.I browser: distinguish selected treatment row from limb-state colors
+#
+# The body-part treatment menu inherits uilist's default highlight color. In the
+# browser build the whole selected row is rendered blue, which is easy to
+# confuse with the blue limb-state indicator used for bites. Use neutral white
+# for this one menu only; leave the underlying limb-state colors and all other
+# menus unchanged.
+--- a/src/character_body.cpp
++++ b/src/character_body.cpp
+@@ -1133,6 +1133,7 @@
+ 
+     uilist bmenu;
+     bmenu.desc_enabled = true;
++    bmenu.hilight_color = c_white;
+     bmenu.text = menu_header;
+ 
+     bmenu.hilight_disabled = true;
