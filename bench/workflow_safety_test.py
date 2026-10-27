@@ -80,6 +80,9 @@ assert "cdda-build-provenance" in workflow
 assert "build-provenance.json" in workflow
 assert "cdda-build-provenance" in measure_workflow
 assert "measurementRunAttempt" in measure_workflow
+assert measure_workflow.count('"measurementRunAttempt": int(os.environ.get("GITHUB_RUN_ATTEMPT", "1"))') == 1, (
+    "published bundle manifest must record the attempt number exactly once"
+)
 assert "name: cdda-playwright-measurement-${{ github.run_id }}-attempt-${{ github.run_attempt }}" in measure_workflow
 assert "export SOURCE_COMMIT_SHA SOURCE_RUN_ATTEMPT" in measure_workflow
 
