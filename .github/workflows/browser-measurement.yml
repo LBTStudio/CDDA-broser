@@ -155,7 +155,7 @@ manifest = {
     "measurementRunId": os.environ["GITHUB_RUN_ID"],
     "assetHashesFile": "bundle-sha256.txt",
 }
-(out / "measurement-source.json").write_text(json.dumps(manifest, indent=2) + "\\n", encoding="utf-8")
+(out / "measurement-source.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
 PY
           {
             echo "## Downloaded published bundle"
@@ -246,7 +246,7 @@ manifest = {
     "build": build,
     "assetHashes": hashes,
 }
-(out / "measurement-source.json").write_text(json.dumps(manifest, indent=2) + "\\n", encoding="utf-8")
+(out / "measurement-source.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
 PY
           {
             echo "## Exact WebAssembly build artifact"
