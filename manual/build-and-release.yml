@@ -665,25 +665,25 @@ jobs:
         run: |
           set -euo pipefail
           python3 - <<'PY'
-import json, os
-from pathlib import Path
-metadata = {
-    "schemaVersion": 1,
-    "repository": os.environ["GITHUB_REPOSITORY"],
-    "runId": os.environ["GITHUB_RUN_ID"],
-    "runAttempt": int(os.environ.get("GITHUB_RUN_ATTEMPT", "1")),
-    "commitSha": os.environ["GITHUB_SHA"],
-    "ref": os.environ["GITHUB_REF"],
-    "runtimeBackend": os.environ["RUNTIME_BACKEND"],
-    "emsdkVersion": os.environ["EMSDK_VERSION"],
-    "linkOpt": os.environ["LINK_OPT"],
-    "wasmSimd": os.environ["WASM_SIMD"],
-    "deployPages": os.environ["DEPLOY_PAGES"].lower() == "true",
-    "artifactName": "cdda-0I-web-bundle",
-}
-Path("build-provenance.json").write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
-print(json.dumps(metadata, indent=2))
-PY
+          import json, os
+          from pathlib import Path
+          metadata = {
+              "schemaVersion": 1,
+              "repository": os.environ["GITHUB_REPOSITORY"],
+              "runId": os.environ["GITHUB_RUN_ID"],
+              "runAttempt": int(os.environ.get("GITHUB_RUN_ATTEMPT", "1")),
+              "commitSha": os.environ["GITHUB_SHA"],
+              "ref": os.environ["GITHUB_REF"],
+              "runtimeBackend": os.environ["RUNTIME_BACKEND"],
+              "emsdkVersion": os.environ["EMSDK_VERSION"],
+              "linkOpt": os.environ["LINK_OPT"],
+              "wasmSimd": os.environ["WASM_SIMD"],
+              "deployPages": os.environ["DEPLOY_PAGES"].lower() == "true",
+              "artifactName": "cdda-0I-web-bundle",
+          }
+          Path("build-provenance.json").write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
+          print(json.dumps(metadata, indent=2))
+          PY
 
       - name: Upload build provenance
         uses: actions/upload-artifact@v4
