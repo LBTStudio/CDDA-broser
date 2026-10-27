@@ -8,6 +8,10 @@ on:
         required: true
         default: "https://lbtstudio.github.io/CDDA-broser/"
         type: string
+      artifact_run_id:
+        description: "Optional successful Build CDDA workflow run ID; measures that exact build artifact instead of the public URL"
+        required: false
+        type: string
       scenario:
         description: "Real-game scenario; all runs reading and sleep independently"
         required: true
@@ -75,7 +79,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
-      CDDA_BASE_URL: ${{ github.event_name == 'workflow_run' && format('https://github.com/LBTStudio/CDDA-broser/actions/runs/{0}', github.event.workflow_run.id) || github.event.inputs.base_url || 'https://lbtstudio.github.io/CDDA-broser/' }}
+      CDDA_BASE_URL: ${{ github.event_name == 'workflow_run' && format('https://github.com/LBTStudio/CDDA-broser/actions/runs/{0}', github.event.workflow_run.id) || (github.event.inputs.artifact_run_id != '' && format('https://github.com/LBTStudio/CDDA-broser/actions/runs/{0}', github.event.inputs.artifact_run_id)) || github.event.inputs.base_url || 'https://lbtstudio.github.io/CDDA-broser/' }}
       CDDA_SCENARIO: ${{ github.event.inputs.scenario || 'all' }}
       CDDA_RENDERER: ${{ github.event.inputs.renderer || 'game' }}
       CDDA_POPULATION: ${{ github.event.inputs.population || '0' }}
@@ -119,7 +123,7 @@ jobs:
         run: npx playwright install chromium
 
       - name: Download the exact deployed bundle under test
-        if: ${{ github.event_name != 'workflow_run' }}
+        if: ${{ github.event_name != 'workflow_run' && !github.event.inputs.artifact_run_id }}
         env:
           BASE_URL: ${{ github.event.inputs.base_url || 'https://lbtstudio.github.io/CDDA-broser/' }}
         run: |
@@ -148,17 +152,17 @@ jobs:
             sed 's/^/- Asset: /' "$GITHUB_WORKSPACE/bench/out/browser-measurement/bundle-sha256.txt"
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Download exact bundle from the completed full build
-        if: ${{ github.event_name == 'workflow_run' }}
+      - name: Download exact bundle from the selected full build
+        if: ${{ github.event_name == 'workflow_run' || github.event.inputs.artifact_run_id != '' }}
         uses: actions/download-artifact@v4
         with:
           name: cdda-0I-web-bundle
-          run-id: ${{ github.event.workflow_run.id }}
+          run-id: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.id || github.event.inputs.artifact_run_id }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
           path: bench/out/browser-measurement/bundle
 
       - name: Verify full-build artifact and record its fingerprint
-        if: ${{ github.event_name == 'workflow_run' }}
+        if: ${{ github.event_name == 'workflow_run' || github.event.inputs.artifact_run_id != '' }}
         run: |
           set -euo pipefail
           BUNDLE="$GITHUB_WORKSPACE/bench/out/browser-measurement/bundle"

@@ -71,10 +71,19 @@ on:
         options:
           - "asyncify"
           - "jspi"
+      wasm_simd:
+        description: "WebAssembly SIMD A/B experiment; off keeps the current baseline"
+        required: false
+        default: "off"
+        type: choice
+        options:
+          - "off"
+          - "on"
 
 env:
   CDDA_RUNTIME_BACKEND: ${{ inputs.runtime_backend || 'asyncify' }}
   CDDA_EMSDK_VERSION: ${{ inputs.runtime_backend == 'jspi' && '4.0.15' || '3.1.51' }}
+  CDDA_WASM_SIMD: ${{ inputs.wasm_simd || 'off' }}
 
 permissions:
   contents: read
@@ -157,7 +166,7 @@ jobs:
           echo "matrix=$( cat ../shard-plan/matrix.json )" >> "$GITHUB_OUTPUT"
 
           # ccache のキャッシュキーに使うハッシュ
-          cache_key="$( { printf '%s\n' "$CDDA_RUNTIME_BACKEND" "$CDDA_EMSDK_VERSION"; cat ../patches/*.patch ../ci/*.sh ../ci/*.py; } | sha256sum | cut -c1-16 )"
+          cache_key="$( { printf '%s\n' "$CDDA_RUNTIME_BACKEND" "$CDDA_EMSDK_VERSION" "$CDDA_WASM_SIMD"; cat ../patches/*.patch ../ci/*.sh ../ci/*.py; } | sha256sum | cut -c1-16 )"
           echo "cache_key=${cache_key}" >> "$GITHUB_OUTPUT"
           echo "キャッシュキー: ${cache_key}"
 
@@ -186,6 +195,7 @@ jobs:
             echo "|---|---|"
             echo "| レベル | ${{ inputs.link_opt }} |"
             echo "| Runtime | $CDDA_RUNTIME_BACKEND |"
+            echo "| WebAssembly SIMD | $CDDA_WASM_SIMD |"
             echo "| Emscripten | $CDDA_EMSDK_VERSION |"
             echo "| 注意 | JSPIは検証用成果物のみ。実ゲームの高速化率は未測定 |"
             echo "| 効果 | ${{ inputs.link_opt == 'O1' && '約 53 分（-78%）' || '約 3h14m（-20%）' }} |"

@@ -49,6 +49,7 @@ assert "## 各工程の実行ログ" in workflow
 
 # Architecture and measurement notes must describe the implementation that is
 # actually applied by CI, not the retracted first version of the activity patch.
+measure_workflow = (root / ".github/workflows/browser-measurement.yml").read_text(encoding="utf-8")
 architecture = (root / "docs/ARCHITECTURE.md").read_text(encoding="utf-8")
 facts = (root / "docs/measurements/FACTS.md").read_text(encoding="utf-8")
 assert "cdda-assets-bundle-v3-*" in architecture
@@ -57,4 +58,14 @@ assert "CI rejects" in architecture and "mon_info_update_throttled" in architect
 assert "exclusive Web Lock" in architecture
 assert "F-20 [旧案・撤回済み]" in facts
 assert "this throttling proposal was retracted" in facts
-print("PASS docs consistency: immutable cache, current danger-check cadence, profile tab locks, retired optimization clearly labelled")
+
+# Architecture A/B experiments default to current scalar behavior and can measure
+# an exact build artifact without publishing experimental binaries.
+assert "wasm_simd:" in workflow and 'default: "off"' in workflow
+assert "CDDA_WASM_SIMD" in workflow
+assert 'echo "| WebAssembly SIMD | $CDDA_WASM_SIMD |"' in workflow
+assert "CDDA_WASM_SIMD" in (root / "ci/tune-makefile.sh").read_text(encoding="utf-8")
+assert "artifact_run_id:" in measure_workflow
+assert "Download exact bundle from the selected full build" in measure_workflow
+assert "github.event.inputs.artifact_run_id" in measure_workflow
+print("PASS docs consistency: workflows, scalar-default SIMD experiment, exact-build measurement, and existing safety guards")
