@@ -53,7 +53,15 @@ end = new_sleep.index('    if( intense < 1 )')
 assert old_sleep[:old_sleep.index('    u.set_moves( 0 );')] == new_sleep[:start]
 assert old_sleep[old_sleep.index('    if( intense < 1 )'):] == new_sleep[end:]
 for name in ['character_body.cpp', 'messages.cpp']:
-    assert upstream(name) == (source / 'src' / name).read_text(), name
+    actual = (source / 'src' / name).read_text(encoding='utf-8')
+    if name == 'character_body.cpp':
+        # The treatment-menu color patch is the sole expected UI-only delta in
+        # this file. Remove exactly that line, then keep the upstream equality
+        # guard over every other character/body-treatment code path.
+        marker = '    bmenu.neutral_selection_background = true;\n'
+        assert actual.count(marker) == 1, 'expected one treatment-menu highlight opt-in'
+        actual = actual.replace(marker, '', 1)
+    assert upstream(name) == actual, name
 # The rest of hardcoded effects is untouched (including heat illness and alarms).
 assert tokens(effects.replace(new_sleep, '').replace('#include "cata_web_yield.h"', '')) == tokens(
     upstream('player_hardcoded_effects.cpp').replace(old_sleep, ''))
