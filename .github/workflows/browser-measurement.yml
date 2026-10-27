@@ -73,7 +73,8 @@ jobs:
     if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
     name: Playwright real-bundle measurement
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # Leave time for the live low-resolution captures and full stress matrix to upload.
+    timeout-minutes: 60
     env:
       CDDA_BASE_URL: ${{ github.event_name == 'workflow_run' && format('https://github.com/LBTStudio/CDDA-broser/actions/runs/{0}', github.event.workflow_run.id) || github.event.inputs.base_url || 'https://lbtstudio.github.io/CDDA-broser/' }}
       CDDA_SCENARIO: ${{ github.event.inputs.scenario || 'all' }}
