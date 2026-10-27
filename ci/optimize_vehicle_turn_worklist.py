@@ -184,7 +184,7 @@ if "vzone_cache_dirty_ = false;" not in zone_fn:
     pos = zone_fn.rfind("}")
     if pos < 0:
         raise SystemExit("ERROR: could not find cache_vzones final brace")
-    zone_fn = zone_fn[:pos] + "    vzone_cache_dirty_ = false;\\n" + zone_fn[pos:]
+    zone_fn = zone_fn[:pos] + "    vzone_cache_dirty_ = false;\n" + zone_fn[pos:]
 zone_manager_source = (
     zone_manager_source[:zone_fn_start] + zone_fn + zone_manager_source[zone_fn_end:]
 )
