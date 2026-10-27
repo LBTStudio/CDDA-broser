@@ -142,6 +142,21 @@ jobs:
             test -s "$BUNDLE/$asset"
           done
           (cd "$BUNDLE" && sha256sum *) | tee "$GITHUB_WORKSPACE/bench/out/browser-measurement/bundle-sha256.txt"
+          OUT="$GITHUB_WORKSPACE/bench/out/browser-measurement"
+          python3 - <<'PY'
+import json, os
+from pathlib import Path
+out = Path("bench/out/browser-measurement")
+manifest = {
+    "schemaVersion": 1,
+    "kind": "published-pages",
+    "targetUrl": os.environ["BASE_URL"],
+    "harnessCommitSha": os.environ["GITHUB_SHA"],
+    "measurementRunId": os.environ["GITHUB_RUN_ID"],
+    "assetHashesFile": "bundle-sha256.txt",
+}
+(out / "measurement-source.json").write_text(json.dumps(manifest, indent=2) + "\\n", encoding="utf-8")
+PY
           {
             echo "## Downloaded published bundle"
             echo ""
@@ -161,23 +176,87 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           path: bench/out/browser-measurement/bundle
 
+      - name: Download selected build configuration provenance (optional for historical runs)
+        if: ${{ github.event_name == 'workflow_run' || github.event.inputs.artifact_run_id != '' }}
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: cdda-build-provenance
+          run-id: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.id || github.event.inputs.artifact_run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: bench/out/browser-measurement/build-provenance
+
       - name: Verify full-build artifact and record its fingerprint
         if: ${{ github.event_name == 'workflow_run' || github.event.inputs.artifact_run_id != '' }}
+        env:
+          SOURCE_RUN_ID: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.id || github.event.inputs.artifact_run_id || '' }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          BUNDLE="$GITHUB_WORKSPACE/bench/out/browser-measurement/bundle"
+          [[ "$SOURCE_RUN_ID" =~ ^[0-9]+$ ]] || { echo "::error::A numeric successful build run ID is required."; exit 1; }
+          SOURCE_RUN="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN_ID")"
+          SOURCE_STATUS="$(jq -r '.status // ""' <<<"$SOURCE_RUN")"
+          SOURCE_CONCLUSION="$(jq -r '.conclusion // ""' <<<"$SOURCE_RUN")"
+          SOURCE_COMMIT_SHA="$(jq -r '.head_sha // ""' <<<"$SOURCE_RUN")"
+          SOURCE_WORKFLOW_PATH="$(jq -r '.path // ""' <<<"$SOURCE_RUN")"
+          if [[ "$SOURCE_STATUS" != "completed" || "$SOURCE_CONCLUSION" != "success" ]]; then
+            echo "::error::Selected build run must be completed successfully (status=$SOURCE_STATUS, conclusion=$SOURCE_CONCLUSION)." >&2
+            exit 1
+          fi
+          if [[ "$SOURCE_WORKFLOW_PATH" != ".github/workflows/build-and-release.yml" ]]; then
+            echo "::error::Selected run is not the CDDA build workflow: $SOURCE_WORKFLOW_PATH" >&2
+            exit 1
+          fi
+          test -n "$SOURCE_COMMIT_SHA" || { echo "::error::Build run has no source commit SHA."; exit 1; }
+
+          OUT="$GITHUB_WORKSPACE/bench/out/browser-measurement"
+          BUNDLE="$OUT/bundle"
           for asset in index.html cataclysm-tiles.js cataclysm-tiles.wasm cataclysm-tiles.data cataclysm-tiles.data.js Terminus.ttf favicon.ico; do
             test -s "$BUNDLE/$asset" || { echo "::error::Missing full-build artifact asset: $asset"; exit 1; }
           done
-          (cd "$BUNDLE" && sha256sum *) | tee "$GITHUB_WORKSPACE/bench/out/browser-measurement/bundle-sha256.txt"
+          (cd "$BUNDLE" && sha256sum *) | tee "$OUT/bundle-sha256.txt"
+
+          python3 - <<'PY'
+import json, os
+from pathlib import Path
+out = Path("bench/out/browser-measurement")
+source_run_id = os.environ["SOURCE_RUN_ID"]
+source_commit = os.environ["SOURCE_COMMIT_SHA"]
+build_path = out / "build-provenance" / "build-provenance.json"
+build = json.loads(build_path.read_text(encoding="utf-8")) if build_path.is_file() else None
+if build is not None:
+    if str(build.get("runId")) != source_run_id:
+        raise SystemExit("Build provenance run ID does not match the selected artifact run.")
+    if build.get("commitSha") != source_commit:
+        raise SystemExit("Build provenance source SHA does not match the selected artifact run.")
+hashes = {}
+for line in (out / "bundle-sha256.txt").read_text(encoding="utf-8").splitlines():
+    digest, name = line.split(None, 1)
+    hashes[name.strip()] = digest
+manifest = {
+    "schemaVersion": 1,
+    "kind": "build-artifact",
+    "targetUrl": None,
+    "sourceRunId": source_run_id,
+    "sourceRunUrl": os.environ["GITHUB_SERVER_URL"] + "/" + os.environ["GITHUB_REPOSITORY"] + "/actions/runs/" + source_run_id,
+    "sourceCommitSha": source_commit,
+    "harnessCommitSha": os.environ["GITHUB_SHA"],
+    "measurementRunId": os.environ["GITHUB_RUN_ID"],
+    "buildConfigurationVerified": build is not None,
+    "build": build,
+    "assetHashes": hashes,
+}
+(out / "measurement-source.json").write_text(json.dumps(manifest, indent=2) + "\\n", encoding="utf-8")
+PY
           {
             echo "## Exact WebAssembly build artifact"
             echo ""
-            echo "- Source workflow run: https://github.com/LBTStudio/CDDA-broser/actions/runs/${{ github.event.workflow_run.id }}"
-            echo "- Source commit: ${{ github.event.workflow_run.head_sha }}"
-            echo "- This run tests the build artifact itself, independent of Pages cache/deployment timing."
+            echo "- Source workflow run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN_ID"
+            echo "- Source commit: $SOURCE_COMMIT_SHA"
+            echo "- Build configuration sidecar verified: $([[ -f "$OUT/build-provenance/build-provenance.json" ]] && echo yes || echo no;)"
+            echo "- This run tests the selected build artifact locally, independent of Pages cache/deployment timing."
             echo ""
-            sed 's/^/- Asset: /' "$GITHUB_WORKSPACE/bench/out/browser-measurement/bundle-sha256.txt"
+            sed 's/^/- Asset: /' "$OUT/bundle-sha256.txt"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Run isolated real-game measurements
@@ -242,6 +321,8 @@ jobs:
             bench/out/browser-measurement/*-*/*
             bench/out/browser-measurement/chromium-memory-*.tsv
             bench/out/browser-measurement/bundle-sha256.txt
+            bench/out/browser-measurement/measurement-source.json
+            bench/out/browser-measurement/build-provenance/build-provenance.json
           if-no-files-found: warn
           retention-days: 30
           compression-level: 6
