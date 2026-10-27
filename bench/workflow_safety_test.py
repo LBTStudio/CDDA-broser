@@ -89,8 +89,13 @@ bounded_runner = 'timeout --signal=TERM --kill-after=10s 360s node bench/playwri
 assert measure_workflow.count(bounded_runner) == 2, (
     "both renderer and population measurements need a hard per-scenario timeout"
 )
-assert 'node bench/playwright_game_measurement.mjs "$BUNDLE" "$scenario" "$renderer" "$CDDA_BASE_URL" "$CDDA_POPULATION" &' not in measure_workflow
-assert 'node bench/playwright_game_measurement.mjs "$BUNDLE" "$scenario" "$renderer" "$CDDA_BASE_URL" "$population" &' not in measure_workflow
+bare_runner_lines = {
+    'node bench/playwright_game_measurement.mjs "$BUNDLE" "$scenario" "$renderer" "$CDDA_BASE_URL" "$CDDA_POPULATION" &',
+    'node bench/playwright_game_measurement.mjs "$BUNDLE" "$scenario" "$renderer" "$CDDA_BASE_URL" "$population" &',
+}
+assert not any(line.strip() in bare_runner_lines for line in measure_workflow.splitlines()), (
+    "a browser measurement runner bypasses the per-scenario timeout"
+)
 assert measure_workflow.count('"measurementRunAttempt": int(os.environ.get("GITHUB_RUN_ATTEMPT", "1"))') == 1, (
     "published bundle manifest must record the attempt number exactly once"
 )
