@@ -358,10 +358,20 @@ thresholds rather than "feels faster" (Nielsen, *Usability Engineering*, 1993):
 | D | sustained frame rate | >= 20fps |
 
 Raw measurements and the reasoning behind each conclusion are recorded in
-`docs/measurements/FACTS.md` (facts F-01 … F-21) with the raw logs under
-`docs/measurements/raw/` and the microbenchmarks under `bench/`. That file is
-the intended shortcut for any future technical fact-checking: check it before
-re-measuring.
+`docs/measurements/FACTS.md` (currently through F-29) with the raw logs under
+`docs/measurements/raw/` and the microbenchmarks under `bench/`. Treat every
+measurement according to its stated scope: a source-derived fixture is not a
+whole-game timing, and a browser-run result is not a physical Chromebook result.
 
-Runtime: ~350-550MB steady state, WebGL2, works in stock ChromeOS Chrome
-(no Crostini/Linux container required).
+The old "~350-550MB steady state" summary is withdrawn as an unverified general
+claim. A prior GitHub-hosted browser run recorded WebAssembly `HEAPU8.length`
+of about 637.2 MiB in the `opengles2` path and 1,117.6 MiB in the software
+renderer path. Those values are linear-memory buffer capacity, not resident RAM.
+Chromium process PSS in that run was roughly 1.66-1.68 GiB, but it is not a
+measure of the whole OS or every shared allocation. See the
+[historical browser measurement run](https://github.com/LBTStudio/CDDA-broser/actions/runs/40574935396).
+GitHub-hosted Chromium may use software WebGL, so the `opengles2` label alone
+does not prove hardware-GPU acceleration. A stable memory range and support
+claim for a 4GB Chromebook require repeated measurements and a physical
+ChromeOS device; the current browser harness collects the relevant telemetry,
+but it does not replace that device test.
