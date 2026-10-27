@@ -83,6 +83,14 @@ assert "cdda-build-provenance" in workflow
 assert "build-provenance.json" in workflow
 assert "cdda-build-provenance" in measure_workflow
 assert "measurementRunAttempt" in measure_workflow
+# Every browser scenario is bounded even if Chromium/Wasm stops servicing CDP.
+# A timed-out measurement is recorded as failed and the following population case can run.
+bounded_runner = 'timeout --signal=TERM --kill-after=10s 360s node bench/playwright_game_measurement.mjs'
+assert measure_workflow.count(bounded_runner) == 2, (
+    "both renderer and population measurements need a hard per-scenario timeout"
+)
+assert 'node bench/playwright_game_measurement.mjs "$BUNDLE" "$scenario" "$renderer" "$CDDA_BASE_URL" "$CDDA_POPULATION" &' not in measure_workflow
+assert 'node bench/playwright_game_measurement.mjs "$BUNDLE" "$scenario" "$renderer" "$CDDA_BASE_URL" "$population" &' not in measure_workflow
 assert measure_workflow.count('"measurementRunAttempt": int(os.environ.get("GITHUB_RUN_ATTEMPT", "1"))') == 1, (
     "published bundle manifest must record the attempt number exactly once"
 )
