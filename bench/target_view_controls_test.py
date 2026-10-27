@@ -51,7 +51,12 @@ assert len(target_center) == 1, "CENTER must be listed once under TARGET"
 assert has_binding(target_center[0], "keyboard_any", "0")
 assert has_binding(target_center[0], "keyboard_code", "KEYPAD_0")
 
-# Keyboard users need panning keys in normal gameplay; keep gamepad bindings too.
+# Keyboard users need a predictable center action and panning keys in normal gameplay.
+default_center = entries("center", "DEFAULTMODE")
+assert len(default_center) == 1, "missing DEFAULTMODE center action"
+assert has_binding(default_center[0], "keyboard_code", "HOME", ("shift",))
+assert any(b.get("input_method") == "gamepad" for b in default_center[0].get("bindings", []))
+
 expected_pan = {
     "shift_n": "UP",
     "shift_e": "RIGHT",
@@ -83,6 +88,19 @@ for action_id, key in expected_pan.items():
             ) == signature:
                 collisions.append(item.get("id"))
     assert not collisions, f"{action_id} Shift+{key} collision: {collisions}"
+
+# The new center binding also has no same-context collision.
+center_signature = ("keyboard_code", "HOME", ("shift",))
+for item in keybindings:
+    if item.get("category") != "DEFAULTMODE" or item.get("id") == "center":
+        continue
+    for binding in item.get("bindings", []):
+        if (
+            binding.get("input_method"),
+            binding.get("key"),
+            tuple(binding.get("mod", [])),
+        ) == center_signature:
+            raise AssertionError(f"center Shift+Home collision: {item.get('id')}")
 
 # The previously important C bindings are deliberately unchanged.
 close = entries("close", "DEFAULTMODE")
