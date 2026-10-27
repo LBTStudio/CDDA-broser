@@ -292,7 +292,7 @@ yield をいくら速くしても症状は消えない。実際、押した 20 �
  static int inputdelay;         //How long getch will wait for a character to be typed
  int fontwidth;          //the width of the font, background is always this size
  int fontheight;         //the height of the font, background is always this size
-@@ -3164,6 +3306,26 @@
+@@ -3164,6 +3306,25 @@
      using cata::options::mouse;
  
      while( SDL_PollEvent( &ev ) ) {
@@ -314,12 +314,11 @@ yield をいくら速くしても症状は消えない。実際、押した 20 �
 +        // 複数溜まったときだけ 2 個目以降がキューへ回る。
 +        stash_pending_input( last_input );
 +        last_input = input_event();
-+        last_input_from_pending_queue = false;
 +#endif
          imclient->process_input( &ev );
          switch( ev.type ) {
              case SDL_WINDOWEVENT:
-@@ -4124,6 +4286,28 @@
+@@ -4124,6 +4285,28 @@
      // Handle all events, but ignore any keypress
      CheckMessages();
  
@@ -348,7 +347,7 @@ yield をいくら速くしても症状は消えない。実際、押した 20 �
      last_input = input_event();
      previously_pressed_key = 0;
  }
-@@ -4150,6 +4334,36 @@
+@@ -4150,6 +4333,36 @@
  
      previously_pressed_key = 0;
  
@@ -385,7 +384,7 @@ yield をいくら速くしても症状は消えない。実際、押した 20 �
      // standards note: getch is sometimes required to call refresh
      // see, e.g., http://linux.die.net/man/3/getch
      // so although it's non-obvious, that refresh() call (and maybe InvalidateRect?) IS supposed to be there
-@@ -4190,6 +4404,12 @@
+@@ -4190,6 +4403,12 @@
      if( inputdelay < 0 ) {
          do {
              CheckMessages();
@@ -398,7 +397,7 @@ yield をいくら速くしても症状は消えない。実際、押した 20 �
              if( last_input.type != input_event_t::error ) {
                  break;
              }
-@@ -4201,6 +4421,7 @@
+@@ -4201,6 +4420,7 @@
          bool timedout = false;
          do {
              CheckMessages();
@@ -406,7 +405,7 @@ yield をいくら速くしても症状は消えない。実際、押した 20 �
              endtime = SDL_GetTicks();
              if( last_input.type != input_event_t::error ) {
                  break;
-@@ -4213,6 +4434,7 @@
+@@ -4213,6 +4433,7 @@
          } while( !timedout );
      } else {
          CheckMessages();
