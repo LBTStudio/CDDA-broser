@@ -285,7 +285,7 @@ CDDA 0.I: bounded read-only melee outfit advisor. Apply after runtime-efficiency
 +    "id": "GEAR_GUIDE",
 +    "category": "SORT_ARMOR",
 +    "name": "近接装備ナビ",
-+    "bindings": [ { "input_method": "keyboard_any", "key": "F2" }, { "input_method": "keyboard_any", "key": "g" } ]
++    "bindings": [ { "input_method": "keyboard_any", "key": "F2" }, { "input_method": "keyboard_char", "key": "g" } ]
    },
    {
      "type": "keybinding",
