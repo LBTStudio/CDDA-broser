@@ -208,6 +208,10 @@ yield をいくら速くしても症状は消えない。実際、押した 20 �
 +//   捨てる。64 は 1 秒間に 60 回来ても 1 秒ぶん保持できる値。
 +static std::deque<input_event> pending_input_queue;
 +static constexpr size_t pending_input_queue_max = 64;
++// True only when last_input was borrowed from the FIFO by the idle drain.
++// pump_events() must restore that old event at the front, but append fresh
++// SDL input at the back so earlier pending presses stay ahead of newer ones.
++static bool last_input_from_pending_queue = false;
 +
 +// last_input を上書きする直前に呼び、失われる入力を退避する。
 +// error 型（=入力なし）は退避しない。
@@ -256,12 +260,24 @@ yield をいくら速くしても症状は消えない。実際、押した 20 �
 +static void return_pending_input( const input_event &ev )
 +{
 +    if( ev.type == input_event_t::error || ev.type == input_event_t::timeout ) {
++        last_input_from_pending_queue = false;
 +        return;
 +    }
-+    if( pending_input_queue.size() >= pending_input_queue_max ) {
-+        pending_input_queue.pop_back();
++    if( last_input_from_pending_queue ) {
++        // An old FIFO entry was temporarily removed by drain_pending_input_if_idle().
++        // Restore it to the front; it remains older than everything behind it.
++        if( pending_input_queue.size() >= pending_input_queue_max ) {
++            pending_input_queue.pop_back();
++        }
++        pending_input_queue.push_front( ev );
++    } else {
++        // This is a newer SDL event. Append it after older queued inputs.
++        if( pending_input_queue.size() >= pending_input_queue_max ) {
++            pending_input_queue.pop_front();
++        }
++        pending_input_queue.push_back( ev );
 +    }
-+    pending_input_queue.push_front( ev );
++    last_input_from_pending_queue = false;
 +}
 +
 +#else // !EMSCRIPTEN
@@ -298,6 +314,7 @@ yield をいくら速くしても症状は消えない。実際、押した 20 �
 +        // 複数溜まったときだけ 2 個目以降がキューへ回る。
 +        stash_pending_input( last_input );
 +        last_input = input_event();
++        last_input_from_pending_queue = false;
 +#endif
          imclient->process_input( &ev );
          switch( ev.type ) {
