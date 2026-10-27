@@ -90,9 +90,24 @@ assert new_block in new_turn, "optimized vehicle worklist block missing"
 
 old_zone_cache = """    // refresh vehicle zones for moved vehicles
     zone_manager::get_manager().cache_vzones( this );"""
-new_zone_cache = """    // Vehicle movement marks loot-zone positions dirty. Do not clear and rebuild
-    // every vehicle-zone point set on turns where no zone position changed.
-    if( check_vehicle_zones( get_abs_sub().z() ) ) {
+new_zone_cache = """    // Vehicles can cross z-levels during one turn. A moved vehicle is removed from
+    // its old zone cache and inserted into its destination cache before this point,
+    // so checking only the player's z-level can miss the dirty vehicle entirely.
+    // Refresh dirty zone vehicles across loaded levels, then rebuild the active
+    // zone point set once. get_cache_lazy avoids creating unused level caches.
+    bool vehicle_zones_dirty = false;
+    for( int zlev = -OVERMAP_DEPTH; zlev <= OVERMAP_HEIGHT; ++zlev ) {
+        const level_cache *cache = get_cache_lazy( zlev );
+        if( cache == nullptr ) {
+            continue;
+        }
+        for( vehicle *veh : cache->zone_vehicles ) {
+            if( veh->refresh_zones() ) {
+                vehicle_zones_dirty = true;
+            }
+        }
+    }
+    if( vehicle_zones_dirty ) {
         zone_manager::get_manager().cache_vzones( this );
     }"""
 assert old_zone_cache in old_turn, "upstream vehicle-zone refresh block changed"
@@ -132,7 +147,11 @@ normalized_turn = normalized_turn.replace(new_block, old_block, 1).replace(
     new_zone_cache, old_zone_cache, 1)
 assert normalized_turn == old_turn, (
     "map::vehmove changed outside the approved worklist, zone-cache, and redraw-batch blocks")
-assert "check_vehicle_zones( get_abs_sub().z() )" in new_turn
+assert "bool vehicle_zones_dirty = false;" in new_turn
+assert "for( int zlev = -OVERMAP_DEPTH; zlev <= OVERMAP_HEIGHT; ++zlev ) {" in new_zone_cache
+assert "const level_cache *cache = get_cache_lazy( zlev );" in new_zone_cache
+assert "if( veh->refresh_zones() ) {" in new_zone_cache
+assert "if( vehicle_zones_dirty ) {" in new_zone_cache
 assert "zone_manager::get_manager().cache_vzones( this );" in new_zone_cache
 
 # The recache switch must be honored when called by cache_vzones itself; this
