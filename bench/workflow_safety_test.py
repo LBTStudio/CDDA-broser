@@ -76,6 +76,9 @@ assert "SOURCE_COMMIT_SHA" in measure_workflow
 assert "cdda-build-provenance" in workflow
 assert "build-provenance.json" in workflow
 assert "cdda-build-provenance" in measure_workflow
+assert "measurementRunAttempt" in measure_workflow
+assert "name: cdda-playwright-measurement-${{ github.run_id }}-attempt-${{ github.run_attempt }}" in measure_workflow
+assert "export SOURCE_COMMIT_SHA SOURCE_RUN_ATTEMPT" in measure_workflow
 
 # Python heredocs embedded in YAML run blocks must remain inside the block
 # scalar; a column-0 "import" silently turns the workflow into an invalid file.
@@ -110,6 +113,7 @@ assert "fixtureValidation.ok" in runner and "requestFailureValidation.ok" in run
 assert "reloadRestoreValidation" in runner
 assert "persistentProfile = 'perf_' + profile" in runner
 assert "fill(persistentProfile)" in runner
+assert "moves-preserved" in runner
 assert "Save reload/restore verification failed" in runner
 assert "reading-reached-level-five" in contract
 assert "sleep-wake-message" in contract

@@ -533,7 +533,8 @@ async function main() {
   const expectedReloadSave = {
     world: latestSavedSnapshot.world, file: latestSavedSnapshot.file,
     turn: latestSavedSnapshot.turn, activity: latestSavedSnapshot.activity,
-    location: latestSavedSnapshot.position?.location ?? null
+    location: latestSavedSnapshot.position?.location ?? null,
+    moves: latestSavedSnapshot.position?.moves ?? null
   };
   try {
     await page.close();
@@ -593,7 +594,8 @@ async function main() {
       { name: 'character-save-preserved', passed: restored?.file === expectedReloadSave.file },
       { name: 'turn-preserved', passed: restored?.turn === expectedReloadSave.turn },
       { name: 'activity-preserved', passed: restored?.activity === expectedReloadSave.activity },
-      { name: 'location-preserved', passed: JSON.stringify(restored?.location) === JSON.stringify(expectedReloadSave.location) }
+      { name: 'location-preserved', passed: JSON.stringify(restored?.location) === JSON.stringify(expectedReloadSave.location) },
+      { name: 'moves-preserved', passed: restored?.moves === expectedReloadSave.moves }
     ];
     reloadRestoreValidation = {
       attempted: true, ok: checks.every(check => check.passed), profile: persistentProfile,

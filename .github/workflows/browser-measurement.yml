@@ -153,6 +153,8 @@ jobs:
               "targetUrl": os.environ["BASE_URL"],
               "harnessCommitSha": os.environ["GITHUB_SHA"],
               "measurementRunId": os.environ["GITHUB_RUN_ID"],
+              "measurementRunAttempt": int(os.environ.get("GITHUB_RUN_ATTEMPT", "1")),
+              "measurementRunAttempt": int(os.environ.get("GITHUB_RUN_ATTEMPT", "1")),
               "assetHashesFile": "bundle-sha256.txt",
           }
           (out / "measurement-source.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
@@ -198,7 +200,9 @@ jobs:
           SOURCE_STATUS="$(jq -r '.status // ""' <<<"$SOURCE_RUN")"
           SOURCE_CONCLUSION="$(jq -r '.conclusion // ""' <<<"$SOURCE_RUN")"
           SOURCE_COMMIT_SHA="$(jq -r '.head_sha // ""' <<<"$SOURCE_RUN")"
+          SOURCE_RUN_ATTEMPT="$(jq -r '.run_attempt // 1' <<<"$SOURCE_RUN")"
           SOURCE_WORKFLOW_PATH="$(jq -r '.path // ""' <<<"$SOURCE_RUN")"
+          export SOURCE_COMMIT_SHA SOURCE_RUN_ATTEMPT
           if [[ "$SOURCE_STATUS" != "completed" || "$SOURCE_CONCLUSION" != "success" ]]; then
             echo "::error::Selected build run must be completed successfully (status=$SOURCE_STATUS, conclusion=$SOURCE_CONCLUSION)." >&2
             exit 1
@@ -222,6 +226,7 @@ jobs:
           out = Path("bench/out/browser-measurement")
           source_run_id = os.environ["SOURCE_RUN_ID"]
           source_commit = os.environ["SOURCE_COMMIT_SHA"]
+          source_attempt = int(os.environ.get("SOURCE_RUN_ATTEMPT", "1"))
           build_path = out / "build-provenance" / "build-provenance.json"
           build = json.loads(build_path.read_text(encoding="utf-8")) if build_path.is_file() else None
           if build is not None:
@@ -229,6 +234,8 @@ jobs:
                   raise SystemExit("Build provenance run ID does not match the selected artifact run.")
               if build.get("commitSha") != source_commit:
                   raise SystemExit("Build provenance source SHA does not match the selected artifact run.")
+              if int(build.get("runAttempt", 1)) != source_attempt:
+                  raise SystemExit("Build provenance run attempt does not match the selected artifact attempt.")
           hashes = {}
           for line in (out / "bundle-sha256.txt").read_text(encoding="utf-8").splitlines():
               digest, name = line.split(None, 1)
@@ -238,6 +245,7 @@ jobs:
               "kind": "build-artifact",
               "targetUrl": None,
               "sourceRunId": source_run_id,
+              "sourceRunAttempt": source_attempt,
               "sourceRunUrl": os.environ["GITHUB_SERVER_URL"] + "/" + os.environ["GITHUB_REPOSITORY"] + "/actions/runs/" + source_run_id,
               "sourceCommitSha": source_commit,
               "harnessCommitSha": os.environ["GITHUB_SHA"],
@@ -316,7 +324,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: cdda-playwright-measurement-${{ github.run_id }}
+          name: cdda-playwright-measurement-${{ github.run_id }}-attempt-${{ github.run_attempt }}
           path: |
             bench/out/browser-measurement/*-*/*
             bench/out/browser-measurement/chromium-memory-*.tsv
