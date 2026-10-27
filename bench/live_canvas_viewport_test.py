@@ -12,6 +12,8 @@ runner = (root / "bench" / "playwright_game_measurement.mjs").read_text(encoding
 workflow = (root / ".github" / "workflows" / "browser-measurement.yml").read_text(encoding="utf-8")
 docs = (root / "docs" / "measurements" / "PLAYWRIGHT.md").read_text(encoding="utf-8")
 
+capture_start = runner.index("const originalViewport = page.viewportSize()")
+live_capture = runner[capture_start:]
 steps = [
     "await page.setViewportSize({ width: 850, height: 645 });",
     "live-canvas-850x645-pixelated.png",
@@ -19,9 +21,9 @@ steps = [
     "live-canvas-850x645-auto.png",
     "await page.setViewportSize(originalViewport);",
     "const liveViewportComparison = {",
-    "visualScaleComparison, liveViewportComparison, fixture:",
 ]
-positions = [runner.find(step) for step in steps]
+positions = [live_capture.find(step) for step in steps]
+result_serialization = runner.find("visualScaleComparison, liveViewportComparison, fixture:")
 assert all(position >= 0 for position in positions), (
     "live viewport capture steps or result serialization are missing"
 )
