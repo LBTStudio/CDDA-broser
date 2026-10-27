@@ -176,7 +176,7 @@ static stats run_optimized( const std::vector<tripoint> &input, int repeats ) {
     count_allocations = true;
     for( int r = 0; r < repeats; ++r ) {
         std::vector<tripoint> grouped;
-        grouped.reserve( std::min( input.size(), std::size_t{ 36 * 36 } ) );
+        grouped.reserve( input.size() );
         for( const tripoint &p : input ) grouped.emplace_back( p );
         std::sort( grouped.begin(), grouped.end() );
         grouped.erase( std::unique( grouped.begin(), grouped.end() ), grouped.end() );
