@@ -1,0 +1,35 @@
+CDDA 0.I browser fixes: bind C for martial arts selection and de-blue selected rows
+
+--- a/data/raw/keybindings.json
++++ b/data/raw/keybindings.json
+@@ -2581,7 +2581,7 @@
+     "name": "Select martial arts style",
+     "category": "DEFAULTMODE",
+     "id": "pick_style",
+-    "bindings": [ { "input_method": "keyboard_char", "key": "_" }, { "input_method": "keyboard_code", "key": "-", "mod": [ "shift" ] } ]
++    "bindings": [ { "input_method": "keyboard_code", "key": "c" }, { "input_method": "keyboard_char", "key": "_" }, { "input_method": "keyboard_code", "key": "-", "mod": [ "shift" ] } ]
+   },
+--- a/src/uilist.cpp
++++ b/src/uilist.cpp
+@@ -150,6 +150,12 @@
+                             ImGui::SetScrollHereY();
+                             parent.need_to_scroll = false;
+                         }
++                        // Use an amber selection background instead of ImGui's
++                        // default blue. Blue is already used by some medical
++                        // status indicators, so the selected treatment body
++                        // part must remain visually distinct from infection.
++                        ImGui::PushStyleColor( ImGuiCol_Header, ImVec4( 0.42f, 0.29f, 0.06f, 0.92f ) );
++                        ImGui::PushStyleColor( ImGuiCol_HeaderHovered, ImVec4( 0.52f, 0.37f, 0.08f, 0.96f ) );
++                        ImGui::PushStyleColor( ImGuiCol_HeaderActive, ImVec4( 0.62f, 0.44f, 0.10f, 1.00f ) );
+                         ImGuiSelectableFlags flags = ImGuiSelectableFlags_SpanAllColumns |
+                                                      ImGuiSelectableFlags_AllowItemOverlap;
+                         if( !entry.enabled ) {
+@@ -159,6 +165,7 @@
+                             parent.fselected = i;
+                             parent.selected = parent.previewing = parent.fentries[ parent.fselected ];
+                         }
++                        ImGui::PopStyleColor( 3 );
+                         // the next time around.
+                         parent.need_to_scroll = true;
+                         is_selected = parent.clicked = true;
