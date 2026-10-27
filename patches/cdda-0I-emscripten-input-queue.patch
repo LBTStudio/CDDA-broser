@@ -208,10 +208,6 @@ yield をいくら速くしても症状は消えない。実際、押した 20 �
 +//   捨てる。64 は 1 秒間に 60 回来ても 1 秒ぶん保持できる値。
 +static std::deque<input_event> pending_input_queue;
 +static constexpr size_t pending_input_queue_max = 64;
-+// True only when last_input was borrowed from the FIFO by the idle drain.
-+// pump_events() must restore that old event at the front, but append fresh
-+// SDL input at the back so earlier pending presses stay ahead of newer ones.
-+static bool last_input_from_pending_queue = false;
 +
 +// last_input を上書きする直前に呼び、失われる入力を退避する。
 +// error 型（=入力なし）は退避しない。
@@ -255,7 +251,12 @@ yield をいくら速くしても症状は消えない。実際、押した 20 �
 +    }
 +}
 +
-+// 取り出したが使わなかった入力をキューの先頭へ戻す。
++// True only when last_input was borrowed from the FIFO by the idle drain.
++// pump_events() restores such an old event to the front, but appends fresh
++// SDL events at the back to preserve chronological input ordering.
++static bool last_input_from_pending_queue = false;
++
++// 取り出したが使わなかった入力をキューの先頭へ戻す.
 +// pump_events() が「入力を無視する」際に使う。破棄してはいけない。
 +static void return_pending_input( const input_event &ev )
 +{
