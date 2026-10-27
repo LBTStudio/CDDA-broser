@@ -15,6 +15,13 @@ if len(sys.argv) != 3:
 
 source_makefile = Path(sys.argv[1]).resolve()
 tune_script = Path(sys.argv[2]).resolve()
+syntax = subprocess.run(
+    ["bash", "-n", str(tune_script)], text=True,
+    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=False
+)
+assert syntax.returncode == 0, (
+    f"tune-makefile.sh must parse before configuration tests run:\n{syntax.stdout}"
+)
 upstream = source_makefile.read_text(encoding="utf-8")
 assert "EMCC_COMMON_FLAGS = -sUSE_SDL=2" in upstream
 assert "CXXFLAGS += $(EMCC_COMMON_FLAGS)" in upstream
