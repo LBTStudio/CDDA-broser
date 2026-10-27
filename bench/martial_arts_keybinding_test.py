@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Audit the CDDA 0.I default martial-arts binding without changing door controls.
+"""Regression test for the browser build's martial-style and close-door keys.
 
 Run against the patched CDDA source tree:
     python3 bench/martial_arts_keybinding_test.py /path/to/patched/cdda
@@ -15,27 +15,57 @@ def entries(action, category="DEFAULTMODE"):
     return [entry for entry in bindings
             if entry.get("id") == action and entry.get("category") == category]
 
-style = entries("pick_style")
-close = entries("close")
-assert style, "Missing DEFAULTMODE pick_style binding"
-assert close, "Missing DEFAULTMODE close-door binding"
+style_entries = entries("pick_style")
+close_entries = entries("close")
+chat_entries = entries("chat")
+assert style_entries, "Missing DEFAULTMODE pick_style binding"
+assert close_entries, "Missing DEFAULTMODE close-door binding"
+assert chat_entries, "Missing DEFAULTMODE chat binding"
 
-style_keys = [(b.get("input_method"), b.get("key"), tuple(b.get("mod", [])))
-              for entry in style for b in entry.get("bindings", [])]
-close_keys = [(b.get("input_method"), b.get("key"), tuple(b.get("mod", [])))
-              for entry in close for b in entry.get("bindings", [])]
+def key_specs(rows):
+    return [
+        (b.get("input_method"), b.get("key"), tuple(sorted(b.get("mod", []))))
+        for row in rows
+        for b in row.get("bindings", [])
+    ]
 
-# Upstream 0.I defaults to Shift+- / '_' for martial arts; lowercase c remains
-# the door-close action. Do not silently reassign either action in this patch.
-assert ("keyboard_code", "-", ("shift",)) in style_keys or \
-       ("keyboard_char", "_", ()) in style_keys, style_keys
-assert ("keyboard_any", "c", ()) in close_keys, close_keys
-assert not any(key.lower() == "c" and not mods for _, key, mods in style_keys), (
-    "Default pick_style unexpectedly conflicts with close-door on c"
+style_keys = key_specs(style_entries)
+close_keys = key_specs(close_entries)
+chat_keys = key_specs(chat_entries)
+
+# Preserve both upstream martial-style alternatives while adding plain c.
+assert ("keyboard_char", "_", ()) in style_keys, style_keys
+assert ("keyboard_code", "-", ("shift",)) in style_keys, style_keys
+assert ("keyboard_code", "c", ()) in style_keys, (
+    "plain c must select martial arts style in DEFAULTMODE"
 )
 
+# Reassign the conflicting close-door key rather than allowing the two
+# actions to compete for the same event. Keep Shift+C for NPC chat.
+assert ("keyboard_code", "c", ("alt",)) in close_keys, (
+    "Alt+C must close doors after plain c is assigned to martial style"
+)
+assert not any(key == "c" and not mods for _, key, mods in close_keys), close_keys
+assert ("keyboard_code", "c", ("shift",)) in chat_keys or        ("keyboard_char", "C", ()) in chat_keys, chat_keys
+
+# Only pick_style may own unmodified c within DEFAULTMODE.
+owners = [
+    row.get("id")
+    for row in bindings
+    if row.get("category") == "DEFAULTMODE"
+    and any(
+        b.get("key") == "c"
+        and not b.get("mod")
+        and b.get("input_method") in ("keyboard_any", "keyboard_code", "keyboard_char")
+        for b in row.get("bindings", [])
+    )
+]
+assert owners == ["pick_style"], f"unmodified c has conflicting DEFAULTMODE owners: {owners}"
+
+# The browser SDL bridge must still preserve Shift for other actions (such as chat).
 sdl = (root / "src/sdltiles.cpp").read_text(encoding="utf-8")
 assert "if( keysym.mod & KMOD_SHIFT )" in sdl
 assert "evt.modifiers.emplace( keymod_t::shift );" in sdl
 assert "evt.sequence.emplace_back( keysym.sym );" in sdl
-print("PASS: default martial-arts binding is distinct from close-door; SDL preserves Shift")
+
+print("PASS: c selects martial style; Alt+C closes doors; Shift+C remains for chat")
