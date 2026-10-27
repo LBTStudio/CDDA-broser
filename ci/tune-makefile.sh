@@ -21,6 +21,41 @@ if [ ! -f Makefile ]; then
     exit 1
 fi
 
+# Experimental WebAssembly SIMD is opt-in and never changes the public default.
+CDDA_WASM_SIMD="${CDDA_WASM_SIMD:-off}"
+case "$CDDA_WASM_SIMD" in
+    off|on) ;;
+    *) echo "ERROR: CDDA_WASM_SIMD must be off or on (got: $CDDA_WASM_SIMD)" >&2; exit 1 ;;
+esac
+
+if [ "$CDDA_WASM_SIMD" = "off" ]; then
+    if grep -qF '  # CDDA_BROSER_WASM_SIMD=on' Makefile; then
+        echo "ERROR: Makefile already contains SIMD configuration; use a clean source tree to switch SIMD off." >&2
+        exit 1
+    fi
+else
+    python3 - <<'PY'
+from pathlib import Path
+
+path = Path("Makefile")
+text = path.read_text(encoding="utf-8")
+marker = "# CDDA_BROSER_WASM_SIMD=on"
+if marker in text:
+    if (text.count(marker) != 1 or
+            text.count("CXXFLAGS += -msimd128") != 1 or
+            text.count("LDFLAGS += -msimd128") != 1):
+        raise SystemExit("ERROR: existing SIMD configuration is inconsistent")
+else:
+    needle = "  CXXFLAGS += $(EMCC_COMMON_FLAGS)\n  LDFLAGS += $(EMCC_COMMON_FLAGS)\n"
+    if text.count(needle) != 1:
+        raise SystemExit("ERROR: could not uniquely find Emscripten common compile/link flags")
+    replacement = needle + "  " + marker + "\n  CXXFLAGS += -msimd128\n  LDFLAGS += -msimd128\n"
+    path.write_text(text.replace(needle, replacement, 1), encoding="utf-8")
+PY
+    echo "[TUNE] WebAssembly SIMD enabled for this experimental build (-msimd128)"
+fi
+
+
 # ------------------------------------------------------------------
 # リンク最適化レベルの切り替え（Action 短縮の【最大の要】）
 # ------------------------------------------------------------------
