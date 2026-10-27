@@ -868,9 +868,9 @@ Python 3、C++17対応g++、Node.js 22を用意し、未改変0.IをHEADに持�
 docs/ARCHITECTURE.md を参照。ローカルビルド: `bash scripts/build-local.sh`（8GB RAM 以上の Linux/mac）。
 ## 操作メモ：武術切替と治療部位の選択色
 
-- ブラウザ版では武術スタイル選択 `pick_style` を `c` で呼び出せるようにしました。`c` と衝突していた「ドアを閉める」は `Alt+C` に移し、`Shift+C` のNPC会話は維持します。既存プロファイルにカスタム割り当てが保存されている場合は新しい既定値が自動反映されないことがあるため、反応しない場合はゲーム内のキー設定で `Select martial arts style` と `Close door` の割り当てを確認してください。
+- 武術一覧の「技の詳細と対応武器を表示」は、一覧画面専用の `SHOW_DESCRIPTION` アクションです。`src/character.cpp` がキー表示を `ctxt.get_desc("SHOW_DESCRIPTION")` から生成するため、既定値とユーザーの保存済みキー設定で表示が異なり得ます。フィールド上で一覧を開く `pick_style` とは別操作であり、今回の変更では `c`・ドア操作・他のキー割り当てを変更しません。
 - 治療アイテムの部位選択では、選択行の青色が噛み傷などの部位状態色と紛らわしくなります。ブラウザ版の治療部位メニューだけ選択背景を琥珀色にし、感染・出血・噛み傷の状態色や他のメニューには手を加えません。
-- `bench/treatment_highlight_test.py` は治療メニュー限定の色変更を検査し、`bench/martial_arts_keybinding_test.py` は `c` の武術切替、`Alt+C` のドア操作、`Shift+C` の会話が競合せず、Shift 修飾が保持されることを検査します。どちらもソース回帰テストであり、実際の配信画面の視覚確認・操作確認を代替するものではありません。
+- `bench/treatment_highlight_test.py` は治療メニュー限定の色変更を検査し、`bench/martial_arts_keybinding_test.py` は対応武器の説明アクションが武術一覧画面専用であり、キー表示がアクションの割り当てから生成されることを検査します。どちらもソース回帰テストであり、実際の配信画面の視覚確認・操作確認を代替するものではありません。
 
 実測データと技術的な事実確認の記録は `docs/measurements/FACTS.md`（F-01〜F-29）にまとめています。
 
