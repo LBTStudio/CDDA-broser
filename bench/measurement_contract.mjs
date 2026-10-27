@@ -15,7 +15,7 @@ export function validateActiveRenderer({ renderer, consoleMessages }) {
   for (const entry of consoleMessages ?? []) {
     if (entry?.phase === 'reload-restore') continue;
     const message = String(entry?.text ?? entry?.message ?? '');
-    const match = message.match(/Active renderer:\\s*\\d+\\/([A-Za-z0-9_-]+)/i);
+    const match = message.match(/Active renderer:\s*\d+\/([A-Za-z0-9_-]+)/i);
     if (match) active.push(match[1].toLowerCase());
   }
   const checks = [];
@@ -60,7 +60,7 @@ export function validateFixtureOutcome({ scenario, population, renderer, fixture
   for (const [name, values] of Object.entries(fixtureResult.saves ?? {})) {
     if (!name.endsWith('.sav') || !Array.isArray(values)) continue;
     const raw = new TextDecoder().decode(Uint8Array.from(values));
-    savedZombieCount += (raw.match(/"typeid"\\s*:\\s*"mon_zombie"/g) ?? []).length;
+    savedZombieCount += (raw.match(/"typeid"\s*:\s*"mon_zombie"/g) ?? []).length;
   }
   expect(savedZombieCount === Number(population), 'population-monster-count',
     `requested=${population}; serialized mon_zombie entries=${savedZombieCount}`);
