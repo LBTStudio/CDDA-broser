@@ -308,6 +308,7 @@ Synthetic work counts are NOT proof of native-equivalent game performance.
  {
      if( last_input.type == input_event_t::error && !pending_input_queue.empty() ) {
          last_input = take_pending_input();
++        last_input_from_pending_queue = true;
 +    }
 +    // Only input consumers may materialize a repeat. pump_events() never
 +    // turns it into a durable tap when returning last_input to the FIFO.
