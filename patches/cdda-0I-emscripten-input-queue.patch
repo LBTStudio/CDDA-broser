@@ -144,7 +144,7 @@ yield をいくら速くしても症状は消えない。実際、押した 20 �
  #include <exception>
  #include <fstream>
  #include <iterator>
-@@ -149,6 +151,148 @@
+@@ -149,6 +150,147 @@
  // This value is finally returned by input_manager::get_input_event.
  input_event last_input;
  
@@ -256,7 +256,7 @@ yield をいくら速くしても症状は消えない。実際、押した 20 �
 +    }
 +}
 +
-+// 取り出したが使わなかった入力をキューの先頭へ戻す.
++// 取り出したが使わなかった入力をキューの先頭へ戻す。
 +// pump_events() が「入力を無視する」際に使う。破棄してはいけない。
 +static void return_pending_input( const input_event &ev )
 +{
@@ -265,14 +265,13 @@ yield をいくら速くしても症状は消えない。実際、押した 20 �
 +        return;
 +    }
 +    if( last_input_from_pending_queue ) {
-+        // An old FIFO entry was temporarily removed by drain_pending_input_if_idle().
-+        // Restore it to the front; it remains older than everything behind it.
++        // Restore an old FIFO event at the front, keeping it ahead of the backlog.
 +        if( pending_input_queue.size() >= pending_input_queue_max ) {
 +            pending_input_queue.pop_back();
 +        }
 +        pending_input_queue.push_front( ev );
 +    } else {
-+        // This is a newer SDL event. Append it after older queued inputs.
++        // A fresh SDL event is newer than the existing backlog, so append it.
 +        if( pending_input_queue.size() >= pending_input_queue_max ) {
 +            pending_input_queue.pop_front();
 +        }
@@ -293,7 +292,7 @@ yield をいくら速くしても症状は消えない。実際、押した 20 �
  static int inputdelay;         //How long getch will wait for a character to be typed
  int fontwidth;          //the width of the font, background is always this size
  int fontheight;         //the height of the font, background is always this size
-@@ -3164,6 +3433,26 @@
+@@ -3164,6 +3306,26 @@
      using cata::options::mouse;
  
      while( SDL_PollEvent( &ev ) ) {
@@ -320,7 +319,7 @@ yield をいくら速くしても症状は消えない。実際、押した 20 �
          imclient->process_input( &ev );
          switch( ev.type ) {
              case SDL_WINDOWEVENT:
-@@ -4124,6 +4432,28 @@
+@@ -4124,6 +4286,28 @@
      // Handle all events, but ignore any keypress
      CheckMessages();
  
@@ -349,7 +348,7 @@ yield をいくら速くしても症状は消えない。実際、押した 20 �
      last_input = input_event();
      previously_pressed_key = 0;
  }
-@@ -4150,6 +4502,36 @@
+@@ -4150,6 +4334,36 @@
  
      previously_pressed_key = 0;
  
@@ -386,7 +385,7 @@ yield をいくら速くしても症状は消えない。実際、押した 20 �
      // standards note: getch is sometimes required to call refresh
      // see, e.g., http://linux.die.net/man/3/getch
      // so although it's non-obvious, that refresh() call (and maybe InvalidateRect?) IS supposed to be there
-@@ -4190,6 +4602,12 @@
+@@ -4190,6 +4404,12 @@
      if( inputdelay < 0 ) {
          do {
              CheckMessages();
@@ -399,7 +398,7 @@ yield をいくら速くしても症状は消えない。実際、押した 20 �
              if( last_input.type != input_event_t::error ) {
                  break;
              }
-@@ -4201,6 +4625,7 @@
+@@ -4201,6 +4421,7 @@
          bool timedout = false;
          do {
              CheckMessages();
@@ -407,7 +406,7 @@ yield をいくら速くしても症状は消えない。実際、押した 20 �
              endtime = SDL_GetTicks();
              if( last_input.type != input_event_t::error ) {
                  break;
-@@ -4213,6 +4639,7 @@
+@@ -4213,7 +4434,8 @@
          } while( !timedout );
      } else {
          CheckMessages();
