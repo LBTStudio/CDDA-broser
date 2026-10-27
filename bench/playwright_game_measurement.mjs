@@ -526,9 +526,11 @@ async function main() {
   // mount the same profile in a fresh page. This verifies IndexedDB/IDBFS
   // restore rather than merely re-reading the first page's in-memory MEMFS.
   let reloadRestoreValidation;
+  const latestSavedSnapshot = afterSettle?.available ? afterSettle : after;
   const expectedReloadSave = {
-    world: after.world, file: after.file, turn: after.turn, activity: after.activity,
-    location: after.position?.location ?? null
+    world: latestSavedSnapshot.world, file: latestSavedSnapshot.file,
+    turn: latestSavedSnapshot.turn, activity: latestSavedSnapshot.activity,
+    location: latestSavedSnapshot.position?.location ?? null
   };
   try {
     await page.close();
