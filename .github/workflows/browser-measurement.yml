@@ -8,6 +8,10 @@ on:
         required: true
         default: "https://lbtstudio.github.io/CDDA-broser/"
         type: string
+      artifact_run_id:
+        description: "Optional successful Build CDDA workflow run ID; measures that exact build artifact instead of the public URL"
+        required: false
+        type: string
       scenario:
         description: "Real-game scenario; all runs reading and sleep independently"
         required: true
@@ -75,9 +79,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
-      CDDA_BASE_URL: ${{ github.event_name == 'workflow_run' && format('https://github.com/LBTStudio/CDDA-broser/actions/runs/{0}', github.event.workflow_run.id) || github.event.inputs.base_url || 'https://lbtstudio.github.io/CDDA-broser/' }}
+      CDDA_BASE_URL: ${{ github.event.inputs.base_url || 'https://lbtstudio.github.io/CDDA-broser/' }}
       CDDA_SCENARIO: ${{ github.event.inputs.scenario || 'all' }}
-      CDDA_RENDERER: ${{ github.event.inputs.renderer || 'game' }}
+      CDDA_RENDERER: ${{ github.event_name == 'pull_request' && 'compare' || github.event.inputs.renderer || 'game' }}
       CDDA_POPULATION: ${{ github.event.inputs.population || '0' }}
     steps:
       - name: Checkout measurement harness
@@ -111,15 +115,15 @@ jobs:
           npm install --no-save --package-lock=false playwright@1.55.0
 
       - name: Install Chromium system dependencies
-        timeout-minutes: 5
+        timeout-minutes: 10
         run: npx playwright install-deps chromium
 
       - name: Install pinned Chromium
-        timeout-minutes: 5
+        timeout-minutes: 10
         run: npx playwright install chromium
 
       - name: Download the exact deployed bundle under test
-        if: ${{ github.event_name != 'workflow_run' }}
+        if: ${{ github.event_name != 'workflow_run' && !github.event.inputs.artifact_run_id }}
         env:
           BASE_URL: ${{ github.event.inputs.base_url || 'https://lbtstudio.github.io/CDDA-broser/' }}
         run: |
@@ -138,6 +142,22 @@ jobs:
             test -s "$BUNDLE/$asset"
           done
           (cd "$BUNDLE" && sha256sum *) | tee "$GITHUB_WORKSPACE/bench/out/browser-measurement/bundle-sha256.txt"
+          OUT="$GITHUB_WORKSPACE/bench/out/browser-measurement"
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          out = Path("bench/out/browser-measurement")
+          manifest = {
+              "schemaVersion": 1,
+              "kind": "published-pages",
+              "targetUrl": os.environ["BASE_URL"],
+              "harnessCommitSha": os.environ["GITHUB_SHA"],
+              "measurementRunId": os.environ["GITHUB_RUN_ID"],
+              "measurementRunAttempt": int(os.environ.get("GITHUB_RUN_ATTEMPT", "1")),
+              "assetHashesFile": "bundle-sha256.txt",
+          }
+          (out / "measurement-source.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+          PY
           {
             echo "## Downloaded published bundle"
             echo ""
@@ -148,32 +168,102 @@ jobs:
             sed 's/^/- Asset: /' "$GITHUB_WORKSPACE/bench/out/browser-measurement/bundle-sha256.txt"
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Download exact bundle from the completed full build
-        if: ${{ github.event_name == 'workflow_run' }}
+      - name: Download exact bundle from the selected full build
+        if: ${{ github.event_name == 'workflow_run' || github.event.inputs.artifact_run_id != '' }}
         uses: actions/download-artifact@v4
         with:
           name: cdda-0I-web-bundle
-          run-id: ${{ github.event.workflow_run.id }}
+          run-id: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.id || github.event.inputs.artifact_run_id }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
           path: bench/out/browser-measurement/bundle
 
+      - name: Download selected build configuration provenance (optional for historical runs)
+        if: ${{ github.event_name == 'workflow_run' || github.event.inputs.artifact_run_id != '' }}
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: cdda-build-provenance
+          run-id: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.id || github.event.inputs.artifact_run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: bench/out/browser-measurement/build-provenance
+
       - name: Verify full-build artifact and record its fingerprint
-        if: ${{ github.event_name == 'workflow_run' }}
+        if: ${{ github.event_name == 'workflow_run' || github.event.inputs.artifact_run_id != '' }}
+        env:
+          SOURCE_RUN_ID: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.id || github.event.inputs.artifact_run_id || '' }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          BUNDLE="$GITHUB_WORKSPACE/bench/out/browser-measurement/bundle"
+          [[ "$SOURCE_RUN_ID" =~ ^[0-9]+$ ]] || { echo "::error::A numeric successful build run ID is required."; exit 1; }
+          SOURCE_RUN="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN_ID")"
+          SOURCE_STATUS="$(jq -r '.status // ""' <<<"$SOURCE_RUN")"
+          SOURCE_CONCLUSION="$(jq -r '.conclusion // ""' <<<"$SOURCE_RUN")"
+          SOURCE_COMMIT_SHA="$(jq -r '.head_sha // ""' <<<"$SOURCE_RUN")"
+          SOURCE_RUN_ATTEMPT="$(jq -r '.run_attempt // 1' <<<"$SOURCE_RUN")"
+          SOURCE_WORKFLOW_PATH="$(jq -r '.path // ""' <<<"$SOURCE_RUN")"
+          export SOURCE_COMMIT_SHA SOURCE_RUN_ATTEMPT
+          if [[ "$SOURCE_STATUS" != "completed" || "$SOURCE_CONCLUSION" != "success" ]]; then
+            echo "::error::Selected build run must be completed successfully (status=$SOURCE_STATUS, conclusion=$SOURCE_CONCLUSION)." >&2
+            exit 1
+          fi
+          if [[ "$SOURCE_WORKFLOW_PATH" != .github/workflows/build-and-release.yml* ]]; then
+            echo "::error::Selected run is not the CDDA build workflow: $SOURCE_WORKFLOW_PATH" >&2
+            exit 1
+          fi
+          test -n "$SOURCE_COMMIT_SHA" || { echo "::error::Build run has no source commit SHA."; exit 1; }
+
+          OUT="$GITHUB_WORKSPACE/bench/out/browser-measurement"
+          BUNDLE="$OUT/bundle"
           for asset in index.html cataclysm-tiles.js cataclysm-tiles.wasm cataclysm-tiles.data cataclysm-tiles.data.js Terminus.ttf favicon.ico; do
             test -s "$BUNDLE/$asset" || { echo "::error::Missing full-build artifact asset: $asset"; exit 1; }
           done
-          (cd "$BUNDLE" && sha256sum *) | tee "$GITHUB_WORKSPACE/bench/out/browser-measurement/bundle-sha256.txt"
+          (cd "$BUNDLE" && find . -type f -print0 | sort -z | xargs -0 sha256sum) | tee "$OUT/bundle-sha256.txt"
+
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          out = Path("bench/out/browser-measurement")
+          source_run_id = os.environ["SOURCE_RUN_ID"]
+          source_commit = os.environ["SOURCE_COMMIT_SHA"]
+          source_attempt = int(os.environ.get("SOURCE_RUN_ATTEMPT", "1"))
+          build_path = out / "build-provenance" / "build-provenance.json"
+          build = json.loads(build_path.read_text(encoding="utf-8")) if build_path.is_file() else None
+          if build is not None:
+              if str(build.get("runId")) != source_run_id:
+                  raise SystemExit("Build provenance run ID does not match the selected artifact run.")
+              if build.get("commitSha") != source_commit:
+                  raise SystemExit("Build provenance source SHA does not match the selected artifact run.")
+              if int(build.get("runAttempt", 1)) != source_attempt:
+                  raise SystemExit("Build provenance run attempt does not match the selected artifact attempt.")
+          hashes = {}
+          for line in (out / "bundle-sha256.txt").read_text(encoding="utf-8").splitlines():
+              digest, name = line.split(None, 1)
+              hashes[name.strip()] = digest
+          manifest = {
+              "schemaVersion": 1,
+              "kind": "build-artifact",
+              "targetUrl": None,
+              "sourceRunId": source_run_id,
+              "sourceRunAttempt": source_attempt,
+              "sourceRunUrl": os.environ["GITHUB_SERVER_URL"] + "/" + os.environ["GITHUB_REPOSITORY"] + "/actions/runs/" + source_run_id,
+              "sourceCommitSha": source_commit,
+              "harnessCommitSha": os.environ["GITHUB_SHA"],
+              "measurementRunId": os.environ["GITHUB_RUN_ID"],
+              "buildConfigurationVerified": build is not None,
+              "build": build,
+              "assetHashes": hashes,
+          }
+          (out / "measurement-source.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+          PY
           {
             echo "## Exact WebAssembly build artifact"
             echo ""
-            echo "- Source workflow run: https://github.com/LBTStudio/CDDA-broser/actions/runs/${{ github.event.workflow_run.id }}"
-            echo "- Source commit: ${{ github.event.workflow_run.head_sha }}"
-            echo "- This run tests the build artifact itself, independent of Pages cache/deployment timing."
+            echo "- Source workflow run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN_ID"
+            echo "- Source commit: $SOURCE_COMMIT_SHA"
+            echo "- Build configuration sidecar verified: $([[ -f "$OUT/build-provenance/build-provenance.json" ]] && echo yes || echo no;)"
+            echo "- This run tests the selected build artifact locally, independent of Pages cache/deployment timing."
             echo ""
-            sed 's/^/- Asset: /' "$GITHUB_WORKSPACE/bench/out/browser-measurement/bundle-sha256.txt"
+            sed 's/^/- Asset: /' "$OUT/bundle-sha256.txt"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Run isolated real-game measurements
@@ -188,7 +278,14 @@ jobs:
             *) echo "Unsupported scenario: $CDDA_SCENARIO" >&2; exit 2 ;;
           esac
           case "$CDDA_RENDERER" in
-            compare) renderers=(software opengles2) ;;
+            compare)
+              # Alternate renderer order across run IDs to reduce fixed-order warm-cache bias.
+              if (( GITHUB_RUN_ID % 2 == 0 )); then
+                renderers=(opengles2 software)
+              else
+                renderers=(software opengles2)
+              fi
+              ;;
             game|software|opengles2) renderers=("$CDDA_RENDERER") ;;
             *) echo "Unsupported renderer: $CDDA_RENDERER" >&2; exit 2 ;;
           esac
@@ -201,17 +298,22 @@ jobs:
             exit 2
           fi
           echo "- Scenario: $CDDA_SCENARIO; renderer: $CDDA_RENDERER; cloaked monster population: $CDDA_POPULATION" >> "$GITHUB_STEP_SUMMARY"
+          if [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
+            echo "- PR coverage: read4/sleep renderer comparison in run-ID-alternated order, plus sleep stress at 32/64/128/200 monsters." >> "$GITHUB_STEP_SUMMARY"
+          fi
           overall=0
           for scenario in "${scenarios[@]}"; do
             for renderer in "${renderers[@]}"; do
-              echo "[fixture] scenario=$scenario renderer=$renderer"
+              population_suffix=""
+              if [[ "$CDDA_POPULATION" != "0" ]]; then population_suffix="-z$CDDA_POPULATION"; fi
+              echo "[fixture] scenario=$scenario renderer=$renderer population=$CDDA_POPULATION"
               if ! python3 bench/real_activity_fixture.py "$BUNDLE" "$scenario" "$CDDA_POPULATION" "$renderer"; then
                 overall=1
                 continue
               fi
               node bench/playwright_game_measurement.mjs "$BUNDLE" "$scenario" "$renderer" "$CDDA_BASE_URL" "$CDDA_POPULATION" &
               runner_pid=$!
-              bash bench/sample_chromium_memory.sh "$OUT/chromium-memory-$scenario-$renderer.tsv" "$runner_pid" &
+              bash bench/sample_chromium_memory.sh "$OUT/chromium-memory-$scenario-$renderer$population_suffix.tsv" "$runner_pid" &
               memory_pid=$!
               if wait "$runner_pid"; then
                 scenario_status=0
@@ -221,23 +323,55 @@ jobs:
               fi
               wait "$memory_pid" || true
               echo "[fixture] scenario=$scenario renderer=$renderer exit=$scenario_status"
-              if [[ -f "$OUT/$scenario-$renderer/summary.md" ]]; then
-                cat "$OUT/$scenario-$renderer/summary.md" >> "$GITHUB_STEP_SUMMARY"
+              if [[ -f "$OUT/$scenario-$renderer$population_suffix/summary.md" ]]; then
+                cat "$OUT/$scenario-$renderer$population_suffix/summary.md" >> "$GITHUB_STEP_SUMMARY"
                 echo "" >> "$GITHUB_STEP_SUMMARY"
               fi
             done
           done
+
+          # Keep every population in a separate profile/output directory.
+          # The zero-population sleep/opengles2 scenario above is the control.
+          if [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
+            scenario=sleep
+            renderer=game
+            for population in 32 64 128 200; do
+              echo "[fixture] PR stress scenario=$scenario renderer=$renderer population=$population"
+              if ! python3 bench/real_activity_fixture.py "$BUNDLE" "$scenario" "$population" "$renderer"; then
+                overall=1
+                continue
+              fi
+              node bench/playwright_game_measurement.mjs "$BUNDLE" "$scenario" "$renderer" "$CDDA_BASE_URL" "$population" &
+              runner_pid=$!
+              bash bench/sample_chromium_memory.sh "$OUT/chromium-memory-$scenario-$renderer-z$population.tsv" "$runner_pid" &
+              memory_pid=$!
+              if wait "$runner_pid"; then
+                scenario_status=0
+              else
+                scenario_status=$?
+                overall=1
+              fi
+              wait "$memory_pid" || true
+              echo "[fixture] stress scenario=$scenario renderer=$renderer population=$population exit=$scenario_status"
+              if [[ -f "$OUT/$scenario-$renderer-z$population/summary.md" ]]; then
+                cat "$OUT/$scenario-$renderer-z$population/summary.md" >> "$GITHUB_STEP_SUMMARY"
+                echo "" >> "$GITHUB_STEP_SUMMARY"
+              fi
+            done
+          fi
           exit "$overall"
 
       - name: Upload measurements, browser traces and screenshots
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: cdda-playwright-measurement-${{ github.run_id }}
+          name: cdda-playwright-measurement-${{ github.run_id }}-attempt-${{ github.run_attempt }}
           path: |
             bench/out/browser-measurement/*-*/*
             bench/out/browser-measurement/chromium-memory-*.tsv
             bench/out/browser-measurement/bundle-sha256.txt
+            bench/out/browser-measurement/measurement-source.json
+            bench/out/browser-measurement/build-provenance/build-provenance.json
           if-no-files-found: warn
           retention-days: 30
           compression-level: 6
