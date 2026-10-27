@@ -212,7 +212,7 @@ script = r'''
             for (const name of fs.readdir(dir)) {
                 if (name.endsWith('.sav') || name === 'worldoptions.json') {
                     const bytes = fs.readFile(dir + '/' + name);
-                    if (bytes.length < 500000) saves[world + '/' + name] = Array.from(bytes);
+                    if (bytes.length < 2000000) saves[world + '/' + name] = Array.from(bytes);
                 }
             }
         }

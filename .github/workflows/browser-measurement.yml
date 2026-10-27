@@ -279,7 +279,14 @@ jobs:
             *) echo "Unsupported scenario: $CDDA_SCENARIO" >&2; exit 2 ;;
           esac
           case "$CDDA_RENDERER" in
-            compare) renderers=(software opengles2) ;;
+            compare)
+              # Alternate renderer order across run IDs to reduce fixed-order warm-cache bias.
+              if (( GITHUB_RUN_ID % 2 == 0 )); then
+                renderers=(opengles2 software)
+              else
+                renderers=(software opengles2)
+              fi
+              ;;
             game|software|opengles2) renderers=("$CDDA_RENDERER") ;;
             *) echo "Unsupported renderer: $CDDA_RENDERER" >&2; exit 2 ;;
           esac
@@ -293,7 +300,7 @@ jobs:
           fi
           echo "- Scenario: $CDDA_SCENARIO; renderer: $CDDA_RENDERER; cloaked monster population: $CDDA_POPULATION" >> "$GITHUB_STEP_SUMMARY"
           if [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
-            echo "- PR coverage: renderer comparison for read4/sleep plus a separate 128-monster sleep stress case." >> "$GITHUB_STEP_SUMMARY"
+            echo "- PR coverage: read4/sleep renderer comparison in run-ID-alternated order, plus sleep stress at 32/64/128/200 monsters." >> "$GITHUB_STEP_SUMMARY"
           fi
           overall=0
           for scenario in "${scenarios[@]}"; do
@@ -324,15 +331,17 @@ jobs:
             done
           done
 
-          # Controlled population stress is isolated from the zero-population renderer A/B.
+          # Keep every population in a separate profile/output directory.
+          # The zero-population sleep/opengles2 scenario above is the control.
           if [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
             scenario=sleep
             renderer=game
-            population=128
-            echo "[fixture] PR stress scenario=$scenario renderer=$renderer population=$population"
-            if ! python3 bench/real_activity_fixture.py "$BUNDLE" "$scenario" "$population" "$renderer"; then
-              overall=1
-            else
+            for population in 32 64 128 200; do
+              echo "[fixture] PR stress scenario=$scenario renderer=$renderer population=$population"
+              if ! python3 bench/real_activity_fixture.py "$BUNDLE" "$scenario" "$population" "$renderer"; then
+                overall=1
+                continue
+              fi
               node bench/playwright_game_measurement.mjs "$BUNDLE" "$scenario" "$renderer" "$CDDA_BASE_URL" "$population" &
               runner_pid=$!
               bash bench/sample_chromium_memory.sh "$OUT/chromium-memory-$scenario-$renderer-z$population.tsv" "$runner_pid" &
@@ -349,7 +358,7 @@ jobs:
                 cat "$OUT/$scenario-$renderer-z$population/summary.md" >> "$GITHUB_STEP_SUMMARY"
                 echo "" >> "$GITHUB_STEP_SUMMARY"
               fi
-            fi
+            done
           fi
           exit "$overall"
 

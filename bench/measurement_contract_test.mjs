@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { classifyRequestFailures, validateActiveRenderer, validateFixtureOutcome } from './measurement_contract.mjs';
+import { classifyRequestFailures, extractWasmHeapSamples, validateActiveRenderer, validateFixtureOutcome } from './measurement_contract.mjs';
 
 function base({ scenario = 'read4', renderer = 'game', population = 0 } = {}) {
   const sleep = scenario === 'sleep';
@@ -80,17 +80,32 @@ for (const scenario of ['read4', 'sleep']) {
   assert.ok(result.failures.some(item => item.name === 'fixture-result-present'));
 }
 
-{
-  const state = base({ scenario: 'sleep', renderer: 'game', population: 128 });
+for (const count of [32, 64, 128, 200]) {
+  const state = base({ scenario: 'sleep', renderer: 'game', population: count });
   const good = validateFixtureOutcome(state);
   assert.equal(good.ok, true, JSON.stringify(good.failures));
   assert.ok(good.checks.some(check => check.name === 'population-monster-count' && check.passed));
   state.fixtureResult.saves['world/player.sav'] = Array.from(new TextEncoder().encode(JSON.stringify({
-    monsters: Array.from({ length: 127 }, () => ({ typeid: 'mon_zombie' }))
+    monsters: Array.from({ length: count - 1 }, () => ({ typeid: 'mon_zombie' }))
   })));
   const bad = validateFixtureOutcome(state);
   assert.equal(bad.ok, false);
   assert.ok(bad.failures.some(item => item.name === 'population-monster-count'));
+}
+
+{
+  const profile = extractWasmHeapSamples([
+    { text: 'fixture:sample sleep 0 512', atMs: 100 },
+    { text: 'fixture:sample sleep 1 512', atMs: 4100 },
+    { text: 'fixture:sample sleep 2 1024', atMs: 8100 },
+    { text: 'fixture:sample sleep 3 2048', atMs: 12100, phase: 'reload-restore' }
+  ]);
+  assert.equal(profile.sampleCount, 3);
+  assert.equal(profile.initialBytes, 512);
+  assert.equal(profile.peakBytes, 1024);
+  assert.equal(profile.finalBytes, 512);
+  assert.equal(profile.growthTransitions.length, 2);
+  assert.deepEqual(profile.distinctSizes, [512, 1024]);
 }
 
 {
@@ -131,4 +146,4 @@ for (const scenario of ['read4', 'sleep']) {
   assert.equal(result.ok, true);
   assert.equal(result.allowed.length, 1);
 }
-console.log('PASS measurement contracts: real-game state, saved monster count, active renderer, and request-failure triage');
+console.log('PASS measurement contracts: real-game state, population counts, active renderer, heap samples, and request-failure triage');

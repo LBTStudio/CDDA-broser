@@ -37,6 +37,33 @@ export function validateActiveRenderer({ renderer, consoleMessages }) {
   return { ok: failures.length === 0, requested: renderer, actual: active, checks, failures };
 }
 
+export function extractWasmHeapSamples(consoleMessages) {
+  const samples = [];
+  for (const entry of consoleMessages ?? []) {
+    if (entry?.phase === 'reload-restore') continue;
+    const message = String(entry?.text ?? entry?.message ?? '');
+    const match = message.match(/^fixture:sample\s+(read|sleep)\s+(\d+)\s+(\d+)$/);
+    if (!match) continue;
+    const atMs = Number(entry?.atMs);
+    const index = Number(match[2]);
+    const heapBytes = Number(match[3]);
+    if (!Number.isFinite(index) || !Number.isFinite(heapBytes) || heapBytes <= 0) continue;
+    samples.push({ mode: match[1], index, atMs: Number.isFinite(atMs) ? atMs : null, heapBytes });
+  }
+  const sizes = samples.map(sample => sample.heapBytes);
+  const growthTransitions = [];
+  for (let i = 0; i < samples.length; ++i) {
+    if (i === 0 || samples[i].heapBytes !== samples[i - 1].heapBytes) {
+      growthTransitions.push({ index: samples[i].index, atMs: samples[i].atMs, heapBytes: samples[i].heapBytes });
+    }
+  }
+  return { samples, sampleCount: samples.length,
+    initialBytes: sizes.length ? sizes[0] : null,
+    peakBytes: sizes.length ? Math.max(...sizes) : null,
+    finalBytes: sizes.length ? sizes[sizes.length - 1] : null,
+    distinctSizes: [...new Set(sizes)], growthTransitions };
+}
+
 export function validateFixtureOutcome({ scenario, population, renderer, fixtureResult, savedGameState }) {
   const failures = [];
   const checks = [];
