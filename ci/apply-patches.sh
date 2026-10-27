@@ -54,6 +54,7 @@ browser-runtime
 mapbuffer-fixed-arrays
 visible-creature-position-cache
 large-entity-churn
+target-view-controls
 "
 
 for name in $PATCHES; do
@@ -329,6 +330,7 @@ python3 "$SCRIPT_DIR/../bench/sleep_save_test.py" "$PWD"
 python3 "$SCRIPT_DIR/../bench/input_utf8_test.py" "$PWD"
 python3 "$SCRIPT_DIR/../bench/key_repeat_test.py" "$PWD"
 python3 "$SCRIPT_DIR/../bench/gear_guide_test.py" "$PWD"
+python3 "$SCRIPT_DIR/../bench/target_view_controls_test.py" "$PWD"
 node "$SCRIPT_DIR/../bench/asset_loader_test.js"
 node "$SCRIPT_DIR/../bench/ime_bridge_test.js"
 node "$SCRIPT_DIR/../bench/idbfs_sync_test.js" "$PWD"
@@ -344,4 +346,4 @@ python3 "$SCRIPT_DIR/../bench/link_cache_fingerprint_test.py"
 python3 "$SCRIPT_DIR/../bench/workflow_safety_test.py"
 node "$SCRIPT_DIR/../bench/browser_health_test.mjs"
 
-echo "[VERIFY] OK: パッチ適用・車両ターンworklist・ランタイム・IME・保存・MOD ZIP資源制限・活動ペーシング・オフライン依存・ベンチ終了状態・リンクキャッシュ・ワークフロー同期/公開ガードの回帰テストが合格"
+echo "[VERIFY] OK: パッチ適用・照準視点復元・視点キー割り当て・車両ターンworklist・ランタイム・IME・保存・MOD ZIP資源制限・活動ペーシング・オフライン依存・ベンチ終了状態・リンクキャッシュ・ワークフロー同期/公開ガードの回帰テストが合格"
