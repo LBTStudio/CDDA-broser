@@ -240,6 +240,11 @@ yield をいくら速くしても症状は消えない。実際、押した 20 �
 +    return ev;
 +}
 +
++// True only when last_input was borrowed from the FIFO by the idle drain.
++// pump_events() restores such an old event to the front, but appends fresh
++// SDL events at the back to preserve chronological input ordering.
++static bool last_input_from_pending_queue = false;
++
 +// last_input が空（error）のときだけ、キューから 1 個補充する。
 +// CheckMessages() の直後に呼ぶことで、
 +// 「排出ループの最後のイベントが last_input を設定しない種類だった」
@@ -250,11 +255,6 @@ yield をいくら速くしても症状は消えない。実際、押した 20 �
 +        last_input = take_pending_input();
 +    }
 +}
-+
-+// True only when last_input was borrowed from the FIFO by the idle drain.
-+// pump_events() restores such an old event to the front, but appends fresh
-+// SDL events at the back to preserve chronological input ordering.
-+static bool last_input_from_pending_queue = false;
 +
 +// 取り出したが使わなかった入力をキューの先頭へ戻す.
 +// pump_events() が「入力を無視する」際に使う。破棄してはいけない。
