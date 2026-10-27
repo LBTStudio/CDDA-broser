@@ -4,7 +4,7 @@
 
 CDDA Playwright browser measurements Workflowは、指定されたGitHub Pages上のブラウザ版CDDAを7つの配布ファイルごとにダウンロードし、隔離したChromiumプロファイルで起動します。既存ユーザーのセーブ・MOD・設定は流用しません。既存の real_activity_fixture.py が試験専用の初期条件を作成し、実際の配布WebAssemblyを実行します。
 
-Actionsから手動実行できます。base_urlは測定対象の配信先、scenarioは read4 / sleep / read / all、rendererは game / software / opengles2 / compare です。PRの自動計測では `renderer=compare` と `population=0` を使い、読書・睡眠をsoftwareとopengles2で比較します。加えて別プロフィールで `sleep + 128体 + game renderer` の制御ストレス試験を実施します。allは読書レベル4→5と睡眠を個別に実行し、compareは同じシナリオをsoftwareとopengles2で比較します。populationは0 / 32 / 64 / 128 / 200体の対照条件で、0以外はsleepシナリオのみ許可します。レンダラーはfixtureに指定した値だけで成功扱いにせず、初回起動時のSDLログ `Active renderer` が指定値と一致するか検証します。保存されたキャラクターセーブに `"typeid": "mon_zombie"` が要求数だけ含まれることも確認し、要求数のechoだけで128体試験を合格にしません。人口数が0より大きいストレス試験は活動観測窓を120秒に延長します。これはデバッグ透明化を同一条件で付けた制御ストレス試験で、敵対行動を通常プレイそのままに再現する試験ではありません。読書の進行や中断条件を混ぜずに、個体数増加時のメモリ・長時間タスク・入力応答を比較する目的です。pushとpull_requestでも関連ファイルの変更時に配信版を計測します。また、Build CDDA 0.I WebAssembly Workflowがmainで成功終了すると、同じrunに保存された cdda-0I-web-bundle 成果物を直接ダウンロードして測定します。これによりPagesへの反映待ちやキャッシュと切り離して、フルビルド直後のソース成果物を測定できます。ビルド失敗時は計測を開始しません。
+Actionsから手動実行できます。base_urlは測定対象の配信先、scenarioは read4 / sleep / read / all、rendererは game / software / opengles2 / compare です。PRの自動計測では `renderer=compare` と `population=0` を使い、読書・睡眠をsoftwareとopengles2で比較します。加えて別プロフィールで `sleep + 32/64/128/200体 + game renderer` の制御ストレス試験を実施します。allは読書レベル4→5と睡眠を個別に実行し、compareは同じシナリオをsoftwareとopengles2で比較します。populationは0 / 32 / 64 / 128 / 200体の対照条件で、0以外はsleepシナリオのみ許可します。レンダラーはfixtureに指定した値だけで成功扱いにせず、初回起動時のSDLログ `Active renderer` が指定値と一致するか検証します。保存されたキャラクターセーブに `"typeid": "mon_zombie"` が要求数だけ含まれることも確認し、要求数のechoだけで人口負荷試験を合格にしません。人口数が0より大きいストレス試験は活動観測窓を120秒に延長します。これはデバッグ透明化を同一条件で付けた制御ストレス試験で、敵対行動を通常プレイそのままに再現する試験ではありません。読書の進行や中断条件を混ぜずに、個体数増加時のメモリ・長時間タスク・入力応答を比較する目的です。pushとpull_requestでも関連ファイルの変更時に配信版を計測します。また、Build CDDA 0.I WebAssembly Workflowがmainで成功終了すると、同じrunに保存された cdda-0I-web-bundle 成果物を直接ダウンロードして測定します。これによりPagesへの反映待ちやキャッシュと切り離して、フルビルド直後のソース成果物を測定できます。ビルド失敗時は計測を開始しません。
 
 ## 記録する内容
 
@@ -19,6 +19,8 @@ Actionsから手動実行できます。base_urlは測定対象の配信先、sc
 - 読書／睡眠シナリオの保存データから、`[perf]`ログ、活動終了メッセージ、睡眠関連効果を抽出する。観測窓の時間と、ゲーム内ログの実処理時間は別々に扱う。
 - 読書・睡眠の実ゲーム観測結果、セーブスナップショット、Canvasスクリーンショット。
 - Chromium関連プロセスのRSS/PSSを1秒間隔で採取した記録。
+- 活動観測中の `HEAPU8.length` の4秒間隔サンプル、初期/ピーク/最終サイズと観測された変化点。
+- ChromiumのソフトウェアWebGLフォールバック警告を、計測ページと復元ページに分けた件数。
 - Playwright trace、コンソールログ、構造化されたmeasurement.json。
 
 成果物はActionsのartifact cdda-playwright-measurement-<run id>-attempt-<attempt>に30日間保存します。同じrunの再実行でも成果物が衝突しないようにattempt番号を含めます。measurement.jsonが構造化データ、summary.mdが短い要約です。Canvas画像とPlaywright traceを併用して表示と停止箇所をレビューできます。`measurement-source.json` には、公開URL計測か特定ビルド成果物か、ビルド実行ID・再実行番号、コミットSHA、計測ハーネスのSHA、公開版では7つの主要配布ファイル、ビルドartifactでは追加のネストされたファイルも含めたハッシュを記録します。新しいビルドは別の `cdda-build-provenance` artifactに Emscripten版、Asyncify/JSPI、リンク最適化、SIMD設定を記録します。過去ビルドに構成情報がない場合は、出所のSHAは確認できても設定同定は未確認として残します。
