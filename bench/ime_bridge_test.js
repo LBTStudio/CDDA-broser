@@ -83,8 +83,10 @@ function checks() {
   proxy.fire('compositionstart');
   proxy.fire('compositionend', { data: '' }); // cancelled conversion
   assert.deepEqual(commits(), ['日本', '包帯']);
+  state.commitOffset = 1; // simulate a partially consumed long paste
   set(0); // includes synchronous late compositionend from blur()
   assert.deepEqual(commits(), []);
+  assert.equal(state.commitOffset, 0, 'closing a field discards a partial IME commit');
   assert.equal(state.preview, null);
   proxy.fire('compositionend', { data: 'さらに遅延' });
   assert.deepEqual(commits(), []);
