@@ -1,17 +1,46 @@
 # CDDA 0.I browser: distinguish selected treatment row from limb-state colors
 #
-# The body-part treatment menu inherits uilist's default highlight color. In the
-# browser build the whole selected row is rendered blue, which is easy to
-# confuse with the blue limb-state indicator used for bites. Use neutral white
-# for this one menu only; leave the underlying limb-state colors and all other
-# menus unchanged.
+# The browser's ImGui selectable row uses a blue background by default. Apply an
+# amber background only to the treatment body-part menu so it cannot be mistaken
+# for blue medical status indicators. All other menus and status colors remain unchanged.
 --- a/src/character_body.cpp
 +++ b/src/character_body.cpp
 @@ -1133,6 +1133,7 @@
  
      uilist bmenu;
      bmenu.desc_enabled = true;
-+    bmenu.hilight_color = c_white;
++    bmenu.neutral_selection_background = true;
      bmenu.text = menu_header;
  
      bmenu.hilight_disabled = true;
+--- a/src/uilist.h
++++ b/src/uilist.h
+@@ -426,6 +426,7 @@
+         nc_color title_color;
+         nc_color hilight_color;
++        bool neutral_selection_background = false;
+         nc_color hotkey_color;
+         nc_color disabled_color;
+ 
+--- a/src/uilist.cpp
++++ b/src/uilist.cpp
+@@ -150,6 +150,11 @@
+                             ImGui::SetScrollHereY();
+                             parent.need_to_scroll = false;
+                         }
++                        if( parent.neutral_selection_background ) {
++                            ImGui::PushStyleColor( ImGuiCol_Header, ImVec4( 0.42f, 0.29f, 0.06f, 0.92f ) );
++                            ImGui::PushStyleColor( ImGuiCol_HeaderHovered, ImVec4( 0.52f, 0.37f, 0.08f, 0.96f ) );
++                            ImGui::PushStyleColor( ImGuiCol_HeaderActive, ImVec4( 0.62f, 0.44f, 0.10f, 1.00f ) );
++                        }
+                         ImGuiSelectableFlags flags = ImGuiSelectableFlags_SpanAllColumns |
+                                                      ImGuiSelectableFlags_AllowItemOverlap;
+                         if( !entry.enabled ) {
+@@ -165,4 +170,7 @@
+                             parent.need_to_scroll = true;
+                             is_selected = parent.clicked = true;
+                         }
++                        if( parent.neutral_selection_background ) {
++                            ImGui::PopStyleColor( 3 );
++                        }
+                         bool is_hovered = ImGui::IsItemHovered( ImGuiHoveredFlags_NoNavOverride );
