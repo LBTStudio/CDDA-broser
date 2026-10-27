@@ -188,9 +188,17 @@ old_get_call = "here.get_vehicle_zones( here.get_abs_sub().z() )"
 new_get_call = "here.get_vehicle_zones( here.get_abs_sub().z(), /* refresh_cache = */ false )"
 assert old_get_call in old_cache_fn and new_get_call in new_cache_fn
 normalized_cache_fn = new_cache_fn.replace(new_get_call, old_get_call, 1)
-normalized_cache_fn = normalized_cache_fn.replace("    vzone_cache_dirty_ = false;\n", "", 1)
+for expected_cache_state in (
+    "    vzone_cache_dirty_ = false;\\n",
+    "    vzone_cache_z_ = here.get_abs_sub().z();\\n",
+    "    vzone_cache_z_initialized_ = true;\\n",
+):
+    assert normalized_cache_fn.count(expected_cache_state) == 1, (
+        "zone_manager::cache_vzones is missing or duplicated an expected cache-state update"
+    )
+    normalized_cache_fn = normalized_cache_fn.replace(expected_cache_state, "", 1)
 assert normalized_cache_fn == old_cache_fn, (
-    "zone_manager::cache_vzones changed beyond recursion guard and dirty-flag reset")
+    "zone_manager::cache_vzones changed beyond recursion guard and active-z cache state")
 
 helper = function(new_map, "template<typename WorkRange, typename ProcessFn>")
 assert "std::less<vehicle *>{}" in helper, "std::map-compatible pointer order missing"
