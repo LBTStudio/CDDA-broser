@@ -77,6 +77,27 @@ assert "cdda-build-provenance" in workflow
 assert "build-provenance.json" in workflow
 assert "cdda-build-provenance" in measure_workflow
 
+# Python heredocs embedded in YAML run blocks must remain inside the block
+# scalar; a column-0 "import" silently turns the workflow into an invalid file.
+for workflow_path in [workflow_path, root / ".github/workflows/browser-measurement.yml"]:
+    lines = workflow_path.read_text(encoding="utf-8").splitlines()
+    for index, line in enumerate(lines):
+        if line.strip() != "python3 - <<'PY'":
+            continue
+        command_indent = len(line) - len(line.lstrip())
+        for body_index in range(index + 1, len(lines)):
+            body_line = lines[body_index]
+            if not body_line.strip():
+                continue
+            body_indent = len(body_line) - len(body_line.lstrip())
+            assert body_indent >= command_indent, (
+                f"{workflow_path}:{body_index + 1}: heredoc line escaped YAML run block"
+            )
+            if body_line.strip() == "PY":
+                break
+        else:
+            raise AssertionError(f"{workflow_path}:{index + 1}: unterminated Python heredoc")
+
 # The generated binary is checked regardless of deployment mode. Experimental
 # artifacts use deploy_pages=false, but must not bypass the V8 function-size guard.
 verify_step = workflow.split("      - name: Verify linked binary", 1)[1].split("      - name: Upload linked binary", 1)[0]
