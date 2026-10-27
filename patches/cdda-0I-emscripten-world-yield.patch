@@ -263,7 +263,7 @@ index 020cf3d..a377ff9 100644
  #if defined(__ANDROID__)
      SDL_StopTextInput();
  #else
-@@ -2657,6 +2718,114 @@ void StopTextInput()
+@@ -2657,6 +2718,117 @@ void StopTextInput()
  #endif
  }
  
@@ -286,56 +286,74 @@ index 020cf3d..a377ff9 100644
 +#pragma clang diagnostic ignored "-Wdollar-in-identifier-extension"
 +static void cdda_pump_web_ime()
 +{
-+    static char ime_buf[4096];
-+    // Committed text can be arbitrarily long; split it into SDL_TEXTINPUT
-+    // events at UTF-8 character boundaries, exactly like a desktop IME
-+    // commit that exceeds SDL's fixed event payload would arrive.
-+    while( EM_ASM_INT( {
++    // Feed one UTF-8-safe SDL_TEXTINPUT chunk per event-pump call. Pushing
++    // dozens of SDL events at once overflows the bounded pending-input queue;
++    // a single chunk lets the consumer drain it before we advance the paste.
++    static char ime_buf[SDL_TEXTINPUTEVENT_TEXT_SIZE];
++    if( !pending_input_queue.empty() ) {
++        return;
++    }
++    const int ime_bytes = EM_ASM_INT( {
 +    var st = window.cddaImeState;
-+    if( !st || !st.commits || st.commits.length === 0 ) {
++    if( !st || !st.commits ) {
 +        return 0;
 +    }
-+    var bytes = new TextEncoder().encode( String( st.commits.shift() ) );
-+    var n = bytes.length < $1 ? bytes.length : $1 - 1;
-+    if( n < bytes.length ) {
-+        // Truncated: back off to a UTF-8 character boundary, dropping the
-+        // partial character entirely.
-+        while( n > 0 && ( bytes[n] & 0xC0 ) === 0x80 ) {
-+            n--;
-+        }
++    if( st.commits.length === 0 ) {
++        st.commitOffset = 0;
++        return 0;
 +    }
-+    HEAPU8.set( bytes.subarray( 0, n ), $0 );
-+    HEAPU8[$0 + n] = 0;
-+    return 1;
-+}, ime_buf, sizeof( ime_buf ) ) ) {
-+        const char *p = ime_buf;
-+        size_t remaining = strlen( ime_buf );
-+        while( remaining > 0 ) {
-+            size_t chunk = remaining;
-+            const size_t max_chunk = static_cast<size_t>( SDL_TEXTINPUTEVENT_TEXT_SIZE ) - 1;
-+            if( chunk > max_chunk ) {
-+                chunk = max_chunk;
-+                while( chunk > 0 &&
-+                       ( static_cast<unsigned char>( p[chunk] ) & 0xC0 ) == 0x80 ) {
-+                    chunk--;
-+                }
-+                if( chunk == 0 ) {
-+                    // malformed UTF-8; drop instead of looping forever
-+                    break;
-+                }
-+            }
-+            SDL_Event commit_event {};
-+            commit_event.type = SDL_TEXTINPUT;
-+            memcpy( commit_event.text.text, p, chunk );
-+            commit_event.text.text[chunk] = '\0';
-+            SDL_PushEvent( &commit_event );
-+            p += chunk;
-+            remaining -= chunk;
-+        }
++    var text = String( st.commits[0] );
++    var start = Number.isSafeInteger( st.commitOffset ) && st.commitOffset >= 0 ?
++                st.commitOffset : 0;
++    if( start >= text.length ) {
++        st.commits.shift();
++        st.commitOffset = 0;
++        return 0;
 +    }
-+    // Composition preview: only the latest state matters.  An empty string
-+    // must still be forwarded so a cancelled composition clears the
-+    // preview inside the game.
++    var end = start;
++    var bytesNeeded = 0;
++    var maxBytes = $1 - 1;
++    while( end < text.length ) {
++        var cp = text.codePointAt( end );
++        var width = cp <= 0x7f ? 1 : cp <= 0x7ff ? 2 : cp <= 0xffff ? 3 : 4;
++        if( bytesNeeded + width > maxBytes ) {
++            break;
++        }
++        bytesNeeded += width;
++        end += cp > 0xffff ? 2 : 1;
++    }
++    // The SDL text buffer is 32 bytes, so at least one complete UTF-8
++    // code point always fits. Fail closed rather than retrying a bad state.
++    if( end === start ) {
++        st.commits.shift();
++        st.commitOffset = 0;
++        return 0;
++    }
++    var bytes = new TextEncoder().encode( text.slice( start, end ) );
++    if( bytes.length === 0 || bytes.length > maxBytes ) {
++        st.commits.shift();
++        st.commitOffset = 0;
++        return 0;
++    }
++    HEAPU8.set( bytes, $0 );
++    HEAPU8[$0 + bytes.length] = 0;
++    if( end >= text.length ) {
++        st.commits.shift();
++        st.commitOffset = 0;
++    } else {
++        st.commitOffset = end;
++    }
++    return bytes.length;
++}, ime_buf, sizeof( ime_buf ) );
++    if( ime_bytes > 0 && static_cast<std::size_t>( ime_bytes ) < sizeof( ime_buf ) ) {
++        SDL_Event commit_event {};
++        commit_event.type = SDL_TEXTINPUT;
++        memcpy( commit_event.text.text, ime_buf, static_cast<std::size_t>( ime_bytes ) );
++        commit_event.text.text[ime_bytes] = '\0';
++        SDL_PushEvent( &commit_event );
++    }
++    // Composition preview is intentionally truncated; committed text above
++    // is streamed one bounded chunk at a time without discarding the remainder.
 +    if( EM_ASM_INT( {
 +    var st = window.cddaImeState;
 +    if( !st || st.preview === null || st.preview === undefined ) {
@@ -356,7 +374,6 @@ index 020cf3d..a377ff9 100644
 +        size_t chunk = strlen( ime_buf );
 +        const size_t max_edit = static_cast<size_t>( SDL_TEXTEDITINGEVENT_TEXT_SIZE ) - 1;
 +        if( chunk > max_edit ) {
-+            // preview only; the full text always arrives via the commit path
 +            chunk = max_edit;
 +            while( chunk > 0 &&
 +                   ( static_cast<unsigned char>( ime_buf[chunk] ) & 0xC0 ) == 0x80 ) {
@@ -378,7 +395,7 @@ index 020cf3d..a377ff9 100644
  //Check for any window messages (keypress, paint, mousemove, etc)
  static void CheckMessages()
  {
-@@ -2974,6 +3143,12 @@ static void CheckMessages()
+@@ -2974,6 +3146,12 @@ static void CheckMessages()
  
      last_input = input_event();
  
@@ -391,7 +408,7 @@ index 020cf3d..a377ff9 100644
      std::optional<point> resize_dims;
      bool render_target_reset = false;
      using cata::options::mouse;
-@@ -3914,6 +4089,30 @@ void input_manager::pump_events()
+@@ -3914,6 +4092,30 @@ void input_manager::pump_events()
          return;
      }
  
