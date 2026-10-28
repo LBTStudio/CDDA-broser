@@ -600,6 +600,8 @@ jobs:
           test -f shell/index.html
 
           cp shell/index.html cdda/build/index.html
+          # 分割データパックの差し込みモジュール。index.html が読むので同じ階層に置く。
+          cp shell/lazydata.js cdda/build/lazydata.js
 
           # Export Saves and Install Mod must remain usable after the CDN's
           # short-lived HTTP cache expires or the browser is offline.

@@ -104,6 +104,12 @@ cp "$CDDA_TARGET_WASM"      build/
 cp data/font/Terminus.ttf   build/
 cp data/cataicon.ico        build/favicon.ico
 
+# 分割データパック（ci/prepare-data.sh が packs/ を作った場合のみ）。
+# 無ければ従来の単一 .data 配布物として、そのまま動く。
+if [ -d packs ]; then
+    cp -R packs build/
+fi
+
 # ------------------------------------------------------------------
 # 手順 3: 成果物の検証
 # ------------------------------------------------------------------
@@ -127,6 +133,24 @@ do
     fi
     printf '[BUNDLE]   OK %-34s %8s\n' "$f" "$( du -h "$f" | cut -f1 )"
 done
+
+# 分割パックは「manifest に載っているのに実体が無い」と、
+# 世界を開始した瞬間に初めて壊れる。ここで必ず突き合わせる。
+if [ -d build/packs ]; then
+    if [ ! -s build/packs/manifest.json ]; then
+        echo "ERROR: 分割パックの manifest がありません: build/packs/manifest.json" >&2
+        exit 1
+    fi
+    for name in $( sed -n 's/.*"packs":\[\([^]]*\)\].*/\1/p' build/packs/manifest.json | tr ',' '\n' | tr -d '" ' ); do
+        for ext in data js; do
+            if [ ! -s "build/packs/$name.$ext" ]; then
+                echo "ERROR: パックが欠けています: build/packs/$name.$ext" >&2
+                exit 1
+            fi
+        done
+    done
+    printf '[BUNDLE]   OK %-34s %8s\n' "packs/" "$( du -sh build/packs | cut -f1 )"
+fi
 
 # 【4GB RAM 機で動くかの目安】
 # ブラウザは .data を丸ごと展開して仮想ファイルシステムに

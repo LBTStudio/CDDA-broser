@@ -133,6 +133,9 @@
       <button onclick="document.getElementById('error-overlay').style.display='none'">閉じる / Dismiss</button>
     </div>
 
+    <!-- 追加データパック（packs/）の差し込み。
+         本体バンドルより先に読み、Module の器を先に用意する。 -->
+    <script src="lazydata.js"></script>
     <script type="text/javascript">
       const canvas = document.getElementById("canvas");
       const loadingMessage = document.getElementById("loading-message");
@@ -513,6 +516,63 @@
         return new Response(body, { headers: storeHeaders });
       }
 
+      /* ---- 分割データパックを永続キャッシュへ通す ----------------------
+         起動時の 4 ファイルは commitAssetCacheBatch が「1 リリースとして」
+         まとめて保存するが、追加パックは起動後に取得するため対象外になる。
+         有効なバンドルのバケットへ直接入れる。バケットはリリース単位なので、
+         「コアだけ新しくパックだけ古い」混在は起きない。 */
+      async function cachedPackResponse(url, label) {
+        const response = await cachedAssetResponse(url, label);
+        if (assetCacheBatchActive || !activeAssetCacheName) return response;
+        try {
+          const cache = await caches.open(activeAssetCacheName);
+          await cache.put(url, response.clone());
+        } catch (e) {
+          console.warn("追加データパックをキャッシュできませんでした:", url, e);
+        }
+        return response;
+      }
+
+      /* ---- 取得失敗時は「再試行」で同じ続きから再開する ------------
+         差し込みは wasm 側が Promise を待っている。リロードさせると
+         最初からになってしまうので、必ず再試行を出す。 */
+      function showPackError(name, err) {
+        return new Promise((resolve) => {
+          const label = lazyPacks.displayName(name);
+          errorHint.innerHTML =
+            label + " の取得に失敗しました。通信状況を確認して「再試行」を押してください。" +
+            "<br />Failed to fetch " + label + ". Check your connection and press Retry.";
+          errorDetail.textContent = String((err && err.stack) || err);
+          errorOverlay.style.display = "block";
+          loadingMessage.style.display = "none";
+          let retry = document.getElementById("pack-retry");
+          if (!retry) {
+            retry = document.createElement("button");
+            retry.id = "pack-retry";
+            retry.textContent = "↻ 再試行 / Retry";
+            errorOverlay.insertBefore(retry, errorOverlay.querySelector("button"));
+          }
+          retry.onclick = () => {
+            errorOverlay.style.display = "none";
+            loadingMessage.textContent = "追加データを取得しています… / Loading extra data…";
+            loadingMessage.style.display = "block";
+            resolve();
+          };
+        });
+      }
+
+      /* bench/asset_loader_test.js はこの位置までの文字列を vm で実行するため、
+         ここで window を直接参照すると window のない世界で ReferenceError になる。
+         globalThis 経由で見れば、ブラウザでは window と同じ物を指し、
+         テスト側では undefined となって安全にスキップされる。 */
+      const lazyPacks = (typeof globalThis !== "undefined") ? globalThis.CddaLazyPacks : null;
+      if (lazyPacks) {
+        lazyPacks.init({
+          cachedAssetResponse: cachedPackResponse,
+          loadScript: loadScript,
+          onMountError: showPackError,
+        });
+      }
       async function readBundleFromCache(name, markerKey) {
         let cache = null;
         try { cache = await caches.open(name); } catch (e) { return null; }
@@ -926,7 +986,20 @@
         }
       }
 
-      window.addEventListener("menuready", () => { loadingMessage.style.display = "none"; });
+      window.addEventListener("menuready", () => {
+        loadingMessage.style.display = "none";
+        /* 分割配布では、世界のデータと選択中の tileset の画像は
+           別パックで届く。読み込み直前に wasm 側から要求される（C++ の
+           cata_web_ensure_pack）ので、ここでは次の 2 つだけを行う：
+             ・フック漏れ（= 空ディレクトリを静かに読む事故）の検出
+             ・世界パックの先読み（Cache Storage のみ。ヒープには残さない）
+           必要になるまで 1 バイトも消費しない。 */
+        if (!window.CddaLazyPacks) return;
+        CddaLazyPacks.watchLazyPaths();
+        const warm = () => CddaLazyPacks.warmup();
+        if (window.requestIdleCallback) requestIdleCallback(warm, { timeout: 4000 });
+        else setTimeout(warm, 2000);
+      });
       document.getElementById("settings-gear").onclick = () => {
         settingsMenu.style.display = settingsMenu.style.display === "none" ? "inherit" : "none";
       };

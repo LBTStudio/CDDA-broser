@@ -1,0 +1,148 @@
+diff --git a/src/cata_tiles.cpp b/src/cata_tiles.cpp
+index 8fb96a1..cb12bbe 100644
+--- a/src/cata_tiles.cpp
++++ b/src/cata_tiles.cpp
+@@ -28,6 +28,7 @@
+ #include "cata_assert.h"
+ #include "cata_path.h"
+ #include "cata_utility.h"
++#include "cata_web_packs.h"
+ #include "catacharset.h"
+ #include "character.h"
+ #include "character_id.h"
+@@ -360,6 +361,11 @@ void cata_tiles::load_tileset( const std::string &tileset_id, const bool prechec
+     if( tileset_ptr && tileset_ptr->get_tileset_id() == tileset_id && !force ) {
+         return;
+     }
++#if defined( EMSCRIPTEN )
++    // [CDDA-BROSER] tileset の画像は「選択されたものだけ」が別パックで届く。
++    // tile_config.json を読む前に必ず差し込む（分割していなければ即座に戻る）。
++    cata_web_ensure_pack( "gfx:" + tileset_id );
++#endif
+     // TODO: move into clear or somewhere else.
+     // reset the overlay ordering from the previous loaded tileset
+     tileset_mutation_overlay_ordering.clear();
+diff --git a/src/cata_web_packs.h b/src/cata_web_packs.h
+new file mode 100644
+index 0000000..da3e234
+--- /dev/null
++++ b/src/cata_web_packs.h
+@@ -0,0 +1,53 @@
++#pragma once
++#ifndef CATA_SRC_CATA_WEB_PACKS_H
++#define CATA_SRC_CATA_WEB_PACKS_H
++
++#include <string>
++
++// ==================================================================
++// [CDDA-BROSER] ブラウザ版の分割データパックを読み込み直前に差し込む
++// ==================================================================
++// 背景:
++//   ブラウザ版の配布物は、メインメニューに到達するまでに全体の約 25%
++//   （実測 5,892 ファイル中 74 / 134.6MB 中 33.6MB）しか読まない。
++//   残りの大半は /data/json（世界を開始するまで一度も読まれない）と
++//   未選択 tileset の画像である。そこで配布物を起動パックと追加パックに
++//   分け、シェル (shell/lazydata.js) が必要な瞬間にだけ
++//   Module.LZ4.loadPackage で仮想 FS へ差し込む。
++//
++// このフックの役割:
++//   差し込みは非同期（ネットワーク）なので、読み込みを始める前に
++//   await できる場所が要る。これはこのビルドで既に使われている仕組み
++//   （Asyncify / JSPI）で、ゲームのロジックには触らない。
++//
++// 分割していない配布物では、シェル側に Module['cddaEnsurePack'] が
++// 存在しないため即座に 0 を返す。つまり従来と完全に同じ挙動になる。
++#if defined( EMSCRIPTEN )
++
++// 【なぜ宣言だけをヘッダに置くのか】
++// EM_ASYNC_JS の実体はかなり広いマクロで、展開すると __em_js__ という
++// 名前のシンボルを定義する。これをヘッダに書くと、include した翻訳単位の
++// 数だけ同じシンボルが定義され、リンク時に衝突する。したがって実体は
++// src/init.cpp に 1 つだけ置き、ここでは宣言と薄いラッパーだけを持つ。
++extern "C" int cata_web_ensure_pack_js( const char *spec );
++
++// spec はそのまま JS 側に渡る。
++//   "data/json" などのパス → そのパスを含むパック
++//   "gfx:<tileset id>"     → その tileset の画像パック
++inline void cata_web_ensure_pack( const std::string &spec )
++{
++    if( spec.empty() ) {
++        return;
++    }
++    cata_web_ensure_pack_js( spec.c_str() );
++}
++
++#else
++
++inline void cata_web_ensure_pack( const std::string & )
++{
++}
++
++#endif
++
++#endif // CATA_SRC_CATA_WEB_PACKS_H
+diff --git a/src/init.cpp b/src/init.cpp
+index a220659..629f866 100644
+--- a/src/init.cpp
++++ b/src/init.cpp
+@@ -24,6 +24,7 @@
+ #include "butchery_requirements.h"
+ #include "cata_assert.h"
+ #include "cata_scope_helpers.h"
++#include "cata_web_packs.h"
+ #include "cata_web_yield.h"
+ #include "character_modifier.h"
+ #include "city.h"
+@@ -473,8 +474,37 @@ void DynamicDataLoader::initialize()
+ #endif
+ }
+ 
++#if defined( EMSCRIPTEN )
++#include <emscripten.h>
++
++// [CDDA-BROSER] 分割データパックを読み込み直前に差し込む。EM_ASYNC_JS はこのビルドで既に
++// 使われている仕組み（Asyncify / JSPI）で、ゲームのロジックには触れない。
++// 分割していない配布物では Module['cddaEnsurePack'] が無いので即座に戻る。
++// 定義を init.cpp に 1 つだけ置くのは、ヘッダに書くと複数の翻訳単位が
++// 同じ __em_js__ シンボルを定義してしまうため。
++EM_ASYNC_JS( int, cata_web_ensure_pack_js, ( const char *spec ), {
++    if( typeof Module === 'undefined' || !Module['cddaEnsurePack'] ) {
++        return 0;
++    }
++    try {
++        await Module['cddaEnsurePack']( UTF8ToString( spec ) );
++        return 1;
++    } catch( e ) {
++        console.error( '[CDDA-BROSER] data pack ensure failed: ' + UTF8ToString( spec ), e );
++        return 0;
++    }
++} );
++#endif
+ void DynamicDataLoader::load_data_from_path( const cata_path &path, const std::string &src )
+ {
++#if defined( EMSCRIPTEN )
++    // [CDDA-BROSER] 分割配布では /data/json と /data/mods の実体が起動パックに
++    // 無く、必要になった時点で差し込まれる。空のディレクトリを静かに
++    // 走査するとデータ欠落のまま起動してしまうため、走査の前に必ず待つ。
++    // 分割していない配布物では即座に戻る（従来と同一の挙動）。
++    cata_web_ensure_pack( path.generic_u8string() );
++#endif
++
+     cata_assert( !finalized &&
+                  "Can't load additional data after finalization.  Must be unloaded first." );
+     // We assume that each folder is consistent in itself,
+@@ -514,6 +544,14 @@ void DynamicDataLoader::load_data_from_path( const cata_path &path, const std::s
+ 
+ void DynamicDataLoader::load_mod_data_from_path( const cata_path &path, const std::string &src )
+ {
++#if defined( EMSCRIPTEN )
++    // [CDDA-BROSER] 分割配布では /data/json と /data/mods の実体が起動パックに
++    // 無く、必要になった時点で差し込まれる。空のディレクトリを静かに
++    // 走査するとデータ欠落のまま起動してしまうため、走査の前に必ず待つ。
++    // 分割していない配布物では即座に戻る（従来と同一の挙動）。
++    cata_web_ensure_pack( path.generic_u8string() );
++#endif
++
+     cata_assert( !finalized &&
+                  "Can't load additional data after finalization.  Must be unloaded first." );
+     // We assume that each folder is consistent in itself,

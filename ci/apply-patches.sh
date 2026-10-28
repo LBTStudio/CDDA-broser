@@ -55,6 +55,7 @@ mapbuffer-fixed-arrays
 visible-creature-position-cache
 large-entity-churn
 target-view-controls
+lazy-data
 "
 
 for name in $PATCHES; do
@@ -135,6 +136,17 @@ grep -Fq "if( rebuild && refresh_cache )" src/map.cpp
 grep -Fq "get_vehicle_zones( here.get_abs_sub().z(), /* refresh_cache = */ false )" src/clzones.cpp
 grep -q "web_data_cache_root"                      src/json_loader.cpp
 grep -q "assume_immutable_root"                    src/flexbuffer_cache.cpp
+
+# ------------------------------------------------------------------
+# 追加: 分割データパックを読み込み直前に差し込むフック（lazy-data パッチ）
+# ------------------------------------------------------------------
+# このパッチが抜けると、分割配布では
+# 「空の /data/json を静かに走査して、データ欠落のまま起動する」
+# という最も気づきにくい壊れ方をする。存在を必ず確認する。
+test -f src/cata_web_packs.h
+grep -q "cata_web_ensure_pack( path.generic_u8string() )" src/init.cpp
+grep -q 'cata_web_ensure_pack( "gfx:" + tileset_id )'  src/cata_tiles.cpp
+grep -q "EM_ASYNC_JS( int, cata_web_ensure_pack_js"        src/init.cpp
 
 # activity-and-ime パッチの目印。
 # 新規ファイル 2 対が存在し、3 つの主要修正が入っていること。
