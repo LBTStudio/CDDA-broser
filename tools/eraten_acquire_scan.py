@@ -195,9 +195,12 @@ def run():
           "SKILL_アツコ専用技1_これも私の力……？.ERB",
           "SKILL_アツコ専用技2_隠れるよ.ERB",
           "SKILL_アツコ専用技3_教えられた事.ERB",
+          "SKILL_アツコ専用技4_痛いのは慣れてる.ERB",
+          "C_BTL_EFFECT_BA_002_これも私の力……？.ERB",
         ]
         engine_suffixes=[
           "SYSTEM_BATTLE_DAMAGE.ERB","SYSTEM_STATUS_CALC.ERB",
+          "SKILL_ACTION_HEAL.ERB","SKILL_ACTION_FUNCTION.ERB",
           "GET_BATTLESTATUS.ERB","GET_BATTLESTATUS_NUM.ERB",
         ]
         target_records={}
@@ -282,7 +285,7 @@ def run():
             "BTL_CALC_RATE_DAMAGE","BTL_CALC_DAMAGE_COOP","BTL_CALC_DAMAGE",
         }
         def_prefixes = ("SKILL_SET_", "SKILL_CALC_BATTTLE_STATUS_", "SKILL_PASSIVE_BTL_EFFECT_", "GET_SKILL_")
-        def_header = re.compile(r"^\s*@([A-Za-z_][A-Za-z0-9_]*)\b")
+        def_header = re.compile(r"^\s*(?:@|#FUNCTION\s+)([A-Za-z_][A-Za-z0-9_]*)\b", re.I)
         function_profiles = {}
         function_declarations = {}
         for rel,(p,txt) in text_by_rel.items():
