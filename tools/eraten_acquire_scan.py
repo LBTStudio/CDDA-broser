@@ -346,7 +346,8 @@ def run():
         # Keep a tokenized representation (identifiers/constants/calls), never verbatim source lines.
         def_names = set(call_symbols) | {
             "HEAL_FIELD","GIVE_EFFECT_CHARA","GET_SKILL_PROP","GET_BASESTATUS",
-            "GET_BATTLESTATUS","GET_BATTLESTATUS_NUM","BTL_CALC_BASE_DAMAGE",
+            "GET_BATTLESTATUS","GET_BATTLESTATUS_NUM","HEAL_TARGET","HEAL_SINGLE",
+            "SKILL_CALC_BATTTLE_STATUS","BTL_CALC_BASE_DAMAGE",
             "BTL_CALC_DAMAGE_ADJUSTMENT","BTL_CALC_DAMAGE_EXE","BTL_CALC_FIXED_DAMAGE",
             "BTL_CALC_RATE_DAMAGE","BTL_CALC_DAMAGE_COOP","BTL_CALC_DAMAGE",
             "GET_BASEHEAL_IN_CALC","SKILL_SET_カジャンダ",
@@ -411,6 +412,44 @@ def run():
                 if len(rows)>=60: break
             skill_mentions[skill_name]=rows
         report["skill_mentions"]=skill_mentions
+
+        # Trace the actual ERB definitions for Atsuko's initial and level-learned skills.
+        # Store tokenized formulas, constants, calls and labels rather than verbatim code.
+        skill_file_terms = [
+            "ディア", "シングルショット", "スク・カジャ", "咆哮", "連続撃ち",
+            "見切り", "神経異常耐性", "精神異常耐性", "食いしばり",
+            "スクカジャオート", "癒しの波動", "刹那五月雨撃",
+            "ダッジカウンター", "伍絶切羽",
+        ]
+        skill_file_profiles={}
+        for rel,(p,txt) in text_by_rel.items():
+            if p.suffix.upper() not in {".ERB",".ERBINC",".CSV"}:
+                continue
+            matched=[t for t in skill_file_terms if t in p.name]
+            if not matched:
+                continue
+            lines=txt.splitlines()
+            records=[]
+            for n,line in enumerate(lines,1):
+                if p.suffix.upper()==".CSV":
+                    if not re.search(r"SKILL|スキル|技能|威力|命中|攻撃|回避|力|知恵|魔力|耐力|速さ|運|習得",line,re.I):
+                        continue
+                elif not (formula_line_re.search(line) or re.search(r"^\s*(?:@[^ (]+|#FUNCTION\s+[^ (]+|IF\b|ELSEIF\b|ELSE\b|ENDIF\b|SELECTCASE\b|CASE\b|ENDSELECT\b|RETURNF?\b|RESULTS?\s*=)",line,re.I)):
+                    continue
+                if len(records)>=500:
+                    break
+                records.append({
+                    "line":n,
+                    "tokens":EXPR_TOKEN.findall(line)[:120],
+                    "identifiers":tokens(line)[:60],
+                    "numbers":re.findall(r"(?<![A-Z_])[-+]?\d+(?:\.\d+)?",line)[:24],
+                    "labels":re.findall(r'"([^"]{1,80})"',line)[:12],
+                    "calls":[x.upper() for x in call_re.findall(line)][:12],
+                })
+            skill_file_profiles[rel]={
+                "matched_terms":matched,"line_count":len(lines),"token_records":records
+            }
+        report["learned_skill_file_profiles"]=skill_file_profiles
 
         report["target_file_profiles"]=target_records
 
