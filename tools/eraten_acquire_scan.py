@@ -17,6 +17,7 @@ FORM_PAT = re.compile(r"ダメージ|回復量|物理攻撃力|魔法威力|魔�
 ATTRS = ["力","知恵","魔力","耐力","速さ","運","Strength","Intelligence","Magic","Endurance","Agility","Luck","STR","INT","MAG","END","AGI","LUK","HP","MP"]
 IDENT = re.compile(r"\b[A-Z_][A-Z0-9_]{2,}\b|\b(?:STR|INT|MAG|END|AGI|LUK|HP|MP)\b")
 NUMID = re.compile(r"\b\d{2,8}\b")
+EXPR_TOKEN = re.compile(r""" "[^"\n]{0,80}"|'[^'\n]{0,80}'|[-+]?\d+(?:\.\d+)?|[A-Za-z_][A-Za-z0-9_]*|[一-龠々ぁ-ゖァ-ヺー]+|\+=|-=|\*=|/=|==|!=|>=|<=|[=+*/%?:()<>-] """.strip())
 JP_TOKEN = re.compile(r"[一-龠々ぁ-ゖァ-ヺー]{2,12}")
 
 def save(name, payload):
@@ -270,7 +271,7 @@ def run():
         target_records={}
         call_symbols=set()
         formula_line_re=re.compile(r"CALLF?|TRYCALL|CALLFORM|GOSUB|GOTO|GET_SKILL|SKILL_(?:POWER|HITRATE|DAMAGETYPE|HEAL_TYPE)|(?:BASE|ABL|MAXBASE|CSTR|CFLAG)\b|(?:力|知恵|魔力|耐力|速さ|運|STR|INT|MAG|END|AGI|LUK|HP|MP)\b|DAMAGE|HEAL|HITRATE|EVASION|POWER",re.I)
-        call_re=re.compile(r"\b(?:CALLFORM|TRYCALL|CALLF?|GOSUB|GOTO)\s+([A-Z_][A-Z0-9_]*)",re.I)
+        call_re=re.compile(r"\b(?:CALLFORM|TRYCALL|CALLF?|GOSUB|GOTO)\s+([^\s]+)",re.I)
         def line_profile(line,n):
             quoted=re.findall(r'"([^"]{1,48})"|\'([^\']{1,48})\'',line)
             short_literals=[]
@@ -290,6 +291,7 @@ def run():
               "string_labels":short_literals[:8],
               "calls":calls[:12],
               "operators":sorted(set(re.findall(r"(?:\+=|-=|\*=|/=|==|!=|>=|<=|=|\+|-|\*|/|%|\?|:)",line))),
+              "expression_tokens":EXPR_TOKEN.findall(line)[:100],
             }
 
         # Character CSV is emitted as field/value summaries rather than verbatim rows.
@@ -350,7 +352,7 @@ def run():
             "GET_BASEHEAL_IN_CALC","SKILL_SET_カジャンダ",
         }
         def_prefixes = ("SKILL_SET_", "SKILL_CALC_BATTTLE_STATUS_", "SKILL_PASSIVE_BTL_EFFECT_", "GET_SKILL_")
-        def_header = re.compile(r"^\s*(?:@|#FUNCTION\s+)([A-Za-z_][A-Za-z0-9_]*)\b", re.I)
+        def_header = re.compile(r"^\s*(?:@|#FUNCTION\s+)([^\s(]+)", re.I)
         function_profiles = {}
         function_declarations = {}
         for rel,(p,txt) in text_by_rel.items():
@@ -433,8 +435,8 @@ def run():
                     headers.append({"line":n,"name":(hm.group(1) or hm.group(2)).upper()})
                 relevant=re.search(r"GET_SKILL|SKILL_SET_|GIVE_EFFECT_CHARA|HEAL_|BTL_CALC_|GET_BATTLESTATUS|MAXBASE|MAXABL|BASE\b|ABL\b|DAMAGE|回復|回避|力|知恵|魔力|耐力|速さ|運|HP|MP|魔法威力|魔法効果",line,re.I)
                 equation=re.search(r"(?:=|\+=|-=|\*=|/=|RETURNF?\b|CALL|GOSUB|TRYCALL|SELECTCASE|CASE\b)",line,re.I)
-                if relevant and equation and len(exprs)<240:
-                    exprs.append({"line":n,"tokens":token_pat.findall(line)[:100]})
+                if (relevant and equation or is_target and equation) and len(exprs)<320:
+                    exprs.append({"line":n,"tokens":EXPR_TOKEN.findall(line)[:120]})
             header_index[rel]={"headers":headers}
             if exprs:
                 expression_index[rel]={"expressions":exprs}
