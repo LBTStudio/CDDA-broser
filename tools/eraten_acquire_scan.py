@@ -38,7 +38,7 @@ def validate_url(url):
 def click_download(context, page, archive):
     errors=[]
     # Only click controls whose label clearly starts a download; never click help links.
-    action_re = re.compile(r"^\s*(?:ダウンロード開始|ダウンロードする|Download now|Start download)\s*$", re.I)
+    action_re = re.compile(r"(?:ダウンロード開始|ダウンロードする|Download now|Start download)", re.I)
     for attempt in range(3):
         for p in list(context.pages):
             try:
@@ -66,7 +66,7 @@ def click_download(context, page, archive):
                                 el.get_attribute("aria-label"),
                                 el.get_attribute("title"),
                             ])).strip()
-                            if not action_re.match(label):
+                            if not action_re.search(label):
                                 continue
                             key=(scrub(p.url),label)
                             if key in used:
