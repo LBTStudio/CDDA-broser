@@ -350,6 +350,8 @@ def run():
             "BTL_CALC_DAMAGE_ADJUSTMENT","BTL_CALC_DAMAGE_EXE","BTL_CALC_FIXED_DAMAGE",
             "BTL_CALC_RATE_DAMAGE","BTL_CALC_DAMAGE_COOP","BTL_CALC_DAMAGE",
             "GET_BASEHEAL_IN_CALC","SKILL_SET_カジャンダ",
+            "HEAL_TARGET","HEAL_SINGLE","HEAL_FIELD","GET_SKILL_POWER",
+            "GET_SKILL_PROP","BTL_CALC_BASE_DAMAGE","BTL_CALC_DAMAGE_EXE",
         }
         def_prefixes = ("SKILL_SET_", "SKILL_CALC_BATTTLE_STATUS_", "SKILL_PASSIVE_BTL_EFFECT_", "GET_SKILL_")
         def_header = re.compile(r"^\s*(?:@|#FUNCTION\s+)([^\s(]+)", re.I)
@@ -435,8 +437,9 @@ def run():
                     headers.append({"line":n,"name":(hm.group(1) or hm.group(2)).upper()})
                 relevant=re.search(r"GET_SKILL|SKILL_SET_|GIVE_EFFECT_CHARA|HEAL_|BASEHEAL|L_STAT|VAR_HP|BTL_CALC_|GET_BATTLESTATUS|MAXBASE|MAXABL|BASE\b|ABL\b|DAMAGE|回復|回避|力|知恵|魔力|耐力|速さ|運|HP|MP|魔法威力|魔法効果",line,re.I)
                 equation=re.search(r"(?:=|\+=|-=|\*=|/=|RETURNF?\b|CALL|GOSUB|TRYCALL|SELECTCASE|CASE\b)",line,re.I)
-                status_formula_window = rel.endswith("SYSTEM_STATUS_CALC.ERB") and 1120 <= n <= 1200
-                if (relevant and equation or is_target and equation or status_formula_window) and len(exprs)<480:
+                status_formula_window = rel.endswith("SYSTEM_STATUS_CALC.ERB") and 1128 <= n <= 1222
+                heal_formula_window = rel.endswith("SKILL_ACTION_HEAL.ERB") and 85 <= n <= 115
+                if (relevant and equation or is_target and equation or status_formula_window or heal_formula_window) and len(exprs)<600:
                     exprs.append({"line":n,"tokens":EXPR_TOKEN.findall(line)[:120]})
             header_index[rel]={"headers":headers}
             if exprs:
