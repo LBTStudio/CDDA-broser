@@ -361,7 +361,7 @@ def run():
             for ix,line in enumerate(lines):
                 m=def_header.match(line)
                 if m:
-                    starts.append((ix,m.group(1).upper()))
+                    starts.append((ix,m.group(1).upper().rstrip(",")))
             for idx,(begin,name) in enumerate(starts):
                 if name not in def_names and not name.startswith(def_prefixes):
                     continue
