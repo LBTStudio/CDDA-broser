@@ -278,9 +278,10 @@ def run():
             rows=[]
             for line_no,line in enumerate(txt.splitlines(),1):
                 try:
-                    cells=next(csv.reader([line]))
+                    delimiter="\t" if "\t" in line else ","
+                    cells=next(csv.reader([line], delimiter=delimiter))
                 except Exception:
-                    cells=line.split(",")
+                    cells=line.split("\t") if "\t" in line else line.split(",")
                 out_cells=[]
                 for col,val in enumerate(cells):
                     val=val.strip()
@@ -385,8 +386,11 @@ def run():
         for rel,p,txt in char_csvs:
             rows=[]
             for n,line in enumerate(txt.splitlines(),1):
-                try: cells=next(csv.reader([line]))
-                except Exception: cells=line.split(",")
+                try:
+                    delimiter="\t" if "\t" in line else ","
+                    cells=next(csv.reader([line], delimiter=delimiter))
+                except Exception:
+                    cells=line.split("\t") if "\t" in line else line.split(",")
                 cells=[c.strip() for c in cells]
                 if not cells or not any(cells): continue
                 key=cells[0][:100]
