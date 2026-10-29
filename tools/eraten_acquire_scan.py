@@ -382,6 +382,35 @@ def run():
         report["skill_mentions"]=skill_mentions
 
         report["target_file_profiles"]=target_records
+
+        # Function headers and ordered formula-token streams for Atsuko's custom skills
+        # plus the battle/healing engine. This keeps names, dependencies and constants
+        # without retaining verbatim source lines.
+        header_index={}
+        expression_index={}
+        token_pat=re.compile(r'"[^"\n]{0,80}"|\'[^\'\n]{0,80}\'|[-+]?\d+(?:\.\d+)?|[A-Za-z_][A-Za-z0-9_]*|[一-龠々ぁ-ゖァ-ヺー]+|\+=|-=|\*=|/=|==|!=|>=|<=|[=+*/%?:()<>-]')
+        target_code_suffixes=target_suffixes[1:]
+        for rel,(p,txt) in text_by_rel.items():
+            is_target=any(rel.endswith(s) for s in target_code_suffixes)
+            is_engine=any(rel.endswith(s) for s in engine_suffixes)
+            if not (is_target or is_engine):
+                continue
+            headers=[]
+            exprs=[]
+            for n,line in enumerate(txt.splitlines(),1):
+                stripped=line.strip()
+                hm=re.match(r"^(?:@([A-Za-z_][A-Za-z0-9_]*)|#FUNCTION\s+([A-Za-z_][A-Za-z0-9_]*))",stripped,re.I)
+                if hm:
+                    headers.append({"line":n,"name":(hm.group(1) or hm.group(2)).upper()})
+                relevant=re.search(r"GET_SKILL|SKILL_SET_|GIVE_EFFECT_CHARA|HEAL_|BTL_CALC_|GET_BATTLESTATUS|MAXBASE|MAXABL|BASE\b|ABL\b|DAMAGE|回復|回避|力|知恵|魔力|耐力|速さ|運|HP|MP|魔法威力|魔法効果",line,re.I)
+                equation=re.search(r"(?:=|\+=|-=|\*=|/=|RETURNF?\b|CALL|GOSUB|TRYCALL|SELECTCASE|CASE\b)",line,re.I)
+                if relevant and equation and len(exprs)<240:
+                    exprs.append({"line":n,"tokens":token_pat.findall(line)[:100]})
+            header_index[rel]={"headers":headers}
+            if exprs:
+                expression_index[rel]={"expressions":exprs}
+        report["target_function_headers"]=header_index
+        report["ordered_formula_tokens"]=expression_index
         report["shared_formula_profiles"]=engine_records
         report["target_calls"]=sorted(call_symbols)
         report["formula_file_count"]=sum(1 for _,txt in textfiles if any(FORM_PAT.search(line) for line in txt.splitlines()))
