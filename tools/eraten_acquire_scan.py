@@ -443,6 +443,34 @@ def run():
                 expression_index[rel]={"expressions":exprs}
         report["target_function_headers"]=header_index
         report["ordered_formula_tokens"]=expression_index
+
+        # Narrow cross-reference map for character-specific MAG skills and the
+        # race/status formula dispatcher. Keep tokenized references only.
+        xref_terms = {
+            "mag_skill_list": re.compile(r"MAG習得スキルリスト"),
+            "atsuko_evasion_helper": re.compile(r"SKILL_SET_カジャンダ"),
+            "human_status_formula": re.compile(r"HUMAN_BTL_STAT"),
+            "devil_status_formula": re.compile(r"DEVIL_BTL_STAT"),
+        }
+        xref_hits = {name: [] for name in xref_terms}
+        for rel,(p,txt) in text_by_rel.items():
+            current_function = ""
+            for n,line in enumerate(txt.splitlines(),1):
+                header_match = re.match(r"^\\s*(?:@|#FUNCTION\\s+)([^\\s(]+)",line.strip(),re.I)
+                if header_match:
+                    current_function = header_match.group(1)
+                for term_name,rx in xref_terms.items():
+                    if len(xref_hits[term_name]) >= 300:
+                        continue
+                    if rx.search(line):
+                        xref_hits[term_name].append({
+                            "path": rel, "line": n, "function": current_function,
+                            "identifiers": tokens(line)[:50],
+                            "expression_tokens": EXPR_TOKEN.findall(line)[:120],
+                            "numbers": re.findall(r"(?<![A-Z_])[-+]?\\d+(?:\\.\\d+)?",line)[:20],
+                            "labels": re.findall(r'"([^"]{1,60})"',line)[:8],
+                        })
+        report["cross_reference_hits"] = xref_hits
         report["shared_formula_profiles"]=engine_records
         report["target_calls"]=sorted(call_symbols)
         report["formula_file_count"]=sum(1 for _,txt in textfiles if any(FORM_PAT.search(line) for line in txt.splitlines()))
