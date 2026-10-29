@@ -102,6 +102,32 @@ def click_download(context, page, archive):
             }
         except Exception as exc:
             events["click_error"] = f"{type(exc).__name__}: {str(exc)[:500]}"
+            # Fallback: invoke the exact public JS function used by the visible button.
+            # This does not skip any access check; it is the same UI action exposed by onclick.
+            try:
+                onclick = button.first.get_attribute("onclick") or ""
+                match = re.search(r"""download\(\s*['"]([^'"]+)['"]\s*,\s*(true|false)\s*,\s*(true|false)\s*\)""", onclick)
+                if match:
+                    file_key, arg2, arg3 = match.groups()
+                    events["download_function_key_seen"] = True
+                    with page.expect_download(timeout=60000) as fallback_info:
+                        page.evaluate("(x) => download(x[0], x[1], x[2])", [file_key, arg2 == "true", arg3 == "true"])
+                    fallback_download = fallback_info.value
+                    fallback_download.save_as(str(archive))
+                    return {
+                        "page_url": scrub(page.url), "label": label[:120],
+                        "suggested_filename": fallback_download.suggested_filename,
+                        "click_mode": "visible_button_js_fallback",
+                        "bytes": archive.stat().st_size, "sha256": sha256(archive),
+                    }
+            except Exception as fallback_exc:
+                events["js_fallback_error"] = f"{type(fallback_exc).__name__}: {str(fallback_exc)[:500]}"
+            try:
+                events["download_function_source"] = page.evaluate(
+                    "typeof download === 'function' ? download.toString().slice(0,2500) : null"
+                )
+            except Exception:
+                pass
             # Some file hosts expose the attachment as a navigation response rather than a Playwright download event.
             for response_meta in events["responses"]:
                 events.setdefault("attachment_response_seen", True)
