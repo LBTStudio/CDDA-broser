@@ -306,9 +306,9 @@ def run():
             "首狩りスプーン","九条ななみ","ななみ","Chara4640",
             "GET_ITEM_DAMAGE","GET_BASEHEAL_IN_CALC",
         ]
-        nanami_terms.extend(sorted(x for x in nanami_labels if len(x)<=18 and re.search(r"[一-龠々ぁ-ゖァ-ヺー]",x)))
         nanami_terms=list(dict.fromkeys(nanami_terms))
-        nanami_term_hits={term:[] for term in nanami_terms[:160]}
+        nanami_term_hits={term:[] for term in nanami_terms[:32]}
+        nanami_term_regex=re.compile("|".join(re.escape(term) for term in sorted(nanami_terms,key=len,reverse=True)),re.I)
         nanami_code_paths=set()
         for rel,(p,txt) in text_by_rel.items():
             lines=txt.splitlines()
@@ -316,7 +316,8 @@ def run():
             name_match=bool(re.search(r"アイテム習熟|誘惑|道具知識|デビルシフター|ウンディーネ|ななみ|ナナミ|七海|九条|4640",p.name,re.I))
             engine_match=bool(re.search(r"SYSTEM_BATTLE_DAMAGE|SYSTEM_STATUS_CALC|GET_BATTLESTATUS|ITEM_DAMAGE|GET_ITEM|ITEM_POWER|ITEM_HIT|GET_BASEHEAL",p.name,re.I))
             for n,line in enumerate(lines,1):
-                matched=[term for term in nanami_terms if term and term.lower() in line.lower()]
+                matched_values={v.lower() for v in nanami_term_regex.findall(line)}
+                matched=[term for term in nanami_terms if term.lower() in matched_values]
                 for term in matched:
                     bucket=nanami_term_hits.get(term)
                     if bucket is not None and len(bucket)<80:
