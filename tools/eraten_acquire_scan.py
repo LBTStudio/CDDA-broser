@@ -288,6 +288,73 @@ def run():
                         profiles.append(line_profile(line,n))
                 if profiles:
                     engine_records[rel]={"line_count":len(lines),"formula_lines":profiles[:700]}
+        # Trace actual function definitions reachable from Atsuko's custom skills.
+        # Keep a tokenized representation (identifiers/constants/calls), never verbatim source lines.
+        def_names = set(call_symbols) | {
+            "HEAL_FIELD","GIVE_EFFECT_CHARA","GET_SKILL_PROP","GET_BASESTATUS",
+            "GET_BATTLESTATUS","GET_BATTLESTATUS_NUM","BTL_CALC_BASE_DAMAGE",
+            "BTL_CALC_DAMAGE_ADJUSTMENT","BTL_CALC_DAMAGE_EXE","BTL_CALC_FIXED_DAMAGE",
+            "BTL_CALC_RATE_DAMAGE","BTL_CALC_DAMAGE_COOP","BTL_CALC_DAMAGE",
+        }
+        def_prefixes = ("SKILL_SET_", "SKILL_CALC_BATTTLE_STATUS_", "SKILL_PASSIVE_BTL_EFFECT_", "GET_SKILL_")
+        def_header = re.compile(r"^\s*@([A-Za-z_][A-Za-z0-9_]*)\b")
+        function_profiles = {}
+        function_declarations = {}
+        for rel,(p,txt) in text_by_rel.items():
+            lines=txt.splitlines()
+            starts=[]
+            for ix,line in enumerate(lines):
+                m=def_header.match(line)
+                if m:
+                    starts.append((ix,m.group(1).upper()))
+            for idx,(begin,name) in enumerate(starts):
+                if name not in def_names and not name.startswith(def_prefixes):
+                    continue
+                end=starts[idx+1][0] if idx+1<len(starts) else len(lines)
+                body=lines[begin:end]
+                prof=[]
+                # Include all nonblank/noncomment code lines in the matching function block.
+                for n,line in enumerate(body,begin+1):
+                    stripped=line.strip()
+                    if not stripped or stripped.startswith(";") or stripped.startswith("（") or stripped.startswith("//"):
+                        continue
+                    prof.append(line_profile(line,n))
+                    if len(prof)>=350:
+                        break
+                key=f"{rel}::{name}@{begin+1}"
+                function_profiles[key]={"function":name,"path":rel,"start_line":begin+1,"end_line":end,"profiled_line_count":len(prof),"body_line_count":end-begin,"logic_lines":prof}
+                function_declarations.setdefault(name,[]).append({"path":rel,"start_line":begin+1,"end_line":end,"body_line_count":end-begin})
+        report["reachable_function_profiles"]=function_profiles
+        report["function_declarations"]=function_declarations
+
+        # Index where each built-in/learned/custom Atsuko skill is mentioned.
+        # This helps map learned-skill list -> skill data -> implementation files.
+        known_skills = [
+            "一分の活泉","シングルショット","ディア","スク・カジャ","咆哮","連続撃ち",
+            "見切り","神経異常耐性","精神異常耐性","食いしばり","スクカジャオート",
+            "癒しの波動","刹那五月雨撃","ダッジカウンター","伍絶切羽",
+            "隠れるよ","これも私の力……？","教えられた事","痛いのは慣れてる",
+        ]
+        skill_mentions={}
+        for skill_name in known_skills:
+            rx=re.compile(re.escape(skill_name),re.I)
+            rows=[]
+            for rel,(p,txt) in text_by_rel.items():
+                for n,line in enumerate(txt.splitlines(),1):
+                    if rx.search(line):
+                        rows.append({
+                            "path":rel,"line":n,
+                            "identifiers":tokens(line)[:45],
+                            "numbers":re.findall(r"(?<![A-Z_])[-+]?\d+(?:\.\d+)?",line)[:15],
+                            "attributes":sorted({a for a in ["力","知恵","魔力","耐力","速さ","運","HP","MP","命中","回避","魔法威力","魔法効果","回復量"] if a in line}),
+                            "calls":[x.upper() for x in call_re.findall(line)][:10],
+                            "labels":re.findall(r'"([^"]{1,48})"',line)[:5],
+                        })
+                        if len(rows)>=60: break
+                if len(rows)>=60: break
+            skill_mentions[skill_name]=rows
+        report["skill_mentions"]=skill_mentions
+
         report["target_file_profiles"]=target_records
         report["shared_formula_profiles"]=engine_records
         report["target_calls"]=sorted(call_symbols)
