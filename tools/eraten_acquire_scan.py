@@ -430,12 +430,13 @@ def run():
             exprs=[]
             for n,line in enumerate(txt.splitlines(),1):
                 stripped=line.strip()
-                hm=re.match(r"^(?:@([A-Za-z_][A-Za-z0-9_]*)|#FUNCTION\s+([A-Za-z_][A-Za-z0-9_]*))",stripped,re.I)
+                hm=re.match(r"^(?:@([^\s(]+)|#FUNCTION\s+([^\s(]+))",stripped,re.I)
                 if hm:
                     headers.append({"line":n,"name":(hm.group(1) or hm.group(2)).upper()})
                 relevant=re.search(r"GET_SKILL|SKILL_SET_|GIVE_EFFECT_CHARA|HEAL_|BASEHEAL|L_STAT|VAR_HP|BTL_CALC_|GET_BATTLESTATUS|MAXBASE|MAXABL|BASE\b|ABL\b|DAMAGE|回復|回避|力|知恵|魔力|耐力|速さ|運|HP|MP|魔法威力|魔法効果",line,re.I)
                 equation=re.search(r"(?:=|\+=|-=|\*=|/=|RETURNF?\b|CALL|GOSUB|TRYCALL|SELECTCASE|CASE\b)",line,re.I)
-                if (relevant and equation or is_target and equation) and len(exprs)<320:
+                status_formula_window = rel.endswith("SYSTEM_STATUS_CALC.ERB") and 1120 <= n <= 1200
+                if (relevant and equation or is_target and equation or status_formula_window) and len(exprs)<480:
                     exprs.append({"line":n,"tokens":EXPR_TOKEN.findall(line)[:120]})
             header_index[rel]={"headers":headers}
             if exprs:
