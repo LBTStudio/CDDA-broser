@@ -68,7 +68,7 @@ def click_download(context, page, archive):
                             tried.add(key)
                             try:
                                 with p.expect_download(timeout=8000) as ev:
-                                    el.click(timeout=5000)
+                                    el.click(timeout=5000,force=True)
                                 dl=ev.value
                                 dl.save_as(str(archive))
                                 return {"page_url":scrub(p.url),"label":label[:120],"suggested_filename":dl.suggested_filename,"click_mode":"download_event"}
