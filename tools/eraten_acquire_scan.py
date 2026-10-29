@@ -144,8 +144,16 @@ def run():
             context=browser.new_context(accept_downloads=True,locale="ja-JP")
             page=context.new_page()
             page.set_default_timeout(10000)
-            page.goto(URL,wait_until="domcontentloaded",timeout=120000)
-            page.wait_for_timeout(2500)
+            try:
+                page.goto(URL,wait_until="commit",timeout=60000)
+            except Exception as nav_exc:
+                save("01_download_diagnostics.json",json.dumps({"navigation_error":f"{type(nav_exc).__name__}: {str(nav_exc)[:500]}","target_host":urlparse(URL).hostname,"current_page_url":scrub(page.url)},ensure_ascii=False,indent=2))
+                raise
+            try:
+                page.wait_for_load_state("domcontentloaded",timeout=15000)
+            except Exception:
+                pass
+            page.wait_for_timeout(1500)
             report["download_page"]={"url":scrub(page.url),"title":page.title()[:150]}
             download_meta=click_download(context,page,archive)
             context.close()
