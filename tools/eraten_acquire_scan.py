@@ -36,61 +36,99 @@ def validate_url(url):
         raise ValueError("Only an HTTPS GigaFile share URL is accepted.")
 
 def click_download(context, page, archive):
-    errors=[]
-    pages_seen=[]
-    for _ in range(5):
-        for p in list(context.pages):
-            if p not in pages_seen:
-                pages_seen.append(p)
-            try:
-                if p.is_closed(): continue
-                p.wait_for_timeout(1500)
-                # GigaFile normally exposes a visible individual-download button.
-                locators=[
-                    p.get_by_role("button", name=re.compile(r"ダウンロード|download",re.I)),
-                    p.get_by_role("link", name=re.compile(r"ダウンロード|download",re.I)),
-                    p.locator("input[type=button],input[type=submit],button,a[download],[role=button]"),
-                ]
-                tried=set()
-                for locator in locators:
-                    try: count=min(locator.count(),100)
-                    except Exception: continue
-                    for i in range(count):
-                        el=locator.nth(i)
-                        try:
-                            if not el.is_visible(timeout=500): continue
-                            label=" ".join(filter(None,[el.inner_text(timeout=500),el.get_attribute("value"),el.get_attribute("aria-label"),el.get_attribute("title")])).strip()
-                            href=el.get_attribute("href") or ""
-                            combined=(label+" "+href).strip()
-                            if not re.search(r"ダウンロード|download|個別|まとめる|download\.php|download",combined,re.I): continue
-                            key=(p.url, label, href)
-                            if key in tried: continue
-                            tried.add(key)
-                            try:
-                                with p.expect_download(timeout=8000) as ev:
-                                    el.click(timeout=5000, force=True)
-                                dl=ev.value
-                                dl.save_as(str(archive))
-                                return {"page_url":scrub(p.url),"label":label[:120],"suggested_filename":dl.suggested_filename,"click_mode":"download_event"}
-                            except Exception as exc:
-                                errors.append(f"{label[:80]} -> {type(exc).__name__}: {str(exc)[:130]}")
-                        except Exception as exc:
-                            errors.append(f"control -> {type(exc).__name__}: {str(exc)[:100]}")
-                # If a page opened a confirmation tab, next loop inspects it.
-                if len(context.pages)>len(pages_seen):
-                    pages_seen.extend([q for q in context.pages if q not in pages_seen])
-            except Exception as exc:
-                errors.append(f"page -> {type(exc).__name__}: {str(exc)[:100]}")
-    metadata=[]
-    for p in context.pages:
+    events = {"downloads": [], "responses": [], "requests": [], "pages": []}
+    def note_response(response):
         try:
-            body=p.locator("body").inner_text(timeout=2500)[:1800]
-            metadata.append({"url":scrub(p.url),"title":p.title()[:120],"body_excerpt":body,"buttons":[x[:100] for x in p.locator("button,input[type=button],input[type=submit],a[download]").evaluate_all("(els)=>els.slice(0,60).map(e=>(e.innerText||e.value||e.getAttribute('aria-label')||'').trim())")]})
-            try: p.screenshot(path=str(REPORT/"download-page.png"),full_page=True,timeout=5000)
-            except Exception: pass
-        except Exception: pass
-    save("01_download_diagnostics.json",json.dumps({"pages":metadata,"errors":errors[-80:]},ensure_ascii=False,indent=2))
-    raise RuntimeError("Normal visible download control did not start a file download. See 01_download_diagnostics.json")
+            headers = response.headers
+            content_type = headers.get("content-type", "")
+            disposition = headers.get("content-disposition", "")
+            if "attachment" in disposition.lower() or "zip" in content_type.lower() or "octet-stream" in content_type.lower():
+                events["responses"].append({
+                    "url": scrub(response.url), "status": response.status,
+                    "content_type": content_type[:120], "content_disposition": disposition[:200],
+                    "content_length": headers.get("content-length", ""),
+                })
+        except Exception:
+            pass
+    def note_download(download):
+        try:
+            events["downloads"].append(download.suggested_filename)
+        except Exception:
+            events["downloads"].append("(filename unavailable)")
+    context.on("page", lambda p: events["pages"].append(scrub(p.url)))
+    page.on("response", note_response)
+    page.on("download", note_download)
+
+    try:
+        # The known official page has a specific "ダウンロード開始" button.
+        # Avoid the similarly named "download cannot start" help link.
+        button = page.get_by_role("button", name=re.compile(r"^\s*ダウンロード開始\s*$"))
+        if button.count() == 0:
+            button = page.locator('input[type="button"],input[type="submit"],button,[role="button"]').filter(
+                has_text=re.compile(r"^\s*ダウンロード開始\s*$")
+            )
+        if button.count() == 0:
+            button = page.get_by_text(re.compile(r"^\s*ダウンロード開始\s*$"), exact=True)
+        if button.count() == 0:
+            raise RuntimeError("Exact GigaFile download-start control was not found.")
+
+        label = ""
+        try:
+            label = " ".join(filter(None, [
+                button.first.inner_text(timeout=1000),
+                button.first.get_attribute("value"),
+                button.first.get_attribute("aria-label"),
+                button.first.get_attribute("title"),
+            ])).strip()
+        except Exception:
+            pass
+        try:
+            button_meta = button.first.evaluate(
+                "(e)=>({tag:e.tagName,text:(e.innerText||e.value||'').trim(),type:e.type||null,id:e.id||null,className:typeof e.className==='string'?e.className.slice(0,120):'',onclick:e.getAttribute('onclick'),href:e.getAttribute('href'),disabled:!!e.disabled,outerHTML:e.outerHTML.slice(0,900)})"
+            )
+        except Exception as exc:
+            button_meta = {"inspection_error": str(exc)[:200]}
+
+        # Allow the server's normal download flow to finish; don't retry unrelated links.
+        try:
+            with page.expect_download(timeout=60000) as info:
+                button.first.click(timeout=8000, force=True)
+            dl = info.value
+            dl.save_as(str(archive))
+            return {
+                "page_url": scrub(page.url), "label": label[:120],
+                "suggested_filename": dl.suggested_filename, "click_mode": "exact_button",
+                "bytes": archive.stat().st_size, "sha256": sha256(archive),
+            }
+        except Exception as exc:
+            events["click_error"] = f"{type(exc).__name__}: {str(exc)[:500]}"
+            # Some file hosts expose the attachment as a navigation response rather than a Playwright download event.
+            for response_meta in events["responses"]:
+                events.setdefault("attachment_response_seen", True)
+            metadata = []
+            for p in list(context.pages):
+                try:
+                    body = p.locator("body").inner_text(timeout=2500)[:1400]
+                    metadata.append({
+                        "url": scrub(p.url), "title": p.title()[:120], "body_excerpt": body
+                    })
+                    try:
+                        p.screenshot(path=str(REPORT/"download-page.png"), full_page=True, timeout=5000)
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
+            save("01_download_diagnostics.json", json.dumps({
+                "button": button_meta, "label": label, "events": events, "pages": metadata
+            }, ensure_ascii=False, indent=2))
+            raise RuntimeError("GigaFile's download-start button was clicked, but no file download event was observed. See 01_download_diagnostics.json.")
+    except Exception as exc:
+        if not (REPORT/"01_download_diagnostics.json").exists():
+            save("01_download_diagnostics.json", json.dumps({
+                "error": f"{type(exc).__name__}: {str(exc)[:700]}",
+                "events": events,
+            }, ensure_ascii=False, indent=2))
+        raise
 
 def scrub(url):
     p=urlparse(url)
