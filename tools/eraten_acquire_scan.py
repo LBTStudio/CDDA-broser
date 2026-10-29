@@ -37,75 +37,60 @@ def validate_url(url):
 
 def click_download(context, page, archive):
     errors=[]
-    # Only click controls whose label clearly starts a download; never click help links.
-    action_re = re.compile(r"(?:ダウンロード開始|ダウンロードする|Download now|Start download)", re.I)
-    for attempt in range(3):
+    pages_seen=[]
+    for _ in range(5):
         for p in list(context.pages):
+            if p not in pages_seen:
+                pages_seen.append(p)
             try:
-                if p.is_closed():
-                    continue
-                p.wait_for_timeout(600)
-                controls = [
-                    p.get_by_role("button", name=action_re),
-                    p.locator('input[type="button"],input[type="submit"],button,[role="button"]'),
+                if p.is_closed(): continue
+                p.wait_for_timeout(1500)
+                # GigaFile normally exposes a visible individual-download button.
+                locators=[
+                    p.get_by_role("button", name=re.compile(r"ダウンロード|download",re.I)),
+                    p.get_by_role("link", name=re.compile(r"ダウンロード|download",re.I)),
+                    p.locator("input[type=button],input[type=submit],button,a[download],[role=button]"),
                 ]
-                used=set()
-                for group in controls:
-                    try:
-                        count=min(group.count(),25)
-                    except Exception:
-                        continue
+                tried=set()
+                for locator in locators:
+                    try: count=min(locator.count(),100)
+                    except Exception: continue
                     for i in range(count):
-                        el=group.nth(i)
+                        el=locator.nth(i)
                         try:
-                            if not el.is_visible(timeout=500):
-                                continue
-                            label=" ".join(filter(None,[
-                                el.inner_text(timeout=500),
-                                el.get_attribute("value"),
-                                el.get_attribute("aria-label"),
-                                el.get_attribute("title"),
-                            ])).strip()
-                            if not action_re.search(label):
-                                continue
-                            key=(scrub(p.url),label)
-                            if key in used:
-                                continue
-                            used.add(key)
+                            if not el.is_visible(timeout=500): continue
+                            label=" ".join(filter(None,[el.inner_text(timeout=500),el.get_attribute("value"),el.get_attribute("aria-label"),el.get_attribute("title")])).strip()
+                            href=el.get_attribute("href") or ""
+                            combined=(label+" "+href).strip()
+                            if not re.search(r"ダウンロード|download|個別|まとめる|download\.php|download",combined,re.I): continue
+                            key=(p.url, label, href)
+                            if key in tried: continue
+                            tried.add(key)
                             try:
-                                with p.expect_download(timeout=15000) as ev:
-                                    el.click(timeout=5000,force=True)
+                                with p.expect_download(timeout=8000) as ev:
+                                    el.click(timeout=5000)
                                 dl=ev.value
                                 dl.save_as(str(archive))
-                                return {
-                                    "page_url":scrub(p.url),
-                                    "label":label[:120],
-                                    "suggested_filename":dl.suggested_filename,
-                                    "click_mode":"exact_download_button",
-                                    "attempt":attempt+1,
-                                }
+                                return {"page_url":scrub(p.url),"label":label[:120],"suggested_filename":dl.suggested_filename,"click_mode":"download_event"}
                             except Exception as exc:
-                                errors.append(f"attempt {attempt+1}, {label[:80]}: {type(exc).__name__}: {str(exc)[:220]}")
+                                errors.append(f"{label[:80]} -> {type(exc).__name__}: {str(exc)[:130]}")
                         except Exception as exc:
-                            errors.append(f"control: {type(exc).__name__}: {str(exc)[:120]}")
+                            errors.append(f"control -> {type(exc).__name__}: {str(exc)[:100]}")
+                # If a page opened a confirmation tab, next loop inspects it.
+                if len(context.pages)>len(pages_seen):
+                    pages_seen.extend([q for q in context.pages if q not in pages_seen])
             except Exception as exc:
-                errors.append(f"page: {type(exc).__name__}: {str(exc)[:120]}")
+                errors.append(f"page -> {type(exc).__name__}: {str(exc)[:100]}")
     metadata=[]
     for p in context.pages:
         try:
             body=p.locator("body").inner_text(timeout=2500)[:1800]
-            controls=p.locator("button,input[type=button],input[type=submit],[role=button]").evaluate_all(
-                "(els)=>els.slice(0,60).map(e=>({tag:e.tagName,text:(e.innerText||e.value||e.getAttribute('aria-label')||'').trim().slice(0,120),type:e.type||null,disabled:!!e.disabled,id:e.id||null,className:typeof e.className==='string'?e.className.slice(0,100):'',rect:(()=>{const r=e.getBoundingClientRect();return {x:Math.round(r.x),y:Math.round(r.y),w:Math.round(r.width),h:Math.round(r.height)}})()}))"
-            )
-            metadata.append({"url":scrub(p.url),"title":p.title()[:120],"body_excerpt":body,"controls":controls})
-            try:
-                p.screenshot(path=str(REPORT/"download-page.png"),full_page=True,timeout=5000)
-            except Exception:
-                pass
-        except Exception:
-            pass
-    save("01_download_diagnostics.json",json.dumps({"pages":metadata,"errors":errors[-60:]},ensure_ascii=False,indent=2))
-    raise RuntimeError("Exact download-start button did not trigger a file download. See 01_download_diagnostics.json")
+            metadata.append({"url":scrub(p.url),"title":p.title()[:120],"body_excerpt":body,"buttons":[x[:100] for x in p.locator("button,input[type=button],input[type=submit],a[download]").evaluate_all("(els)=>els.slice(0,60).map(e=>(e.innerText||e.value||e.getAttribute('aria-label')||'').trim())")]})
+            try: p.screenshot(path=str(REPORT/"download-page.png"),full_page=True,timeout=5000)
+            except Exception: pass
+        except Exception: pass
+    save("01_download_diagnostics.json",json.dumps({"pages":metadata,"errors":errors[-80:]},ensure_ascii=False,indent=2))
+    raise RuntimeError("Normal visible download control did not start a file download. See 01_download_diagnostics.json")
 
 def scrub(url):
     p=urlparse(url)
