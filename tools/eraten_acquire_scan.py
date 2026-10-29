@@ -451,6 +451,9 @@ def run():
             "atsuko_evasion_helper": re.compile(r"SKILL_SET_カジャンダ"),
             "human_status_formula": re.compile(r"HUMAN_BTL_STAT"),
             "devil_status_formula": re.compile(r"DEVIL_BTL_STAT"),
+            "battle_status_type": re.compile(r"BATTLESTATUS_TYPE"),
+            "role_prop_lookup": re.compile(r"GETS_ROLE_PROP"),
+            "human_type_selector": re.compile(r'GETS_ROLE_PROP.*"BATTLESTATUS_TYPE"|BATTLESTATUS_TYPE.*"人間"'),
         }
         xref_hits = {name: [] for name in xref_terms}
         for rel,(p,txt) in text_by_rel.items():
