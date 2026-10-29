@@ -347,6 +347,7 @@ def run():
             "GET_BATTLESTATUS","GET_BATTLESTATUS_NUM","BTL_CALC_BASE_DAMAGE",
             "BTL_CALC_DAMAGE_ADJUSTMENT","BTL_CALC_DAMAGE_EXE","BTL_CALC_FIXED_DAMAGE",
             "BTL_CALC_RATE_DAMAGE","BTL_CALC_DAMAGE_COOP","BTL_CALC_DAMAGE",
+            "GET_BASEHEAL_IN_CALC","SKILL_SET_カジャンダ",
         }
         def_prefixes = ("SKILL_SET_", "SKILL_CALC_BATTTLE_STATUS_", "SKILL_PASSIVE_BTL_EFFECT_", "GET_SKILL_")
         def_header = re.compile(r"^\s*(?:@|#FUNCTION\s+)([A-Za-z_][A-Za-z0-9_]*)\b", re.I)
@@ -419,7 +420,9 @@ def run():
         for rel,(p,txt) in text_by_rel.items():
             is_target=any(rel.endswith(s) for s in target_code_suffixes)
             is_engine=any(rel.endswith(s) for s in engine_suffixes)
-            if not (is_target or is_engine):
+            has_heal_calc="GET_BASEHEAL_IN_CALC" in txt
+            has_dodge_buff="SKILL_SET_カジャンダ" in txt
+            if not (is_target or is_engine or has_heal_calc or has_dodge_buff):
                 continue
             headers=[]
             exprs=[]
