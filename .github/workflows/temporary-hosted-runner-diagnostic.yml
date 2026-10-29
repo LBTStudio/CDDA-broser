@@ -1,0 +1,22 @@
+name: Temporary hosted-runner diagnostic
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/temporary-hosted-runner-diagnostic.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  runner-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Print runner details only
+        run: |
+          echo "Temporary hosted-runner diagnostic"
+          echo "OS: $(uname -a)"
+          python3 --version || true
