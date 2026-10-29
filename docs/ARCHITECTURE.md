@@ -22,11 +22,13 @@ workflow is a 6-job DAG instead of one serial job — see "CI topology" below:
 3. `data`   — runs *in parallel with compile/link* because the LZ4 data
               package does not depend on `.js`/`.wasm`: localization,
               data/gfx collection, obsolete-mod removal, `file_packager --lz4`
+              (boot package + split packs, see "Split data packs")
 4. `link`   — download all shards, reconcile timestamps, then
               `make NATIVE=emscripten TILES=1 RELEASE=1 cataclysm-tiles.js`
               -> `.js` glue + ~45MB `.wasm`. **Not parallelizable** (see below)
 5. `bundle` — assemble `build/` from the link + data artifacts and overwrite
               the upstream `index.html` with the profile-aware `shell/index.html`
+              (plus `shell/lazydata.js` and `packs/`)
 6. `deploy` — GitHub Pages (skippable via the `deploy_pages` workflow input,
               so a build can be verified from the artifact without touching
               the live site)
@@ -252,7 +254,10 @@ visible at a glance without opening individual logs.
 
 The shell treats the four boot assets as one release: `cataclysm-tiles.data`,
 `cataclysm-tiles.wasm`, `cataclysm-tiles.data.js`, and
-`cataclysm-tiles.js`. The regular HTTP cache is short-lived, so the shell
+`cataclysm-tiles.js`. Split data packs (next section) are deliberately
+*outside* that release: `lazydata.js` is an ordinary `<script>` that is not
+part of the snapshot, and each pack is fetched on demand into whichever
+bundle bucket is currently active. The regular HTTP cache is short-lived, so the shell
 uses Cache Storage for repeat and offline starts. The active implementation is
 **versioned, immutable bundle snapshots** rather than the old mutable
 `cdda-assets-v1` bucket:
@@ -290,6 +295,61 @@ bundle marker and all four resources are present.
 `cdda_pump_web_ime` is wrapped in a targeted
 `#pragma clang diagnostic ignored` push/pop (compile-verified against
 emsdk 3.1.51 with the exact CI flag set).
+
+## Split data packs (lazy mount)
+
+The single `cataclysm-tiles.data` used to carry the whole game data tree. Only a
+small part of it is read before the main menu: measured on the 0.I tree,
+**74 of 5,892 files / 33.6 MB of 134.6 MB** (25.8 MB of that is `gfx/`, and
+most of the rest is `/data/json`, which is never touched until a world is
+created). `ci/prepare-data.sh` therefore now emits the boot package plus a set
+of extra packs:
+
+| pack | contents | measured |
+| --- | --- | --- |
+| `cataclysm-tiles.data` (boot) | core, locale, tileset metadata, default tileset images | 31 MB (215 files) |
+| `packs/world` | `/data/json` + `/data/mods` | 25 MiB (5,543 files) |
+| `packs/gfx-<tileset>` | one pack per tileset in `gfx/` | remainder of 50 MiB |
+
+`packs/manifest.json` (`{"version":1,"packs":[...],"eager":false}`) is the
+only thing the shell needs to decide between the split and the classic
+single-`.data` layout: **if it 404s, `lazydata.js` never does anything** and a
+bundle built the old way keeps working.
+
+**Engine side (`patches/cdda-0I-emscripten-lazy-data.patch`).** The packs are
+plain `file_packager --lz4` output; the game itself is not restructured. Two
+call sites are wrapped with `cata_web_ensure_pack()` (an `EM_ASYNC_JS`
+bridge) so the data directory cannot be scanned before it exists:
+
+- `init.cpp`, immediately before the JSON loader walks a data path
+- `cata_tiles.cpp`, before a tileset's images are loaded (`"gfx:<id>"`)
+
+`ci/apply-patches.sh` greps for all three markers (`src/cata_web_packs.h`,
+the `init.cpp` call, the `cata_tiles.cpp` call). Without them the split build
+fails in the worst possible way — an empty `/data/json` scans cleanly and the
+game starts with missing data — so the guard is a hard `test`/`grep`, not a
+warning.
+
+**Shell side (`shell/lazydata.js`).** Loaded before the Emscripten bundle so
+it can create `window.Module` first. Mounting one pack wraps
+`Module.LZ4.loadPackage`, hands the already-fetched buffer to the generated
+loader through `getPreloadedPackage` (no second network round trip), and
+resolves only when the generated `loadPackage` call has actually run — its
+`addRunDependency` is useless once execution has started. A 20 s timeout
+turns a silent hang into a retry prompt; the retry resolves the same promise
+the wasm side is awaiting, so the boot continues instead of restarting.
+`warmup()` only warms Cache Storage after `menuready` (the pack bytes are not
+kept on the heap); with `"eager":false` in the manifest nothing is downloaded
+until the engine asks. `watchLazyPaths()` wraps `FS.open` and warns when
+`/data/json` or `/data/mods` is read before `world` is mounted, which is the
+diagnostic for a hook that went missing.
+
+**Distribution gates.** `ci/prepare-bundle.sh` refuses to build when the
+manifest exists but a listed pack is missing, and
+`.github/workflows/build-and-release.yml` asserts `build/packs/manifest.json`
+and `site/packs/manifest.json` before the Pages upload. The first version of
+this change passed every compile and still shipped a `site/` without `packs/`
+— the gate exists because the bundle step silently didn't copy the directory.
 
 ## Japanese IME input (web)
 
