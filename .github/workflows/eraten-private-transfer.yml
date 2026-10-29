@@ -20,12 +20,22 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Verify private repository token is configured
+        shell: bash
+        env:
+          ERATEN_PRIVATE_REPO_TOKEN: ${{ secrets.ERATEN_PRIVATE_REPO_TOKEN }}
+        run: |
+          if [ -z "$ERATEN_PRIVATE_REPO_TOKEN" ]; then
+            echo "::error::Add the short-lived fine-grained token as Actions secret ERATEN_PRIVATE_REPO_TOKEN before running this workflow."
+            exit 1
+          fi
+
       - name: Checkout the private destination and its verified transfer script
         uses: actions/checkout@v4
         with:
           repository: "LBTStudio/-"
           ref: main
-          token: \${{ secrets.ERATEN_PRIVATE_REPO_TOKEN }}
+          token: ${{ secrets.ERATEN_PRIVATE_REPO_TOKEN }}
           path: private
           persist-credentials: true
 
@@ -42,8 +52,8 @@ jobs:
       - name: Download, verify, extract directly into private checkout
         env:
           ERATEN_SHARE_URL: "https://32.gigafile.nu/0111-hc19ff9a337d787399d294b1c4dff0baa"
-          ERATEN_WORK_DIR: \${{ runner.temp }}/eraten-persist-work
-          ERATEN_REPO_ROOT: \${{ github.workspace }}/private
+          ERATEN_WORK_DIR: ${{ runner.temp }}/eraten-persist-work
+          ERATEN_REPO_ROOT: ${{ github.workspace }}/private
         run: python private/scripts/persist_eraten_package.py
 
       - name: Commit extracted source only to private destination
