@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 from __future__ import annotations
-import hashlib, json, os, re, shutil, sys, time, zipfile
+import csv, hashlib, io, json, os, re, shutil, sys, time, zipfile
 from pathlib import Path, PurePosixPath
 from urllib.parse import urlparse, urlunparse
 from playwright.sync_api import sync_playwright
@@ -189,42 +189,113 @@ def run():
                 txt=read_text(p)
                 if txt is not None: textfiles.append((p,txt))
         report["text_candidate_count"]=len(textfiles)
-        # No raw source lines or game files are put in the public artifact. Emit structure only.
+        # Emit structural facts only; never include verbatim source lines.
         char_hits=[]
         char_files=set()
-        for p,txt in textfiles:
-            for n,line in enumerate(txt.splitlines(),1):
-                if CHAR_PAT.search(line):
-                    char_files.add(p.relative_to(extracted).as_posix())
-                    char_hits.append({"path":p.relative_to(extracted).as_posix(),"line":n,"terms":sorted(set(CHAR_PAT.findall(line))),"ids":sorted(set(NUMID.findall(line))),"identifiers":tokens(line),"attribute_tokens":[a for a in ATTRS if a.lower() in line.lower()]})
-                    if len(char_hits)>=500: break
-            if len(char_hits)>=500: break
-        report["character_hits"]=char_hits
-        report["character_files"]=sorted(char_files)
-        skill_hits=[]
-        formula_by_file={}
+        text_by_rel={}
         for p,txt in textfiles:
             rel=p.relative_to(extracted).as_posix()
-            lines=txt.splitlines()
-            sk=0
-            formulas=set()
-            symbols=set()
-            for n,line in enumerate(lines,1):
-                if SKILL_PAT.search(line):
-                    sk+=1
-                    if len(skill_hits)<700:
-                        skill_hits.append({"path":rel,"line":n,"terms":sorted(set(SKILL_PAT.findall(line))),"ids":sorted(set(NUMID.findall(line))),"identifiers":tokens(line),"quoted_names":re.findall(r'"([^"]{2,40})"',line)[:8]})
-                if FORM_PAT.search(line):
-                    formulas.update(FORM_PAT.findall(line))
-                    symbols.update(tokens(line))
-                    symbols.update(a for a in ATTRS if a.lower() in line.lower())
-            if formulas:
-                formula_by_file[rel]={"formula_terms":sorted(set(x.lower() for x in formulas)),"identifiers":sorted(symbols)[:100],"line_count":sum(1 for line in lines if FORM_PAT.search(line))}
-        report["skill_hits"]=skill_hits
-        report["formula_files"]=formula_by_file
-        report["inventory"]=inventory[:30000]
-        # keep output bounded; no source text is included.
-        save("02_structural_report.json",json.dumps(report,ensure_ascii=False,indent=2)[:3_000_000])
+            text_by_rel[rel]=(p,txt)
+            for n,line in enumerate(txt.splitlines(),1):
+                if CHAR_PAT.search(line):
+                    char_files.add(rel)
+                    char_hits.append({"path":rel,"line":n,"terms":sorted(set(CHAR_PAT.findall(line))),"ids":sorted(set(NUMID.findall(line))),"identifiers":tokens(line),"attribute_tokens":[a for a in ATTRS if re.search(r"\b"+re.escape(a)+r"\b",line,re.I)]})
+                    if len(char_hits)>=250: break
+            if len(char_hits)>=250: break
+        report["character_hits"]=char_hits
+        report["character_files"]=sorted(char_files)
+
+        target_suffixes=[
+          "Chara5487_ブルーアーカイブ_アツコ.csv",
+          "SKILL_アツコ専用技1_これも私の力……？.ERB",
+          "SKILL_アツコ専用技2_隠れるよ.ERB",
+          "SKILL_アツコ専用技3_教えられた事.ERB",
+        ]
+        engine_suffixes=[
+          "SYSTEM_BATTLE_DAMAGE.ERB","SYSTEM_STATUS_CALC.ERB",
+          "GET_BATTLESTATUS.ERB","GET_BATTLESTATUS_NUM.ERB",
+        ]
+        target_records={}
+        call_symbols=set()
+        formula_line_re=re.compile(r"CALLF?|TRYCALL|CALLFORM|GOSUB|GOTO|GET_SKILL|SKILL_(?:POWER|HITRATE|DAMAGETYPE|HEAL_TYPE)|(?:BASE|ABL|MAXBASE|CSTR|CFLAG)\b|(?:力|知恵|魔力|耐力|速さ|運|STR|INT|MAG|END|AGI|LUK|HP|MP)\b|DAMAGE|HEAL|HITRATE|EVASION|POWER",re.I)
+        call_re=re.compile(r"\b(?:CALLFORM|TRYCALL|CALLF?|GOSUB|GOTO)\s+([A-Z_][A-Z0-9_]*)",re.I)
+        def line_profile(line,n):
+            quoted=re.findall(r'"([^"]{1,48})"|\'([^\']{1,48})\'',line)
+            short_literals=[]
+            for pair in quoted:
+                value=next((v for v in pair if v), "")
+                if value and len(value)<=48:
+                    short_literals.append(value)
+            latin_attrs=[a for a in ATTRS if re.search(r"\b"+re.escape(a)+r"\b",line,re.I)]
+            jp_attrs=[a for a in ["力","知恵","魔力","耐力","速さ","運","体力","HP","MP","命中","回避","魔法威力","魔法効果","回復量"] if a in line]
+            calls=[x.upper() for x in call_re.findall(line)]
+            call_symbols.update(calls)
+            return {
+              "line":n,
+              "identifiers":tokens(line)[:60],
+              "attributes":sorted(set(latin_attrs+jp_attrs)),
+              "numbers":re.findall(r"(?<![A-Z_])[-+]?\d+(?:\.\d+)?",line)[:20],
+              "string_labels":short_literals[:8],
+              "calls":calls[:12],
+              "operators":sorted(set(re.findall(r"(?:\+=|-=|\*=|/=|==|!=|>=|<=|=|\+|-|\*|/|%|\?|:)",line))),
+            }
+
+        # Character CSV is emitted as field/value summaries rather than verbatim rows.
+        char_csvs=[(rel,p,txt) for rel,(p,txt) in text_by_rel.items() if rel.endswith(target_suffixes[0])]
+        for rel,p,txt in char_csvs:
+            rows=[]
+            for n,line in enumerate(txt.splitlines(),1):
+                try: cells=next(csv.reader([line]))
+                except Exception: cells=line.split(",")
+                cells=[c.strip() for c in cells]
+                if not cells or not any(cells): continue
+                key=cells[0][:100]
+                rest=cells[1:]
+                values=[]
+                for idx,val in enumerate(rest,1):
+                    if not val: continue
+                    nums=re.findall(r"(?<![A-Z_])[-+]?\d+(?:\.\d+)?",val)
+                    ident=tokens(val)
+                    stat_tags=[a for a in ATTRS if re.search(r"\b"+re.escape(a)+r"\b",val,re.I)]
+                    jp_tags=[a for a in ["力","知恵","魔力","耐力","速さ","運","HP","MP","命中","回避","魔法威力","魔法効果","回復量"] if a in val]
+                    literal_labels=[]
+                    if len(val)<=45 and (re.search(r"[一-龠々ぁ-ゖァ-ヺ]",val) or re.fullmatch(r"[A-Z][A-Z0-9_]{1,40}",val)):
+                        literal_labels=[val]
+                    if nums or ident or stat_tags or jp_tags or literal_labels:
+                        values.append({"index":idx,"numbers":nums[:20],"identifiers":ident[:30],"attributes":sorted(set(stat_tags+jp_tags)),"labels":literal_labels[:4],"length":len(val)})
+                if key or values:
+                    rows.append({"line":n,"field":key,"values":values})
+            target_records[rel]={"kind":"character_csv_field_index","line_count":len(txt.splitlines()),"fields":rows}
+
+        # Profile only logic-bearing lines from Atsuko's three dedicated skills.
+        for rel,(p,txt) in text_by_rel.items():
+            if any(rel.endswith(s) for s in target_suffixes[1:]):
+                lines=txt.splitlines()
+                profiles=[]
+                for n,line in enumerate(lines,1):
+                    if formula_line_re.search(line) or re.search(r"^\s*(?:@\w+|#FUNCTION|IF\b|ELSEIF\b|ELSE\b|ENDIF\b|SELECTCASE\b|CASE\b|ENDSELECT\b|RETURNF?\b|RESULTS?\s*=)",line,re.I):
+                        profiles.append(line_profile(line,n))
+                target_records[rel]={"kind":"skill_logic_token_profile","line_count":len(lines),"logic_lines":profiles}
+
+        # Capture shared battle formulas and status calculations, not the whole source.
+        engine_records={}
+        for rel,(p,txt) in text_by_rel.items():
+            if any(rel.endswith(s) for s in engine_suffixes) or any(t in p.name.upper() for t in ["GET_SKILL_PROP","GET_SKILL_HEAL_TYPE","SKILL_POWER","SKILL_HITRATE","SKILL_DAMAGETYPE"]):
+                lines=txt.splitlines()
+                profiles=[]
+                for n,line in enumerate(lines,1):
+                    if formula_line_re.search(line) or re.search(r"^\s*@\w+",line):
+                        profiles.append(line_profile(line,n))
+                if profiles:
+                    engine_records[rel]={"line_count":len(lines),"formula_lines":profiles[:700]}
+        report["target_file_profiles"]=target_records
+        report["shared_formula_profiles"]=engine_records
+        report["target_calls"]=sorted(call_symbols)
+        report["formula_file_count"]=sum(1 for _,txt in textfiles if any(FORM_PAT.search(line) for line in txt.splitlines()))
+        report["skill_keyword_count"]=sum(1 for _,txt in textfiles for line in txt.splitlines() if SKILL_PAT.search(line))
+
+        # Save a complete, valid JSON file; no inventory dump and no verbatim source text.
+        save("02_structural_report.json",json.dumps(report,ensure_ascii=False,indent=2))
         save("03_summary.md",
              "# Eraten temporary acquisition summary\n\n"
              f"- Downloaded: {report['downloaded']}\n"
@@ -235,9 +306,11 @@ def run():
              f"- Text candidates: {report.get('text_candidate_count','n/a')}\n"
              f"- Atsuko matching lines: {len(char_hits)}\n"
              f"- Files with Atsuko: {len(char_files)}\n"
-             f"- Skill-related matches: {len(skill_hits)}\n"
-             f"- Files with combat formula markers: {len(formula_by_file)}\n\n"
-             "Only a structural index was retained; the ZIP, extracted data, and raw source lines were not uploaded.")
+             f"- Targeted Atsuko data files: {len(report.get('target_file_profiles',{}))}\n"
+             f"- Shared formula files profiled: {len(report.get('shared_formula_profiles',{}))}\n"
+             f"- Skill keyword matching lines: {report.get('skill_keyword_count',0)}\n"
+             f"- Files with combat formula markers: {report.get('formula_file_count',0)}\n\n"
+             "Only structured fields, identifiers, constants and line references were retained; no source lines or game files were uploaded.")
     except Exception as e:
         report["error"]=f"{type(e).__name__}: {str(e)[:1200]}"
         save("02_structural_report.json",json.dumps(report,ensure_ascii=False,indent=2))
