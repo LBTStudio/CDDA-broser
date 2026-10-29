@@ -190,7 +190,7 @@ def run():
                 if SKILL_PAT.search(line):
                     sk+=1
                     if len(skill_hits)<700:
-                        skill_hits.append({"path":rel,"line":n,"terms":sorted(set(SKILL_PAT.findall(line))),"ids":sorted(set(NUMID.findall(line))),"identifiers":tokens(line),"quoted_names":re.findall(r'["\\']([^"\\']{2,40})["\\']',line)[:8]})
+                        skill_hits.append({"path":rel,"line":n,"terms":sorted(set(SKILL_PAT.findall(line))),"ids":sorted(set(NUMID.findall(line))),"identifiers":tokens(line),"quoted_names":re.findall(r'"([^"]{2,40})"',line)[:8]})
                 if FORM_PAT.search(line):
                     formulas.update(FORM_PAT.findall(line))
                     symbols.update(tokens(line))
